@@ -1,0 +1,272 @@
+{
+  "schema": 4,
+  "dxf_path": "C:\\Users\\5600\\Documents\\CAD\\26\\09\\09.01\\SL-26143-RLD-PC+ABS-9.1.dxf",
+  "params": {
+    "FLB": [
+      -40.0,
+      -85.0
+    ],
+    "JT": [
+      -30.0,
+      -100.0
+    ],
+    "LS": [
+      -40.0,
+      -85.0
+    ],
+    "RZ": [
+      -72.0,
+      -85.0
+    ],
+    "DK": [
+      -40.0,
+      -43.0
+    ],
+    "DP": [
+      -78.2977,
+      -85.0
+    ],
+    "CX": [
+      -35.0,
+      -70.0
+    ]
+  },
+  "std_parts": {
+    "主进胶与中心定位垫片-30.prt": {
+      "layer": "DP",
+      "r_min": 0.0,
+      "r_max": 8.0,
+      "z_mode": "FLB_BOTTOM",
+      "bool_mode": "PLACE_SUBTRACT",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        1497.721,
+        -110.805,
+        -124.58
+      ]
+    },
+    "主进胶与中心定位垫片-35.prt": {
+      "layer": "DP",
+      "r_min": 0.0,
+      "r_max": 8.0,
+      "z_mode": "FLB_BOTTOM",
+      "bool_mode": "PLACE_SUBTRACT",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        1647.7207,
+        -110.8048,
+        -124.5795
+      ]
+    },
+    "压线板.prt": {
+      "layer": "CXK",
+      "r_min": 0.0,
+      "r_max": 9999.0,
+      "z_mode": "CX_TOP",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        100.962,
+        192.9635,
+        -329.5
+      ]
+    },
+    "垫片.prt": {
+      "layer": "DK",
+      "r_min": 0.0,
+      "r_max": 5.0,
+      "z_mode": "FLB_TOP",
+      "bool_mode": "PLACE_SUBTRACT",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        2157.282,
+        -395.735,
+        -315.189
+      ]
+    },
+    "大水口-18.prt": {
+      "layer": "RZ",
+      "r_min": 0.0,
+      "r_max": 15.0,
+      "z_mode": "FLB_BOTTOM",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        1107.282,
+        -395.735,
+        -420.189
+      ]
+    },
+    "大水口-25.prt": {
+      "layer": "RZ",
+      "r_min": 0.0,
+      "r_max": 15.0,
+      "z_mode": "FLB_BOTTOM",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        1257.282,
+        -395.735,
+        -420.189
+      ]
+    },
+    "大水口-35.prt": {
+      "layer": "RZ",
+      "r_min": 0.0,
+      "r_max": 15.0,
+      "z_mode": "FLB_BOTTOM",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        1407.282,
+        -395.735,
+        -420.189
+      ]
+    },
+    "接线盒-16针.prt": {
+      "layer": "CXK",
+      "r_min": 0.0,
+      "r_max": 9999.0,
+      "z_mode": "CX_TOP",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        0.0,
+        830.0,
+        18.1
+      ]
+    },
+    "接线盒-24针.prt": {
+      "layer": "CXK",
+      "r_min": 0.0,
+      "r_max": 9999.0,
+      "z_mode": "CX_TOP",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        0.0,
+        830.0,
+        98.1
+      ]
+    },
+    "接线盒-48针.prt": {
+      "layer": "CXK",
+      "r_min": 0.0,
+      "r_max": 9999.0,
+      "z_mode": "CX_TOP",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        67.4986,
+        68.1889,
+        -71.5104
+      ]
+    },
+    "点胶口-18.prt": {
+      "layer": "RZ",
+      "r_min": 0.0,
+      "r_max": 15.0,
+      "z_mode": "FLB_BOTTOM",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        1594.782,
+        -395.735,
+        -570.189
+      ]
+    },
+    "点胶口-25.prt": {
+      "layer": "RZ",
+      "r_min": 0.0,
+      "r_max": 15.0,
+      "z_mode": "FLB_BOTTOM",
+      "bool_mode": "PLACE",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        1473.782,
+        -395.735,
+        -413.531
+      ]
+    },
+    "螺丝-45.prt": {
+      "layer": "LS",
+      "r_min": 0.0,
+      "r_max": 5.0,
+      "z_mode": "FLB_TOP",
+      "bool_mode": "PLACE_SUBTRACT",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        445.0,
+        -86.5517,
+        89.5
+      ]
+    },
+    "螺丝-50.prt": {
+      "layer": "LS",
+      "r_min": 0.0,
+      "r_max": 5.0,
+      "z_mode": "FLB_TOP",
+      "bool_mode": "PLACE_SUBTRACT",
+      "dir": "+Z",
+      "off_x": 0.0,
+      "off_y": 0.0,
+      "off_z": 0.0,
+      "ref": [
+        338.4921,
+        -239.3397,
+        0.0
+      ]
+    }
+  },
+  "selected": [
+    "主进胶与中心定位垫片-30.prt",
+    "压线板.prt",
+    "垫片.prt",
+    "大水口-25.prt",
+    "接线盒-16针.prt",
+    "螺丝-45.prt"
+  ],
+  "jrt_se": [
+    -40.0,
+    -47.5
+  ]
+}

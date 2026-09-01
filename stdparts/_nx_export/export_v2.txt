@@ -1,0 +1,16 @@
+TOTAL = 14
+[OK  ] 主进胶与中心定位垫片-30                  size=91911     non_ascii_bytes=0
+[OK  ] 主进胶与中心定位垫片-35                  size=91225     non_ascii_bytes=0
+[OK  ] 压线板                            size=35438     non_ascii_bytes=0
+[OK  ] 垫片                             size=27570     non_ascii_bytes=0
+[OK  ] 大水口-18                         size=14265     non_ascii_bytes=0
+[OK  ] 大水口-25                         size=14331     non_ascii_bytes=0
+[OK  ] 大水口-35                         size=14194     non_ascii_bytes=0
+[OK  ] 接线盒-16针                        size=1058150   non_ascii_bytes=0
+[OK  ] 接线盒-24针                        size=3783985   non_ascii_bytes=0
+[OK  ] 接线盒-48针                        size=3130152   non_ascii_bytes=0
+[OK  ] 点胶口-18                         size=154708    non_ascii_bytes=0
+[OK  ] 点胶口-25                         size=26383     non_ascii_bytes=0
+[OK  ] 螺丝-45                          size=19167     non_ascii_bytes=0
+[OK  ] 螺丝-50                          size=19956     non_ascii_bytes=0
+DONE ok=14 fail=0

@@ -1,0 +1,18 @@
+PS240=240  PS270=270  EXISTING=1
+TOTAL PARTS = 14
+[OK  ] 主进胶与中心定位垫片-30.prt -> PS24.0  91940 bytes  hdr=?
+[OK  ] 主进胶与中心定位垫片-35.prt -> PS24.0  91254 bytes  hdr=?
+[OK  ] 压线板.prt -> PS24.0  35443 bytes  hdr=?
+[OK  ] 垫片.prt -> PS24.0  27572 bytes  hdr=?
+[OK  ] 大水口-18.prt -> PS24.0  14273 bytes  hdr=?
+[OK  ] 大水口-25.prt -> PS24.0  14339 bytes  hdr=?
+[OK  ] 大水口-35.prt -> PS24.0  14202 bytes  hdr=?
+[OK  ] 接线盒-16针.prt -> PS24.0  1058161 bytes  hdr=?
+[OK  ] 接线盒-24针.prt -> PS24.0  3783996 bytes  hdr=?
+[OK  ] 接线盒-48针.prt -> PS24.0  3130163 bytes  hdr=?
+[OK  ] 点胶口-18..prt -> PS24.0  154717 bytes  hdr=?
+[OK  ] 点胶口-25.prt -> PS24.0  26391 bytes  hdr=?
+[OK  ] 螺丝-45.prt -> PS24.0  19172 bytes  hdr=?
+[OK  ] 螺丝-50.prt -> PS24.0  19961 bytes  hdr=?
+SUMMARY  PS24=14  PS27=0  FAILED=0
+FAILED LIST: 
