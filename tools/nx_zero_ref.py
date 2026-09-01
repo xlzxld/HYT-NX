@@ -112,14 +112,18 @@ def effective_argv(argv):
     return shlex.split(text, posix=False)
 
 
+def project_root(script_file):
+    """项目根 = 本工具所在目录(tools)的上一级。"""
+    return os.path.dirname(os.path.dirname(os.path.abspath(script_file)))
+
+
 def src_dir_of(script_file):
-    base = os.path.dirname(os.path.abspath(script_file))
-    return os.path.join(base, SRC_DIRNAME)
+    return os.path.join(project_root(script_file), SRC_DIRNAME)
 
 
 def out_dir_of(script_file, override=None):
-    base = os.path.dirname(os.path.abspath(script_file))
-    return os.path.join(base, override if override else OUT_DIRNAME)
+    return os.path.join(project_root(script_file),
+                        override if override else OUT_DIRNAME)
 
 
 def list_prt_files(src_dir):
@@ -280,8 +284,9 @@ def build_pick_dlx(part_name, index, total):
 
 
 def _fresh_dlx_path(script_dir):
-    """唯一毫秒戳 dlx 文件名(NX 按文件名回灌旧值, 重名会吃旧界面值)。"""
-    logs = os.path.join(script_dir, "logs")
+    """唯一毫秒戳 dlx 文件名(NX 按文件名回灌旧值, 重名会吃旧界面值)。
+    script_dir = 本工具所在目录(tools), dlx 写到项目根的 logs/。"""
+    logs = os.path.join(os.path.dirname(script_dir), "logs")
     d = logs if os.path.isdir(logs) else script_dir
     return os.path.join(d, "nx_zero_pick_%d.dlx" % int(time.time() * 1000))
 
@@ -671,9 +676,10 @@ def close_part(session, ufs, part):
 # ---- 预览副本(全部走主脚本已验证的 AddComponent→提升→删组件 三件套) ----
 
 def _import_runner(script_dir):
-    """导入主脚本模块, 复用其选择对话框/放置三件套。"""
-    if script_dir not in sys.path:
-        sys.path.insert(0, script_dir)
+    """导入主脚本模块(位于项目根), 复用其选择对话框/放置三件套。"""
+    root = os.path.dirname(script_dir)
+    if root not in sys.path:
+        sys.path.insert(0, root)
     import nx_extrude_runner as runner
     return runner
 

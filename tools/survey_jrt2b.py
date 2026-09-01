@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-"""jrt2 六状态: 逐面清单 + 面片三角导出(.tri) 供本地渲染。"""
+"""jrt2 六状态: 逐面清单 + 面片三角导出(.tri) 供本地渲染。
+注意: 需要 test 目录下的 jrt2.prt 测试件(旧机归档未随迁), 放到位后才能运行。"""
 import io
+import os
 import sys
 
-sys.path.insert(0, r"C:\Users\5600\Documents\Zcode2D\NX")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
 import NXOpen  # noqa: E402
 import NXOpen.UF  # noqa: E402
 
@@ -11,7 +14,7 @@ session = NXOpen.Session.GetSession()
 uf = NXOpen.UF.UFSession.GetUFSession()
 out = []
 
-prt, _st = session.Parts.Open(r"C:\Users\5600\Documents\Zcode2D\test\jrt2.prt")
+prt, _st = session.Parts.Open(os.path.join(_ROOT, "test", "jrt2.prt"))
 session.Parts.SetActiveDisplay(
     prt, NXOpen.DisplayPartOption.AllowAdditional,
     NXOpen.PartDisplayPartWorkPartOption.UseLast)
@@ -84,21 +87,21 @@ for idx, (zhi, bi, faces) in enumerate(rows):
                      % (int(d[0]), float(d[4]), (bb[0] + bb[3]) / 2,
                         (bb[1] + bb[4]) / 2, (bb[2] + bb[5]) / 2,
                         bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]))
-    with io.open(r"C:\Users\5600\Documents\Zcode2D\NX\test\.zcode\j2_%s.txt"
+    with io.open(os.path.join(_ROOT, "test", "j2_%s.txt")
                  % nm, "w", encoding="utf-8") as fo:
         fo.write("\n".join(lines))
     tris, errs = facet_triangles(list(prt.Bodies)[bi])
     if tris is None:
         out.append("%s: 面片失败 %s" % (nm, errs))
         continue
-    with io.open(r"C:\Users\5600\Documents\Zcode2D\NX\test\.zcode\j2_%s.tri"
+    with io.open(os.path.join(_ROOT, "test", "j2_%s.tri")
                  % nm, "w", encoding="utf-8") as fo:
         for t in tris:
             for v in t:
                 fo.write("%.3f %.3f %.3f\n" % (v[0], v[1], v[2]))
     out.append("%s: 三角形 %d %s" % (nm, len(tris), ";".join(errs)[:200]))
 
-with io.open(r"C:\Users\5600\Documents\Zcode2D\NX\test\.zcode\jrt2_faces.txt",
+with io.open(os.path.join(_ROOT, "test", "jrt2_faces.txt"),
              "w", encoding="utf-8") as fo:
     fo.write("\n".join(out))
 print("J2F OK")

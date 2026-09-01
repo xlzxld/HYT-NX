@@ -1,2 +1,20 @@
+# Python
 __pycache__/
 *.pyc
+
+# 运行生成物（每次运行重建，不入库）
+logs/
+*.dlx
+
+# 运行记忆（含本机 DXF 路径，每次运行漂移；新机器上脚本自动重建）
+nx_extrude_params.json
+*.bad-*
+
+# AI 工作目录（计划/记忆，不入库；用完可手动删除）
+.zcode/
+.workbuddy/
+
+# 归零工具临时产物
+stdparts_归零/
+_staging_*.prt
+_preview_*.prt

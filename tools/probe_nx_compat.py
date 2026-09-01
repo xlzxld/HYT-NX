@@ -110,10 +110,11 @@ def add(rid, category, item, result, detail=""):
 
 
 def script_dir():
+    """项目根(本探针在 tools 目录内, stdparts/logs 均相对根)。"""
     try:
-        return os.path.dirname(os.path.abspath(__file__))
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     except NameError:
-        return os.path.dirname(os.path.abspath(sys.argv[0]))
+        return os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))
 
 
 def out_dir():

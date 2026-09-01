@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """查 uf.Plot/uf.Disp/uf.Modeling 的图像/STL 导出 API。"""
 import io
+import os
 import sys
 
-sys.path.insert(0, r"C:\Users\5600\Documents\Zcode2D\NX")
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 import NXOpen  # noqa: E402
 import NXOpen.UF  # noqa: E402
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 uf = NXOpen.UF.UFSession.GetUFSession()
 out = []
 out.append("uf.Plot: " + ", ".join(m for m in dir(uf.Plot)
@@ -19,7 +22,7 @@ out.append("uf.Modeling 导出类: " + ", ".join(
 out.append("session 成员(image/snap): " + ", ".join(
     m for m in dir(NXOpen.Session.GetSession())
     if any(k in m.lower() for k in ("image", "snap", "photo"))))
-with io.open(r"C:\Users\5600\Documents\Zcode2D\NX\test\.zcode\exp_api.txt",
+with io.open(os.path.join(_ROOT, "test", "exp_api.txt"),
              "w", encoding="utf-8") as fo:
     fo.write("\n".join(out))
 print("API OK")

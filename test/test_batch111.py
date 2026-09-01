@@ -9,7 +9,7 @@ from collections import Counter
 import os as _os, sys as _sys
 _sys.dont_write_bytecode = True
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_HERE)))
+_sys.path.insert(0, _os.path.dirname(_HERE))
 _FIXTURES = _os.path.join(_HERE, "fixtures")
 
 import NXOpen  # noqa: E402
