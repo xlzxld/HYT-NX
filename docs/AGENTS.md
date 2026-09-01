@@ -1,4 +1,4 @@
-# AGENTS.md —— NX 分层拉伸自动化（AI 接手文档）  v1.35
+# AGENTS.md —— NX 分层拉伸自动化（AI 接手文档）  v1.36
 
 > 本文档写给**接手本项目的 AI**，位于 docs\ 子目录。用户手册（给人看）在同目录 `使用手册.md`。
 
@@ -10,7 +10,9 @@
 | 可移植性 | 整个 NX\ 文件夹自包含，可随意移动/拷贝（路径全相对脚本自身） |
 | 生成物 | dlx/运行报告/调试脚印统一写入 `logs\`；__pycache__ 已禁生成 |
 | 配置 | `nx_std_config.py`（用户手工编辑；主脚本 `_load_user_config()` 动态加载，缺文件/缺键逐项回退内置默认） |
-| 标准件库 | `stdparts\*.prt`（必须与脚本同目录） |
+| 标准件库 | `stdparts\*.prt`（必须与脚本同目录；v1.36 起 14 件已全部归零，定位点=零件原点） |
+| 归零工具 | `nx_zero_ref.py`（v1.36 新增：日记播放，逐件点定位点，自动预览/写回归零副本；细节见文件头注释） |
+| 版本管理 | git 仓库（origin=github.com/xlzxld/HYT-NX，main 分支）；每次用户确认更新即 bump 小版本+commit+tag+push |
 | 期刊留档 | `journals\`（journal-bzj 定位期刊 / journal-jrt 加热条工序 / journal-jxh 接线盒 / journal-djk 点胶口——**定位规则与工序的地面真值**） |
 | 开发目录 | `test\`（回归脚本在 `test\.zcode\`，已指向本目录） |
 | 运行方式 | NX 内 工具→日记→播放；批量 `run_journal.exe 脚本 --batch`；离线自测 `--selftest`（155 项断言；总数随 config 标准件条目数浮动） |
@@ -32,7 +34,7 @@
 
 | 机制 | 定案 |
 |---|---|
-| 参考点 ref | **必填、用户在 config 按文件名精确行实测填写**；未填→跳过+日志+弹窗。自动探测链已于 v1.30 整链删除（STD_REF_POINTS/主导轴/大圆柱顶面/顶面后沿中点），**不要复活** |
+| 参考点 ref | **v1.36 起 14 个 prt 已全部归零，ref 恒为 [0,0,0]**——定位点=零件原点，放置公式精确对准锚点，坐标不再需要维护（config/json 均已清零）。自动探测链 v1.30 已删（STD_REF_POINTS/主导轴/大圆柱顶面/顶面后沿中点），**不要复活**；新件用 nx_zero_ref.py 归零或设计时原点建在插入位置 |
 | config 两级匹配 | 精确文件名行(带/不带 .prt) > 关键词子串行；复合名文件必须有自己的精确行（"主进胶与中心定位垫片"含"垫片"，否则错命中 DK 规则） |
 | Z 基准 | 选项表 = config `ZMODE_DEFS`（key/中文/图层/TOP-BOTTOM），加一行=新基准；`_std_z` 查表，查不到回 FLB_TOP |
 | CXK | 只做接线盒定位不建模；曲线并入 CX 一起闭环（`modeling_ents`）；CXK 件参数页不显示半径框 |
@@ -47,6 +49,7 @@
 | 链环判据(v1.35) | find_chains 3×3 邻桶搜索(量化格边界断口不再漏配)+T 形三叉按方向延续选段；organize_loops 重复描线环去重(否则被误判为孔)+8 顶点投票包含判定——v1.29"最小包含环"定案不变 |
 | CXK 切层护栏(v1.35) | 窗口③把 CXK 件切到圆心层时半径框不存在→收集侧重置 0~15 并提示核对(防旧全半径海量锚点) |
 | SUBTRACT 兜底(v1.35) | 无 FLB 体可布尔或布尔未生效时**保留独立体**并记日志——不得走删体分支(否则孔没切件也没了) |
+| 标准件归零(v1.36) | 14 个 prt 定位点已平移到零件原点(ref=[0,0,0])——放置公式在 ref=0 时精确等于锚点，-Z 翻转反号问题自然消失；输出件从"模型模板"复制而来(带建模应用记录, 打开直进建模)；**新件不归零就不放置可用性**——ref 恒 0, 未归零件会整体错位 |
 
 ## 4. 坑点清单（血泪史，逐条都有事故背书）
 
@@ -76,6 +79,15 @@
 19. selftest 断言与实现必须同步——删函数时同步删断言，补函数时同步补断言（v1.30 恢复曾静默丢失一批断言，掩盖问题数轮）。
 20. `_undefined_name_check` 的函数内局部名表原只认 FunctionDef——函数内 `class Xxx:` 定义曾是盲区，会误报 NameError（v1.35 已补 ClassDef）；再遇自测"AST 未定义名称"误报先查这里。
 
+**NX2312 Python 绑定类（v1.36 归零工具实证；facade 只暴露部分 .NET 面，缺就换等价路线，别硬调）**
+25. `Parts.OpenBasePart`/`OpenDisplay`、`Part.CreateMoveObjectBuilder`、`UF Ui.SpecifyScreenPosition` **均不存在**（AttributeError）——打开部件走 UF `Part.Open`+`SetDisplayPart`；点定位点用 BlockStyler `UICOMP_point` 对话框（SelectionDialog 同款模式；**必须注册 AddInitializeHandler**，缺它 Launch 报"初始化回调未注册"）；部件内平移没有移动 API——改走"新建部件→组件按 −位移 放置→提升→移除参数"；
+26. **AddComponent 同名循环装配**：新部件内部名与待加部件相同(仅目录不同)→"Attempt to load a cyclic assembly structure"——输出件用不同内部名(临时名)创建，Save/Close 后磁盘改名；
+27. **SaveAs 到与会话中已加载部件同名的路径被拒**("File already exists")——同上，走"存临时名→关部件→os.replace"；NX 判重按部件名不按完整路径；
+28. **提升体在 RemoveParameters 前关联组件壳**：删壳/隐藏壳会连带破坏/隐藏提升体（"加载完成就缺料/全消失"两案）——提升后**立即移除参数**成哑实体再动壳；
+29. **关窗口≠关部件**：工具用过的部件残留会话+未保存更改，退出 NX 全冒出来——预览放工具自建临时部件，用完即弃（CloseModified=丢弃）；写回后关闭源部件（归零件与原件同名，原件不关则打开副本报"已加载另一版本的部件"）；
+30. UF 分组 `Group.CreateGroup` 参数形态对不上（"函数采用 N 个参数"即此类绑定面不齐）——标识改用体名，别恋战；
+31. 输出件要"打开直进建模"：从 `UGII	emplates\model-plain-1-mm-template.prt` 复制为基底（模板自带 UG_APP_MODELING 记录）；空白 UF_PART_new 件停在基本环境，ApplicationSwitchImmediate 不可用；二进制验证法：`grep -ac UG_APP_MODELING 文件`（原件 2 处）。
+
 **向下兼容（NX10/12）类（实机探针 v2.1/v2.2 定案，勿凭 2312 经验改回）**
 21. NX10/12 的 `NXOpen.pyd` 是 **Siemens 自研 CPython C 扩展绑定，不是 pythonnet**——无 `System` 模块、对象无 `GetType()`/反射、无 `.array()`。跨版本差异表现为"同一代码新绑定能编组、旧绑定报 `没有过载与这些参数匹配`"；**造 .NET 数组 / 反射签名两条路在这两版物理不可用**，定位只能读方法 `__doc__` + 逐参数试形态。
 22. `Section.AddToSection`：旧版 seed/两 connector **不接受裸 `None`**，要 `NXOpen.NXObject.Null`（2312 才自动转）。已封 `_add_to_section_compat`（主脚本 L2176）——先 None(2312 零回归)后 Null 重试。注意 `rules` 用 Python list、`helpPoint` 用 Point3d、`Mode.Create` 枚举、7 参 各版皆可，**别误改这几处**。
@@ -88,14 +100,15 @@
 2. `python -m py_compile` + `--selftest` 全绿（现 155 项；总数随 config `STD_PART_DEFAULTS` 条目数浮动）；
 3. NX 批量回归：`test\.zcode\test_batch111.py`（3Dtest 全家族两遍）+ `test01x.py`（01.dxf 加热条）+ 可选 test123/test_ref；
 4. **用户实测通过**后再移动同步到本目录（用户曾明确要求此流程）；
-5. 文档同步更新（使用手册 + 本文件）。
+5. 文档同步更新（使用手册 + 本文件）；
+6. **git 收尾（v1.36 起）**：用户确认更新后 bump 小版本（一直 1.x，大版本由用户临时定）→ `python -m py_compile` + `--selftest` 全绿 → `git add -A && git commit && git tag v1.x && git push --tags`。
 
 ## 6. 配置项一览（nx_std_config.py，细节见其内置注释）
 
 | 项 | 内容 |
 |---|---|
 | `CONFIG_SCHEMA_VERSION` | 记忆版本守卫（加大=丢弃旧规则记忆**与界面参数**；现为 4，v1.35 已重置一次旧记忆） |
-| `STD_PART_DEFAULTS` | 标准件规则表（两级匹配；ref 必填于精确行；存量件已预填实测 ref） |
+| `STD_PART_DEFAULTS` | 标准件规则表（两级匹配；ref 已全部归零为 [0,0,0]，勿再填实测值） |
 | `ZMODE_DEFS` | Z 基准模式表（可自行新增基准） |
 | `LINK_OFFSETS` | 分层联动偏移（RZ+13/DK-3/DP+6.7023） |
 | `JRT_INTRUSION_DEFAULT` | 加热条入侵深度默认 7.5 |
@@ -108,7 +121,7 @@
 
 ## 7. 版本历史（详见主脚本文件头；此处仅骨架）
 
-v1.9 规则瘦身/移除参数 · v1.10 CXK 规则 · v1.11 记忆保存时机 · v1.12 config 外置+schema3 · v1.13 删 z 字段 · v1.14 首显钩子实名+唯一dlx+DXF先验 · v1.15 枚举读取回归+护栏 · v1.16 组默认展开 · v1.17 JRT 异形回退+删面收紧+开链修复 · v1.18 SetEnum 通道+dlx 唯一名恢复 · v1.19 全件恢复默认 · v1.20 调试脚印独立文件 · v1.21 单列布局 · v1.22 移除反转/撑宽 · v1.23~28 JRT 判据迭代（面体检→碎片→型20 定案；删面安全包装） · v1.29 ref 自助配置 · v1.30 探测链废弃+ref 必填+ABS/OFF 删除 · v1.31 CXK 件隐藏半径 · v1.32 ZMODE_DEFS 可扩展+补回丢失断言 · v1.33 工程参数+环境参数迁入 config · v1.34 logs 目录归整+禁字节码缓存 · v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告）。
+v1.9 规则瘦身/移除参数 · v1.10 CXK 规则 · v1.11 记忆保存时机 · v1.12 config 外置+schema3 · v1.13 删 z 字段 · v1.14 首显钩子实名+唯一dlx+DXF先验 · v1.15 枚举读取回归+护栏 · v1.16 组默认展开 · v1.17 JRT 异形回退+删面收紧+开链修复 · v1.18 SetEnum 通道+dlx 唯一名恢复 · v1.19 全件恢复默认 · v1.20 调试脚印独立文件 · v1.21 单列布局 · v1.22 移除反转/撑宽 · v1.23~28 JRT 判据迭代（面体检→碎片→型20 定案；删面安全包装） · v1.29 ref 自助配置 · v1.30 探测链废弃+ref 必填+ABS/OFF 删除 · v1.31 CXK 件隐藏半径 · v1.32 ZMODE_DEFS 可扩展+补回丢失断言 · v1.33 工程参数+环境参数迁入 config · v1.34 logs 目录归整+禁字节码缓存 · v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 nx_zero_ref.py + git 版本管理启用（首次推送 github xlzxld/HYT-NX）。
 
 **NX10/12 向下兼容改造（进行中，暂未 bump 版本号，待端到端 `--batch` 通过后定）**：主脚本新增 `_add_to_section_compat`/`_sc_rule_options`/`_import_module_from_path` 三兼容助手 + EdgeBlend 逐属性守卫（详见 §4 第 21~24 条与 `docs\NX10-12兼容性评估报告.md` v2.0）；`--selftest` 全绿；探针 `probe_nx_compat.py` 迭代至 v2.2。
 
@@ -117,4 +130,5 @@ v1.9 规则瘦身/移除参数 · v1.10 CXK 规则 · v1.11 记忆保存时机 �
 - 中文交流；计划要详细，拿不准就问；
 - **不做自动备份**（用户手动备份），直接改；
 - 文档只在用户要求时更新；
-- 改动先在 `test\` 验证，用户实测通过再动正式目录。
+- 改动先在 `test\` 验证，用户实测通过再动正式目录；
+- 每次用户确认更新后：bump 小版本 + git commit/tag/push（用户 2026-09 指定；大版本升级由用户临时决定）。

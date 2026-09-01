@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-nx_extrude_runner.py — NX 2312 分层拉伸自动化（CAD DXF → 3D）  v1.35  2026-08-31
+nx_extrude_runner.py — NX 2312 分层拉伸自动化（CAD DXF → 3D）  v1.36  2026-09-02
 
+v1.36: 标准件全面归零(ref 恒为 [0,0,0], 配置坐标维护终结):
+      ①14 个 stdparts prt 用归零工具(nx_zero_ref.py)把定位点平移到零件
+        原点(图形区点定位点→提升→移除参数→另存), 定位特征精确落在图纸
+        定位点上; ②nx_std_config.py 与 json 记忆中的 ref 全部清零——
+        放置公式 锚点−R·ref+off 在 ref=[0,0,0] 时精确等于锚点, -Z 翻转
+        反号问题(v1.35 ④)随之消失; ③新增独立工具 nx_zero_ref.py:
+        复用窗口①选择框+对话框点选定位点, 预览/写回全自动, 详见该文件
+        头注释; ④git 仓库启用: 每次确认更新即提交+tag。
 v1.35: 全面代码审计修复(高1/中16/低15, 详见审计报告):
       ①【高】DXF 不支持实体(LWPOLYLINE 等)不再静默丢弃——计数+日志
         +建模图层命中时弹窗; ②SUBTRACT 件无 FLB 体可布尔时保留独立体
@@ -441,7 +449,7 @@ _JRT_R_MIN = _cfg_num(getattr(_USER_CFG, "JRT_R_MIN_DEFAULT", 3.7)
 # §0 参数表与常量(单一数据源: 新增图层 = 加一行)
 # ============================================================================
 
-SCRIPT_VERSION = "1.35"
+SCRIPT_VERSION = "1.36"
 
 
 def _cfg(key, default):
