@@ -49,6 +49,8 @@
 | 链环判据(v1.35) | find_chains 3×3 邻桶搜索(量化格边界断口不再漏配)+T 形三叉按方向延续选段；organize_loops 重复描线环去重(否则被误判为孔)+8 顶点投票包含判定——v1.29"最小包含环"定案不变 |
 | CXK 切层护栏(v1.35) | 窗口③把 CXK 件切到圆心层时半径框不存在→收集侧重置 0~15 并提示核对(防旧全半径海量锚点) |
 | SUBTRACT 兜底(v1.35) | 无 FLB 体可布尔或布尔未生效时**保留独立体**并记日志——不得走删体分支(否则孔没切件也没了) |
+| JT 联动(v1.37) | JT 起止随 FLB 双模式联动：普通=起点+10/终点-15，针阀=起点+15/终点-15（FLB -40/-85 → JT -30/-100 与 -25/-100）；偏移表 config `JT_LINK_MODES` 可改，模式选择记忆 json（jt_link_mode）；联动后仍可单独改，再动 FLB 按当前模式覆盖 |
+| CX 联动(v1.38) | CX 起始恒=JT 起始，CX 结束=假体(JT)结束−`CX_LINK_END_OFFSET`（默认 35；假体结束 -35 → CX -70） |
 | 标准件归零(v1.36) | 14 个 prt 定位点已平移到零件原点(ref=[0,0,0])——放置公式在 ref=0 时精确等于锚点，-Z 翻转反号问题自然消失；输出件从"模型模板"复制而来(带建模应用记录, 打开直进建模)；**新件不归零就不放置可用性**——ref 恒 0, 未归零件会整体错位 |
 | JT 联动(v1.37) | JT 起止随 FLB 双模式联动：普通=起点+10/终点-15，针阀=起点+15/终点-15（FLB -40/-85 → JT -30/-100 与 -25/-100）；偏移表 config `JT_LINK_MODES` 可改，模式选择记忆 json（jt_link_mode）；联动后仍可单独改，再动 FLB 按当前模式覆盖 |
 
@@ -112,18 +114,20 @@
 | `STD_PART_DEFAULTS` | 标准件规则表（两级匹配；ref 已全部归零为 [0,0,0]，勿再填实测值） |
 | `ZMODE_DEFS` | Z 基准模式表（可自行新增基准） |
 | `JT_LINK_MODES` / `JT_LINK_DEFAULT` | JT 联动偏移表（普通模式 +10/-15、针阀模式 +15/-15）与默认模式（普通模式） |
+| `CX_LINK_END_OFFSET` | CX 结束偏移（默认 35；CX 结束=假体(JT)结束−此值） |
+| `JT_LINK_MODES` / `JT_LINK_DEFAULT` | JT 联动偏移表（普通模式 +10/-15、针阀模式 +15/-15）与默认模式（普通模式） |
 | `LINK_OFFSETS` | 分层联动偏移（RZ+13/DK-3/DP+6.7023） |
 | `JRT_INTRUSION_DEFAULT` | 加热条入侵深度默认 7.5 |
 | `JRT_OFFSET/JRT_DRAFT` | 壁偏置 5.0/拔模 2.0 |
 | `JRT_COLOR_STRIP/MODEL/TRANSLUCENCY` | 186/78/50 |
 | `NX_LAYER_START/JRT/DYNAMIC_START/MAX` | 图层分配 11/18/19/70 |
-| `LAYER_START_DEFAULTS` | 各层初始拉伸距离（全新记忆时的占位值） |
+| `LAYER_START_DEFAULTS` | 兜底初始拉伸距离（FLB -40/-85；联动层由 runner 按 FLB 推导，表中数值为普通模式快照） |
 | `STD_MAX_ANCHORS` | 单件放置数护栏 200 |
 | `JRT_BLEND_R/R_STEP/R_MIN_DEFAULT` | 3.9/0.1/3.7（永不进记忆） |
 
 ## 7. 版本历史（详见主脚本文件头；此处仅骨架）
 
-v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test）。
+v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导。
 
 **NX10/12 向下兼容改造（进行中，暂未 bump 版本号，待端到端 `--batch` 通过后定）**：主脚本新增 `_add_to_section_compat`/`_sc_rule_options`/`_import_module_from_path` 三兼容助手 + EdgeBlend 逐属性守卫（详见 §4 第 21~24 条与 `docs\NX10-12兼容性评估报告.md` v2.0）；`--selftest` 全绿；探针 `probe_nx_compat.py` 迭代至 v2.2。
 

@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-nx_extrude_runner.py — NX 2312 分层拉伸自动化（CAD DXF → 3D）  v1.37  2026-09-01
+nx_extrude_runner.py — NX 2312 分层拉伸自动化（CAD DXF → 3D）  v1.38  2026-09-01
 
+v1.38: CX 联动 + 兜底默认: CX 起始恒=JT 起始, CX 结束=假体(JT)结束
+      −CX_LINK_END_OFFSET(config 默认 35; 假体结束 -35 → CX -70);
+      无记忆兜底默认改为 FLB -40/-85, 其余联动层按规则从 FLB 推导
+      (普通模式 JT -30/-100, CX -30/-135)。
 v1.37: JT 联动(双模式): JT 起止随 FLB 实时联动, 窗口②新增"JT 联动模式"
       下拉(普通模式/针阀模式), 选择记忆到 json(jt_link_mode):
       普通模式=起点+10/终点-15 (FLB -40/-85 → JT -30/-100);
@@ -455,7 +459,7 @@ _JRT_R_MIN = _cfg_num(getattr(_USER_CFG, "JRT_R_MIN_DEFAULT", 3.7)
 # §0 参数表与常量(单一数据源: 新增图层 = 加一行)
 # ============================================================================
 
-SCRIPT_VERSION = "1.37"
+SCRIPT_VERSION = "1.38"
 
 
 def _cfg(key, default):
@@ -587,6 +591,16 @@ def jt_mode_with_memory(state):
     if isinstance(m, str) and m in JT_LINK_MODES:
         return m
     return JT_LINK_DEFAULT
+
+
+# CX 联动(v1.38): CX 起始恒=JT 起始; CX 结束 = 假体(JT)结束 − 偏移
+# (config CX_LINK_END_OFFSET 可改, 默认 35; 假体结束 -35 → CX -70)。
+_CX_LINK_END_OFF = _cfg_num(_cfg("CX_LINK_END_OFFSET", 35.0), 35.0)
+
+
+def _cx_link_values(jt_start, jt_end):
+    """JT 起/止 → CX (起始, 结束): 起始同 JT, 结束=JT 结束−偏移。"""
+    return (jt_start, jt_end - _CX_LINK_END_OFF)
 
 
 def derive_linked(top, bottom, jt_mode=None):
@@ -849,7 +863,16 @@ def script_dir():
 
 
 def default_params():
-    return {r[0]: (float(r[3]), float(r[4])) for r in LAYER_TABLE}
+    """无记忆时的兜底参数: FLB 取 config 默认(-40/-85), 其余联动层按
+    联动规则从 FLB 推导(JT 按默认模式, CX 随 JT)。"""
+    out = {r[0]: (float(r[3]), float(r[4])) for r in LAYER_TABLE}
+    s, e = out[TARGET_CODE]
+    linked = derive_linked(max(s, e), min(s, e), jt_mode=JT_LINK_DEFAULT)
+    for code, (v1, v2) in linked.items():
+        if code in out:
+            out[code] = (v1, v2)
+    out["CX"] = _cx_link_values(*linked["JT"])
+    return out
 
 
 # ============================================================================
@@ -4428,9 +4451,23 @@ class ParamDialog(_BlockDialogBase):
                                              self.jt_mode)
                     self._find("JT_start").Value = v1
                     self._find("JT_end").Value = v2
+                    cs, ce = _cx_link_values(v1, v2)
+                    self._find("CX_start").Value = cs
+                    self._find("CX_end").Value = ce
                     return 0
             except Exception as ex:
                 self._dbg_footprint("update_cb jt_link 异常: %r" % ex)
+            # CX 跟 JT(v1.38): 手改 JT 起/止 → CX 立即跟随
+            try:
+                if block in (self._find("JT_start"), self._find("JT_end")):
+                    js = self._get_double("JT_start", 0.0)
+                    je = self._get_double("JT_end", 0.0)
+                    cs, ce = _cx_link_values(js, je)
+                    self._find("CX_start").Value = cs
+                    self._find("CX_end").Value = ce
+                    return 0
+            except Exception as ex:
+                self._dbg_footprint("update_cb jt->cx 异常: %r" % ex)
             flb_s = self._find("FLB_start")
             flb_e = self._find("FLB_end")
             if block in (flb_s, flb_e):
@@ -4445,6 +4482,14 @@ class ParamDialog(_BlockDialogBase):
                             self._find(bid).Value = val
                         except Exception:
                             pass
+                # CX 跟 JT(v1.38): 起始同 JT, 结束=JT 结束−偏移
+                jt1, jt2 = linked["JT"]
+                cs, ce = _cx_link_values(jt1, jt2)
+                try:
+                    self._find("CX_start").Value = cs
+                    self._find("CX_end").Value = ce
+                except Exception:
+                    pass
         except Exception as ex:
             self._dbg_footprint("update_cb(%r) 异常: %r"
                                 % (getattr(block, "Name", block), ex))
@@ -4965,6 +5010,16 @@ def selftest(dxf_path=None):
     check("derive_linked 带 jt_mode 输出 JT",
           derive_linked(-40.0, -85.0, jt_mode="针阀模式")["JT"]
           == (-25.0, -100.0))
+    check("CX 联动: 起始同 JT, 结束=JT 结束-35",
+          _cx_link_values(-30.0, -100.0) == (-30.0, -135.0))
+    check("CX 联动示例: 假体(JT)结束-35 → CX 结束-70",
+          _cx_link_values(-30.0, -35.0) == (-30.0, -70.0))
+    dp = default_params()
+    check("兜底 FLB -40/-85", dp["FLB"] == (-40.0, -85.0))
+    check("兜底联动层推导(普通模式)",
+          dp["JT"] == (-30.0, -100.0) and dp["CX"] == (-30.0, -135.0)
+          and dp["RZ"] == (-72.0, -85.0) and dp["DK"] == (-40.0, -43.0)
+          and dp["LS"] == (-40.0, -85.0) and dp["DP"][0] == -78.2977)
     check("jt 模式记忆恢复", jt_mode_with_memory(
         {"jt_link_mode": "针阀模式"}) == "针阀模式")
     check("jt 模式记忆无效回默认",
