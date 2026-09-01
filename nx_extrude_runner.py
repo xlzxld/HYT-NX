@@ -1918,6 +1918,16 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
     """
     try:
         p = _json_path()
+        if not isinstance(jt_link_mode, str):
+            # 未显式给模式 → 保留旧记忆里的模式(v1.38 修复: 选件落盘等
+            # 局部保存不带 jt_link_mode, 曾把已选模式抹成 null)
+            try:
+                with io.open(p, encoding="utf-8") as f_old:
+                    _old_mode = json.load(f_old).get("jt_link_mode")
+                if isinstance(_old_mode, str):
+                    jt_link_mode = _old_mode
+            except Exception:
+                pass
         tmp = "%s.tmp" % p
         with io.open(tmp, "w", encoding="utf-8") as f:
             json.dump({"schema": SCHEMA_VERSION,
@@ -5535,6 +5545,27 @@ def selftest(dxf_path=None):
         finally:
             globals()["_json_path"] = _saved_jp
         check("save_state 原子写+类型容错", _ok_atomic)
+        # jt_link_mode 传 None → 保留旧记忆里的模式(v1.38 修复)
+        _jp3 = os.path.join(_td, "jt_mem_test.json")
+        if os.path.isfile(_jp3):
+            os.remove(_jp3)
+        globals()["_json_path"] = lambda: _jp3
+        try:
+            save_state("X:/a.dxf", {"FLB": (1.0, 2.0)},
+                       selected=["a.prt"], jrt_se=(1, 2),
+                       jt_link_mode="针阀模式")
+            save_state("X:/b.dxf", {"FLB": (1.0, 2.0)},
+                       selected=["a.prt"], jrt_se=(1, 2))
+            _st3 = load_state()
+        finally:
+            globals()["_json_path"] = _saved_jp
+        check("jt_link_mode 传 None 保留旧值(v1.38)",
+              _st3.get("jt_link_mode") == "针阀模式"
+              and _st3.get("dxf_path") == "X:/b.dxf")
+        try:
+            os.remove(_jp3)
+        except OSError:
+            pass
         # 异常: _find 对 None 不缓存(可重试)
         class _FakeTop(object):
             def __init__(self):
@@ -5752,7 +5783,10 @@ def main():
                        params, std_rules_all, selected=selected,
                        jrt_se=(state.get("jrt_se")
                                if state.get("schema") == SCHEMA_VERSION
-                               else None))
+                               else None),
+                       jt_link_mode=(state.get("jt_link_mode")
+                                     if state.get("schema") == SCHEMA_VERSION
+                                     else None))
         std_rules = {f: std_rules_all[f] for f in selected}
     else:
         std_rules = {}
