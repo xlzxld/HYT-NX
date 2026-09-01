@@ -11,10 +11,10 @@
 | 生成物 | dlx/运行报告/调试脚印统一写入 `logs\`；__pycache__ 已禁生成 |
 | 配置 | `nx_std_config.py`（用户手工编辑；主脚本 `_load_user_config()` 动态加载，缺文件/缺键逐项回退内置默认） |
 | 标准件库 | `stdparts\*.prt`（必须与脚本同目录；v1.36 起 14 件已全部归零，定位点=零件原点） |
-| 归零工具 | `nx_zero_ref.py`（v1.36 新增：日记播放，逐件点定位点，自动预览/写回归零副本；细节见文件头注释） |
+| 归零工具 | `tools\nx_zero_ref.py`（v1.36 新增：日记播放，逐件点定位点，自动预览/写回归零副本；细节见文件头注释） |
 | 版本管理 | git 仓库（origin=github.com/xlzxld/HYT-NX，main 分支）；每次用户确认更新即 bump 小版本+commit+tag+push |
-| 期刊留档 | `journals\`（journal-bzj 定位期刊 / journal-jrt 加热条工序 / journal-jxh 接线盒 / journal-djk 点胶口——**定位规则与工序的地面真值**） |
-| 开发目录 | `test\`（回归脚本在 `test\.zcode\`，已指向本目录） |
+| 期刊留档 | `journals\`（**未随迁，当前不存在**；历史参考） |
+| 开发目录 | `tools\`（归零工具/探针/提取）+ `test\`（回归脚本 + fixtures，根 = test 上一级） |
 | 运行方式 | NX 内 工具→日记→播放；批量 `run_journal.exe 脚本 --batch`；离线自测 `--selftest`（155 项断言；总数随 config 标准件条目数浮动） |
 
 ## 2. 执行流水线（run_pipeline 阶段序）
@@ -50,6 +50,7 @@
 | CXK 切层护栏(v1.35) | 窗口③把 CXK 件切到圆心层时半径框不存在→收集侧重置 0~15 并提示核对(防旧全半径海量锚点) |
 | SUBTRACT 兜底(v1.35) | 无 FLB 体可布尔或布尔未生效时**保留独立体**并记日志——不得走删体分支(否则孔没切件也没了) |
 | 标准件归零(v1.36) | 14 个 prt 定位点已平移到零件原点(ref=[0,0,0])——放置公式在 ref=0 时精确等于锚点，-Z 翻转反号问题自然消失；输出件从"模型模板"复制而来(带建模应用记录, 打开直进建模)；**新件不归零就不放置可用性**——ref 恒 0, 未归零件会整体错位 |
+| JT 联动(v1.37) | JT 起止随 FLB 双模式联动：普通=起点+10/终点-15，针阀=起点+15/终点-15（FLB -40/-85 → JT -30/-100 与 -25/-100）；偏移表 config `JT_LINK_MODES` 可改，模式选择记忆 json（jt_link_mode）；联动后仍可单独改，再动 FLB 按当前模式覆盖 |
 
 ## 4. 坑点清单（血泪史，逐条都有事故背书）
 
@@ -98,7 +99,7 @@
 
 1. 改动直接针对本目录的主脚本/config（v1.34 起只有一份文件；改前提醒用户手动备份）。回归套件在 `dev\.zcode\`（自相对路径+自带 fixtures\，整个 NX\ 移走后照样能跑）；
 2. `python -m py_compile` + `--selftest` 全绿（现 155 项；总数随 config `STD_PART_DEFAULTS` 条目数浮动）；
-3. NX 批量回归：`test\.zcode\test_batch111.py`（3Dtest 全家族两遍）+ `test01x.py`（01.dxf 加热条）+ 可选 test123/test_ref；
+3. NX 批量回归：`test\test_batch111.py`（3Dtest 全家族两遍）+ `test\test01x.py`（01.dxf 加热条）+ 可选 test123/test_ref；
 4. **用户实测通过**后再移动同步到本目录（用户曾明确要求此流程）；
 5. 文档同步更新（使用手册 + 本文件）；
 6. **git 收尾（v1.36 起）**：用户确认更新后 bump 小版本（一直 1.x，大版本由用户临时定）→ `python -m py_compile` + `--selftest` 全绿 → `git add -A && git commit && git tag v1.x && git push --tags`。
@@ -110,6 +111,7 @@
 | `CONFIG_SCHEMA_VERSION` | 记忆版本守卫（加大=丢弃旧规则记忆**与界面参数**；现为 4，v1.35 已重置一次旧记忆） |
 | `STD_PART_DEFAULTS` | 标准件规则表（两级匹配；ref 已全部归零为 [0,0,0]，勿再填实测值） |
 | `ZMODE_DEFS` | Z 基准模式表（可自行新增基准） |
+| `JT_LINK_MODES` / `JT_LINK_DEFAULT` | JT 联动偏移表（普通模式 +10/-15、针阀模式 +15/-15）与默认模式（普通模式） |
 | `LINK_OFFSETS` | 分层联动偏移（RZ+13/DK-3/DP+6.7023） |
 | `JRT_INTRUSION_DEFAULT` | 加热条入侵深度默认 7.5 |
 | `JRT_OFFSET/JRT_DRAFT` | 壁偏置 5.0/拔模 2.0 |
@@ -121,7 +123,7 @@
 
 ## 7. 版本历史（详见主脚本文件头；此处仅骨架）
 
-v1.9 规则瘦身/移除参数 · v1.10 CXK 规则 · v1.11 记忆保存时机 · v1.12 config 外置+schema3 · v1.13 删 z 字段 · v1.14 首显钩子实名+唯一dlx+DXF先验 · v1.15 枚举读取回归+护栏 · v1.16 组默认展开 · v1.17 JRT 异形回退+删面收紧+开链修复 · v1.18 SetEnum 通道+dlx 唯一名恢复 · v1.19 全件恢复默认 · v1.20 调试脚印独立文件 · v1.21 单列布局 · v1.22 移除反转/撑宽 · v1.23~28 JRT 判据迭代（面体检→碎片→型20 定案；删面安全包装） · v1.29 ref 自助配置 · v1.30 探测链废弃+ref 必填+ABS/OFF 删除 · v1.31 CXK 件隐藏半径 · v1.32 ZMODE_DEFS 可扩展+补回丢失断言 · v1.33 工程参数+环境参数迁入 config · v1.34 logs 目录归整+禁字节码缓存 · v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 nx_zero_ref.py + git 版本管理启用（首次推送 github xlzxld/HYT-NX）。
+v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test）。
 
 **NX10/12 向下兼容改造（进行中，暂未 bump 版本号，待端到端 `--batch` 通过后定）**：主脚本新增 `_add_to_section_compat`/`_sc_rule_options`/`_import_module_from_path` 三兼容助手 + EdgeBlend 逐属性守卫（详见 §4 第 21~24 条与 `docs\NX10-12兼容性评估报告.md` v2.0）；`--selftest` 全绿；探针 `probe_nx_compat.py` 迭代至 v2.2。
 

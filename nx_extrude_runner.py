@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-nx_extrude_runner.py — NX 2312 分层拉伸自动化（CAD DXF → 3D）  v1.36  2026-09-02
+nx_extrude_runner.py — NX 2312 分层拉伸自动化（CAD DXF → 3D）  v1.37  2026-09-01
 
+v1.37: JT 联动(双模式): JT 起止随 FLB 实时联动, 窗口②新增"JT 联动模式"
+      下拉(普通模式/针阀模式), 选择记忆到 json(jt_link_mode):
+      普通模式=起点+10/终点-15 (FLB -40/-85 → JT -30/-100);
+      针阀模式=起点+15/终点-15 (FLB -40/-85 → JT -25/-100)。
+      偏移表 JT_LINK_MODES 与默认模式 JT_LINK_DEFAULT 在 config 可改;
+      联动后 JT 仍可单独改, 再动 FLB 会按当前模式覆盖。
 v1.36: 标准件全面归零(ref 恒为 [0,0,0], 配置坐标维护终结):
       ①14 个 stdparts prt 用归零工具(nx_zero_ref.py)把定位点平移到零件
         原点(图形区点定位点→提升→移除参数→另存), 定位特征精确落在图纸
@@ -449,7 +455,7 @@ _JRT_R_MIN = _cfg_num(getattr(_USER_CFG, "JRT_R_MIN_DEFAULT", 3.7)
 # §0 参数表与常量(单一数据源: 新增图层 = 加一行)
 # ============================================================================
 
-SCRIPT_VERSION = "1.36"
+SCRIPT_VERSION = "1.37"
 
 
 def _cfg(key, default):
@@ -524,7 +530,7 @@ TARGET_CODE   = "FLB"                       # 布尔减目标图层
 # 对话框分组: (组id, 组标题, [图层码...]) — 按布尔规则分组
 DIALOG_GROUPS = [
     ("grp_flb",   "FLB 分流板（基准体；改动两项后 LS/RZ/DK/DP/JRT 自动联动）", ["FLB"]),
-    ("grp_plain", "普通拉伸图层（起始=结束=0 则跳过）", ["JT", "CX"]),
+    ("grp_plain", "普通拉伸图层（JT 随 FLB 联动；起始=结束=0 则跳过）", ["JT", "CX"]),
     ("grp_sub",   "拉伸并从 FLB 减去（随 FLB 联动，可单独改）", ["LS", "RZ", "DK", "DP"]),
 ]
 
@@ -543,11 +549,53 @@ LINK_RULES = {
 }
 JRT_FROM_TOP = _cfg_num(_cfg("JRT_INTRUSION_DEFAULT", 7.5), 7.5)
 
+# JT 联动模式(v1.37): config JT_LINK_MODES 提供{模式名: (起偏移, 止偏移)},
+# JT 起 = FLB top + 起偏移, JT 止 = FLB bottom + 止偏移; 缺失/坏行回内置。
+_JT_LINK_FALLBACK = {"普通模式": (10.0, -15.0), "针阀模式": (15.0, -15.0)}
+JT_LINK_MODES = dict(_JT_LINK_FALLBACK)
+_JT_RAW = _cfg("JT_LINK_MODES", None)
+if isinstance(_JT_RAW, dict) and _JT_RAW:
+    _jt = {}
+    for _k, _v in _JT_RAW.items():
+        try:
+            _a, _b = float(_v[0]), float(_v[1])
+        except Exception:
+            continue
+        if _a == _a and _b == _b:
+            _jt[str(_k)] = (_a, _b)
+    if _jt:
+        JT_LINK_MODES = _jt
+    else:
+        _note("JT_LINK_MODES 无有效行, 回退内置两种模式。")
+JT_LINK_DEFAULT = str(_cfg("JT_LINK_DEFAULT", "普通模式"))
+if JT_LINK_DEFAULT not in JT_LINK_MODES:
+    JT_LINK_DEFAULT = next(iter(JT_LINK_MODES))
+    _note("JT_LINK_DEFAULT 模式名无效, 回退 %s。" % JT_LINK_DEFAULT)
+JT_LINK_OPTS = [(k, k) for k in JT_LINK_MODES]
 
-def derive_linked(top, bottom):
-    """FLB top/bottom → 联动层参数 {code: (v1, v2)} + JRT 区间。"""
+
+def _jt_link_values(top, bottom, mode):
+    """FLB top/bottom + 联动模式 → JT (起始, 结束)。模式无效回默认模式。"""
+    off = (JT_LINK_MODES.get(mode) or JT_LINK_MODES.get(JT_LINK_DEFAULT)
+           or _JT_LINK_FALLBACK["普通模式"])
+    return (top + off[0], bottom + off[1])
+
+
+def jt_mode_with_memory(state):
+    """打开时的 JT 联动模式: 记忆有效用记忆, 否则回 config 默认。"""
+    m = state.get("jt_link_mode")
+    if isinstance(m, str) and m in JT_LINK_MODES:
+        return m
+    return JT_LINK_DEFAULT
+
+
+def derive_linked(top, bottom, jt_mode=None):
+    """FLB top/bottom → 联动层参数 {code: (v1, v2)} + JRT 区间。
+    jt_mode 给定时额外返回 JT 联动值(v1.37)。"""
     out = {code: fn(top, bottom) for code, fn in LINK_RULES.items()}
     out["JRT"] = (top, top - JRT_FROM_TOP)
+    if jt_mode is not None:
+        out["JT"] = _jt_link_values(top, bottom, jt_mode)
     return out
 
 # ---------------------------------------------------------------------------
@@ -1593,8 +1641,9 @@ def _opt_index(opts, value):
     return 0
 
 
-def build_dlx(params=None, jrt=None):
+def build_dlx(params=None, jrt=None, jt_mode=None):
     """从 LAYER_TABLE + JRT 参数生成窗口②完整 .dlx XML(UTF-8)。
+    jt_mode 给定时在普通拉伸组顶部生成"JT 联动模式"下拉(v1.37)。
 
     (v1.35) 删除两段式时代的休眠"标准件组"生成——三段式改造后 main 恒以
     无标准件组调用本函数, 标准件参数页由 build_std_dlx(窗口③)负责。
@@ -1620,6 +1669,11 @@ def build_dlx(params=None, jrt=None):
     groups_xml = []
     for gid, title, codes in DIALOG_GROUPS:
         children = []
+        if gid == "grp_plain" and jt_mode:
+            children.append(_blk_enum(
+                "jt_link", "JT 联动模式",
+                [t for _v, t in JT_LINK_OPTS],
+                _opt_index(JT_LINK_OPTS, jt_mode)))
         for code in codes:
             s, e = params.get(code, (0.0, 0.0))
             children.append(_blk_double(code + "_start", "%s %s 起始距离" % (code, zh[code]), s))
@@ -1783,9 +1837,9 @@ def write_std_dlx(std_rules, params):
     return None
 
 
-def write_dlx(params=None, jrt=None):
+def write_dlx(params=None, jrt=None, jt_mode=None):
     """生成窗口② .dlx 到脚本目录(唯一名), 失败回退 %TEMP%(对应 dt:find-dcl 回退链)。"""
-    xml = build_dlx(params, jrt)
+    xml = build_dlx(params, jrt, jt_mode)
     candidates = [_fresh_dlx_path("nx_extrude_runner"),
                   _temp_dlx_path("nx_extrude_runner")]
     for path in candidates:
@@ -1831,11 +1885,13 @@ def _name_list(v):
     return []
 
 
-def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None):
+def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
+               jt_link_mode=None):
     """落盘记忆(临时文件+原子替换: 中途崩溃/断电不损原记忆)。
 
     jrt_se 只存加热条起始/结束两个距离(三个几何参数永不落盘,
     打开恒 3.9/0.1/3.7); 传 None 时原样写 null(=无记忆, 按 FLB 联动)。
+    jt_link_mode 存 JT 联动模式(v1.37); None 写 null(=无记忆, 回 config 默认)。
     """
     try:
         p = _json_path()
@@ -1847,7 +1903,10 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None):
                        "selected": _name_list(selected),
                        "jrt_se": (list(jrt_se)
                                   if isinstance(jrt_se, (list, tuple))
-                                  and len(jrt_se) == 2 else None)}, f,
+                                  and len(jrt_se) == 2 else None),
+                       "jt_link_mode": (jt_link_mode
+                                        if isinstance(jt_link_mode, str)
+                                        else None)}, f,
                       ensure_ascii=False, indent=2)
         os.replace(tmp, p)
     except Exception as ex:
@@ -3918,7 +3977,8 @@ class SelectionDialog(object):
 
 
 def execute_pipeline(dxf, params, jrt, std_rules, session,
-                     std_rules_all=None, selected=None, ui=None):
+                     std_rules_all=None, selected=None, ui=None,
+                     jt_link_mode=None):
     """三段式最终执行: 校验 DXF → 保存 JSON(全部规则+选中清单) → run_pipeline。"""
     import NXOpen
 
@@ -3937,7 +3997,8 @@ def execute_pipeline(dxf, params, jrt, std_rules, session,
     full_rules.update(std_rules or {})
     save_state(dxf, {k: list(v) for k, v in params.items()}, full_rules,
                selected=selected,
-               jrt_se=[jrt.get("start", 0.0), jrt.get("end", 0.0)])
+               jrt_se=[jrt.get("start", 0.0), jrt.get("end", 0.0)],
+               jt_link_mode=jt_link_mode)
     ok, _stats = run_pipeline(dxf, params, session=session,
                               work_part=session.Parts.Work,
                               log=Log(session), std_rules=std_rules, jrt=jrt)
@@ -4198,6 +4259,7 @@ class ParamDialog(_BlockDialogBase):
         self.result_params = None
         self.result_dxf = None
         self.result_jrt = None
+        self.result_mode = None
         self.execute_on_ok = execute_on_ok
         self.state = load_state()
         self.params = merge_params(self.state)
@@ -4208,10 +4270,26 @@ class ParamDialog(_BlockDialogBase):
         self.selected = list(selected) if selected is not None \
             else sorted(self.std_rules.keys())
         self.jrt = jrt_with_memory(self.state, self.params)
+        self.jt_mode = jt_mode_with_memory(self.state)
         self._shown = False
         self._initializing = False
 
     # ---------- 辅助 ----------
+    def _current_jt_mode(self):
+        """读 jt_link 枚举当前模式(标签优先, 序号次之; 失败回上次模式)。"""
+        b = self._find("jt_link")
+        if b is not None:
+            try:
+                s = b.ValueAsString
+                if s and s in JT_LINK_MODES:
+                    return s
+            except Exception:
+                pass
+            try:
+                return JT_LINK_OPTS[int(b.Value)][0]
+            except Exception:
+                pass
+        return self.jt_mode
     def _get_path(self):
         b = self._find("dxf_file")
         try:
@@ -4263,6 +4341,13 @@ class ParamDialog(_BlockDialogBase):
             self._set_label("grp_flb", DIALOG_GROUPS[0][1])
             self._set_label("grp_plain", DIALOG_GROUPS[1][1])
             self._set_label("grp_sub", DIALOG_GROUPS[2][1])
+            # JT 联动模式预填(v1.37)
+            try:
+                self._set_enum_idx("jt_link",
+                                   _opt_index(JT_LINK_OPTS, self.jt_mode),
+                                   [t for _v, t in JT_LINK_OPTS])
+            except Exception:
+                pass
             zh = {r[0]: r[1] for r in LAYER_TABLE}
             for _gid, _t, codes in DIALOG_GROUPS:
                 for code in codes:
@@ -4309,8 +4394,9 @@ class ParamDialog(_BlockDialogBase):
         return 0
 
     def update_cb(self, block):
-        """FLB 起始/结束任一变动 → 按 LINK_RULES 实时刷新 LS/RZ/DK/DP 与 JRT
-        (联动后各层仍可单独修改; 再改 FLB 会再次覆盖)。"""
+        """FLB 起始/结束任一变动 → 按 LINK_RULES 实时刷新 LS/RZ/DK/DP/JT
+        与 JRT(联动后各层仍可单独修改; 再改 FLB 会再次覆盖);
+        "JT 联动模式"切换 → 按新模式重推 JT(v1.37)。"""
         if getattr(self, "_initializing", False):
             return 0                    # 预填写值不算用户改动
         try:
@@ -4332,12 +4418,26 @@ class ParamDialog(_BlockDialogBase):
                     return 0
             except Exception as ex:
                 self._dbg_footprint("update_cb jrt_reset 异常: %r" % ex)
+            # JT 联动模式切换: 按新模式重推 JT(v1.37)
+            try:
+                if block is self._find("jt_link"):
+                    self.jt_mode = self._current_jt_mode()
+                    s0 = self._get_double("FLB_start", 0.0)
+                    e0 = self._get_double("FLB_end", 0.0)
+                    v1, v2 = _jt_link_values(max(s0, e0), min(s0, e0),
+                                             self.jt_mode)
+                    self._find("JT_start").Value = v1
+                    self._find("JT_end").Value = v2
+                    return 0
+            except Exception as ex:
+                self._dbg_footprint("update_cb jt_link 异常: %r" % ex)
             flb_s = self._find("FLB_start")
             flb_e = self._find("FLB_end")
             if block in (flb_s, flb_e):
                 s = self._get_double("FLB_start", 0.0)
                 e = self._get_double("FLB_end", 0.0)
-                linked = derive_linked(max(s, e), min(s, e))
+                linked = derive_linked(max(s, e), min(s, e),
+                                       jt_mode=self._current_jt_mode())
                 for code, (v1, v2) in linked.items():
                     for suffix, val in (("_start", v1), ("_end", v2)):
                         bid = ("jrt" if code == "JRT" else code) + suffix
@@ -4356,6 +4456,7 @@ class ParamDialog(_BlockDialogBase):
         self.result_params = None
         self.result_jrt = None
         self.result_dxf = None
+        self.result_mode = None
         return 0
 
     def _collect(self):
@@ -4384,6 +4485,7 @@ class ParamDialog(_BlockDialogBase):
             self.result_params = params
             self.result_jrt = jrt
             self.result_dxf = dxf
+            self.result_mode = self._current_jt_mode()
             return 0
         std_rules = self._collect_std()
         self.params = params
@@ -4391,7 +4493,8 @@ class ParamDialog(_BlockDialogBase):
         self.jrt = jrt
         ok = execute_pipeline(dxf, params, jrt, std_rules, self.theSession,
                               std_rules_all=self.std_rules_all,
-                              selected=self.selected, ui=self.theUI)
+                              selected=self.selected, ui=self.theUI,
+                              jt_link_mode=self._current_jt_mode())
         return 0 if ok else 1
 
     def apply_cb(self):
@@ -4435,7 +4538,7 @@ class StdParamsDialog(_BlockDialogBase):
     """
 
     def __init__(self, dlx_path, std_rules, params, jrt, dxf, selected,
-                 std_rules_all=None):
+                 std_rules_all=None, jt_mode=None):
         import NXOpen
         import NXOpen.BlockStyler
         self.nx = NXOpen
@@ -4458,6 +4561,7 @@ class StdParamsDialog(_BlockDialogBase):
         self.std_files = sorted(std_rules.keys())
         self.params = params
         self.jrt = jrt
+        self.jt_mode = jt_mode
         self.dxf = dxf
         self.selected = list(selected) if selected is not None else self.std_files
         self.std_rules_all = std_rules_all if std_rules_all is not None \
@@ -4564,7 +4668,8 @@ class StdParamsDialog(_BlockDialogBase):
             ok = execute_pipeline(self.dxf, self.params, self.jrt, rules,
                                   self.theSession,
                                   std_rules_all=self.std_rules_all,
-                                  selected=self.selected, ui=self.theUI)
+                                  selected=self.selected, ui=self.theUI,
+                                  jt_link_mode=self.jt_mode)
             return 0 if ok else 1
         except Exception as ex:
             self.theUI.NXMessageBox.Show("CAD3D", self.nx.NXMessageBox.DialogType.Error,
@@ -4850,6 +4955,25 @@ def selftest(dxf_path=None):
           d2["RZ"] == (13.0, 0.0) and d2["DK"] == (45.0, 42.0)
           and d2["DP"] == (6.7023, 0.0) and d2["JRT"] == (45.0, 37.5))
 
+    # 7b-2. JT 联动模式(v1.37)
+    check("derive_linked 默认不含 JT",
+          "JT" not in derive_linked(-40.0, -85.0))
+    check("JT 联动普通模式 FLB(-40,-85)→(-30,-100)",
+          _jt_link_values(-40.0, -85.0, "普通模式") == (-30.0, -100.0))
+    check("JT 联动针阀模式 FLB(-40,-85)→(-25,-100)",
+          _jt_link_values(-40.0, -85.0, "针阀模式") == (-25.0, -100.0))
+    check("derive_linked 带 jt_mode 输出 JT",
+          derive_linked(-40.0, -85.0, jt_mode="针阀模式")["JT"]
+          == (-25.0, -100.0))
+    check("jt 模式记忆恢复", jt_mode_with_memory(
+        {"jt_link_mode": "针阀模式"}) == "针阀模式")
+    check("jt 模式记忆无效回默认",
+          jt_mode_with_memory({"jt_link_mode": "不存在"}) == JT_LINK_DEFAULT)
+    check("jt 模式无记忆回默认", jt_mode_with_memory({}) == JT_LINK_DEFAULT)
+    check("窗口② dlx 含 JT 联动下拉",
+          "jt_link" in build_dlx(default_params(), dict(DEFAULT_JRT),
+                                 jt_mode="普通模式"))
+
     # 7c. enum Value 属性写入选中序号(修复"全部卡第0项"的关键)
     en = _blk_enum("t", "测试", ["甲", "乙", "丙"], 2)
     check("enum Value=选中序号", 'sname="TEMPVALUE" source="1" type="integer" value="2"'
@@ -5055,6 +5179,8 @@ def selftest(dxf_path=None):
     import inspect as _insp
     check("save_state 支持 jrt_se 字段",
           "jrt_se" in _insp.signature(save_state).parameters)
+    check("save_state 支持 jt_link_mode 字段",
+          "jt_link_mode" in _insp.signature(save_state).parameters)
     # 配置表归用户维护(压线板已由用户自行加入), 通用默认路径用保证
     # 不在表中的名字测试
     # v1.24 连接线泛化(01.dxf 环形通道: 4 条等长 6.09 跨接线)
@@ -5577,7 +5703,7 @@ def main():
         std_rules = {}
 
     # 第二段: 主参数窗口(FLB/图层/JRT; 无标准件组; OK 只收集不执行)
-    dlx = write_dlx(params, jrt)
+    dlx = write_dlx(params, jrt, jt_mode_with_memory(state))
     if not dlx:
         NXOpen.UI.GetUI().NXMessageBox.Show(
             "CAD3D", NXOpen.NXMessageBox.DialogType.Error, ".dlx 对话框文件生成失败。")
@@ -5595,7 +5721,8 @@ def main():
             dlx2 = _fresh_dlx_path("nx_extrude_runner",
                                    base_dir=tempfile.gettempdir())
             with io.open(dlx2, "w", encoding="utf-8", newline="\n") as f:
-                f.write(build_dlx(params, jrt))
+                f.write(build_dlx(params, jrt,
+                        jt_mode_with_memory(state)))
             dlg = ParamDialog(dlx2, std_rules=None, selected=selected,
                               execute_on_ok=False)
             dlg.Launch()
@@ -5612,13 +5739,15 @@ def main():
     params2 = dlg.result_params
     jrt2 = dlg.result_jrt
     dxf2 = dlg.result_dxf
+    mode2 = dlg.result_mode or jt_mode_with_memory(state)
 
     # 第二页参数即刻落盘(窗口③取消也不丢; 规则仍由窗口③/执行链路保存)
     try:
         save_state(dxf2 or resolve_dxf_path(state), params2, std_rules_all,
                    selected=selected,
                    jrt_se=[float(jrt2.get("start", 0.0)),
-                           float(jrt2.get("end", 0.0))])
+                           float(jrt2.get("end", 0.0))],
+                   jt_link_mode=mode2)
     except (TypeError, ValueError):
         pass
 
@@ -5633,7 +5762,8 @@ def main():
         sdlg = None
         try:
             sdlg = StdParamsDialog(sdx, std_rules, params2, jrt2, dxf2,
-                                   selected, std_rules_all=std_rules_all)
+                                   selected, std_rules_all=std_rules_all,
+                                   jt_mode=mode2)
             sdlg.Launch()
         except Exception as ex:
             NXOpen.UI.GetUI().NXMessageBox.Show(
@@ -5645,7 +5775,8 @@ def main():
     else:
         # 无选中标准件: 直接执行
         execute_pipeline(dxf2, params2, jrt2, {}, theSession,
-                         std_rules_all=std_rules_all, selected=selected or [])
+                         std_rules_all=std_rules_all, selected=selected or [],
+                     jt_link_mode=mode2)
 
 
 if __name__ == "__main__":
