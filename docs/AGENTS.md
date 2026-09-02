@@ -81,6 +81,7 @@
 18. 恢复/同步前确认"哪份是最新"：test 目录可能领先正式目录（用户实测时会改 test），**别用旧副本覆盖新成果**（发生过一次，靠 diff 挽救）；
 19. selftest 断言与实现必须同步——删函数时同步删断言，补函数时同步补断言（v1.30 恢复曾静默丢失一批断言，掩盖问题数轮）。
 20. `_undefined_name_check` 的函数内局部名表原只认 FunctionDef——函数内 `class Xxx:` 定义曾是盲区，会误报 NameError（v1.35 已补 ClassDef）；再遇自测"AST 未定义名称"误报先查这里。
+20b. **save_state 局部落盘会抹掉未带的记忆键**（v1.38 事故：窗口①选件落盘没带 jt_link_mode，每次运行开场把已选的针阀模式抹成 null，模式"记不住"）——新增记忆键后必须全查 save_state 调用点；save_state 已加中央兜底（jt_link_mode 传 None 自动保留旧值），新键照此办理。
 
 **NX2312 Python 绑定类（v1.36 归零工具实证；facade 只暴露部分 .NET 面，缺就换等价路线，别硬调）**
 25. `Parts.OpenBasePart`/`OpenDisplay`、`Part.CreateMoveObjectBuilder`、`UF Ui.SpecifyScreenPosition` **均不存在**（AttributeError）——打开部件走 UF `Part.Open`+`SetDisplayPart`；点定位点用 BlockStyler `UICOMP_point` 对话框（SelectionDialog 同款模式；**必须注册 AddInitializeHandler**，缺它 Launch 报"初始化回调未注册"）；部件内平移没有移动 API——改走"新建部件→组件按 −位移 放置→提升→移除参数"；
@@ -127,7 +128,7 @@
 
 ## 7. 版本历史（详见主脚本文件头；此处仅骨架）
 
-v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导。
+v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导；修复选件落盘抹 jt_link_mode（模式记不住）。
 
 **NX10/12 向下兼容改造（进行中，暂未 bump 版本号，待端到端 `--batch` 通过后定）**：主脚本新增 `_add_to_section_compat`/`_sc_rule_options`/`_import_module_from_path` 三兼容助手 + EdgeBlend 逐属性守卫（详见 §4 第 21~24 条与 `docs\NX10-12兼容性评估报告.md` v2.0）；`--selftest` 全绿；探针 `probe_nx_compat.py` 迭代至 v2.2。
 
