@@ -1,4 +1,4 @@
-# AGENTS.md —— NX 分层拉伸自动化（AI 接手文档）  v1.36
+# AGENTS.md —— NX 分层拉伸自动化（AI 接手文档）  v1.40
 
 > 本文档写给**接手本项目的 AI**，位于 docs\ 子目录。用户手册（给人看）在同目录 `使用手册.md`。
 
@@ -50,7 +50,7 @@
 | CXK 切层护栏(v1.35) | 窗口③把 CXK 件切到圆心层时半径框不存在→收集侧重置 0~15 并提示核对(防旧全半径海量锚点) |
 | SUBTRACT 兜底(v1.35) | 无 FLB 体可布尔或布尔未生效时**保留独立体**并记日志——不得走删体分支(否则孔没切件也没了) |
 | JT 联动(v1.37) | JT 起止随 FLB 双模式联动：普通=起点+10/终点-15，针阀=起点+15/终点-15（FLB -40/-85 → JT -30/-100 与 -25/-100）；偏移表 config `JT_LINK_MODES` 可改，模式选择记忆 json（jt_link_mode）；联动后仍可单独改，再动 FLB 按当前模式覆盖 |
-| CX 联动(v1.38) | CX 起始恒=JT 起始，CX 结束=假体(JT)结束−`CX_LINK_END_OFFSET`（默认 35；假体结束 -35 → CX -70） |
+| CX 联动(v1.38 起, v1.40 修正) | CX 起始恒=JT 起始；**CX 结束 = CX 起始 − `CX_LINK_END_OFFSET`（默认 35；槽深固定，起始 -30 → 结束 -65）**——不再按 JT 结束算(JT 结束随联动模式漂移，不宜作槽底基准)；`_cx_link_values(cx_start)` 单参 |
 | 标准件归零(v1.36) | 14 个 prt 定位点已平移到零件原点(ref=[0,0,0])——放置公式在 ref=0 时精确等于锚点，-Z 翻转反号问题自然消失；输出件从"模型模板"复制而来(带建模应用记录, 打开直进建模)；**新件不归零就不放置可用性**——ref 恒 0, 未归零件会整体错位 |
 | JT 联动(v1.37) | JT 起止随 FLB 双模式联动：普通=起点+10/终点-15，针阀=起点+15/终点-15（FLB -40/-85 → JT -30/-100 与 -25/-100）；偏移表 config `JT_LINK_MODES` 可改，模式选择记忆 json（jt_link_mode）；联动后仍可单独改，再动 FLB 按当前模式覆盖 |
 
@@ -92,11 +92,15 @@
 30. UF 分组 `Group.CreateGroup` 参数形态对不上（"函数采用 N 个参数"即此类绑定面不齐）——标识改用体名，别恋战；
 31. 输出件要"打开直进建模"：从 `UGII	emplates\model-plain-1-mm-template.prt` 复制为基底（模板自带 UG_APP_MODELING 记录）；空白 UF_PART_new 件停在基本环境，ApplicationSwitchImmediate 不可用；二进制验证法：`grep -ac UG_APP_MODELING 文件`（原件 2 处）。
 
-**向下兼容（NX10/12）类（实机探针 v2.1/v2.2 定案，勿凭 2312 经验改回）**
+**向下兼容（NX10/12）类（实机探针 v2.1~v2.3 定案，勿凭 2312 经验改回）**
 21. NX10/12 的 `NXOpen.pyd` 是 **Siemens 自研 CPython C 扩展绑定，不是 pythonnet**——无 `System` 模块、对象无 `GetType()`/反射、无 `.array()`。跨版本差异表现为"同一代码新绑定能编组、旧绑定报 `没有过载与这些参数匹配`"；**造 .NET 数组 / 反射签名两条路在这两版物理不可用**，定位只能读方法 `__doc__` + 逐参数试形态。
 22. `Section.AddToSection`：旧版 seed/两 connector **不接受裸 `None`**，要 `NXOpen.NXObject.Null`（2312 才自动转）。已封 `_add_to_section_compat`（主脚本 L2176）——先 None(2312 零回归)后 Null 重试。注意 `rules` 用 Python list、`helpPoint` 用 Point3d、`Mode.Create` 枚举、7 参 各版皆可，**别误改这几处**。
 23. `ScRuleFactory.CreateRuleOptions` **NX10/12 不存在**（AttributeError），旧版 `CreateRuleFaceDumb/CreateRuleOuterEdgesOfFaces` 只有单参重载。已封 `_sc_rule_options`（L2200）取不到返 None，EdgeBlend(L2945)/DeleteFace(L3153) 据此降级；EdgeBlend 5 核心属性(L2963)已逐条 try 防旧版缺属性崩整条。
-24. NX10=Python 3.3.2 缺 `importlib.util.spec_from_file_location` → 配置加载已改三级梯 `_import_module_from_path`(L365：importlib→imp.load_source→exec)；`ast.AsyncFunctionDef` 仅 `--selftest` 触发，期刊不跑故未动。dlx(含 2312 戳)/数组参数/布尔5参/AddComponent6参 实测旧版均可用，**无需加版本分支**。
+24. NX10=Python 3.3.2 缺 `importlib.util.spec_from_file_location` → 配置加载已改三级梯 `_import_module_from_path`(L383：importlib→imp.load_source→exec)；`ast.AsyncFunctionDef` 仅 `--selftest` 触发，期刊不跑故未动。dlx(含 2312 戳)/数组参数/布尔5参 实测旧版均可用，**无需加版本分支**。
+25. `NXOpen.Expression` **旧版无 `SetFormula(str)` 方法**（端到端实测报 `'NXOpen.Expression' object has no attribute 'SetFormula'`，把拉伸 offset/draft、JRT 加热条全带崩）。已封 `_set_expr(expr, str)`（L2362）——先 SetFormula(2312 零回归) 后 `.RightHandSide=str`(旧版同款 Limits 写法)。**新增任何写表达式的地方一律走 `_set_expr`，别再裸调 SetFormula**。
+26. stdparts 母版是 **NX2312 格式**（v1.36「标准件归零」用 2312 重存了 `stdparts\*.prt`）→ 旧版 `AddComponent` 报"不是部件文件(NX10)/更新版本(NX12)"。**`.prt` 只向下不向上兼容**，2312 母版旧版永远打不开。**交付做法（目录名不变、代码无版本切换）**：低版本机上用 `tools\NX向下兼容工具\` 链路还原——`export_xt.py` 导 `xt\*.x_t`（Parasolid 24.0=Nx8 schema）→ `verify_import.py` 校验回读零丢失 → 整个文件夹拷到低版本机双击 `一键导入.bat`(`import_xt_to_prt.py`) 还原成包内 `x_t转prt\*.prt`（**prt 版本=执行导入的本机 NX 版本**，故旧版格式必须在低版本机上导入）→ 把这些旧版 .prt **直接放进 `stdparts\`（覆盖同名）**。`stdparts_dir()`(L711) 固定按 `STDPARTS_DIRNAME`=stdparts 读，**不再有 stdparts_nx8 / `_nx_version_major` 那套**（已回退删除）。导出→校验→导入链已在 NX2312 端到端实测 14/14（实体数零丢失）。
+27. `BlockStyler.BlockDialog` **旧版无 `Launch()`**（2312 才有；交互三段框第一步 `theDialog.Launch()` 报 no attribute，整个交互流程崩）。已封 `_dlg_show(dialog)`（L3953）——按存在性依次 `Launch→Show→ReplayDialog`，2312 恒先命中 Launch=零回归。**新增任何弹 BlockStyler 框处一律走 `_dlg_show`**（三对话框类的 `Launch(self)` 已内聚）。
+28. 无界面批量/旧版 **末帧不自动重绘**：新增体/组件/DXF 曲线要用户手工"图层全开 + 全部隐藏再显示"才显形（数据本就对，纯视图没刷）。已封 `_refresh_display(session, work_part)`（`run_pipeline` 成功收尾 + `batch_run` 各调一次；交互/批量共用）——`Layers.SetObjectsVisibilityOnLayer(WorkView, 全256层=Visible)` + 逐 Body/Curve `Unblank()+RedisplayObject()` + `UpdateManager.DoRebuilds()`，每步 try 兜底。**DXF 曲线"看不到"多半是没调 RedisplayObject**（改图层后必须调，见 NXOpen DisplayableObject 文档）。
 
 ## 5. 修改流程（铁律）
 
@@ -128,9 +132,9 @@
 
 ## 7. 版本历史（详见主脚本文件头；此处仅骨架）
 
-v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导；修复选件落盘抹 jt_link_mode（模式记不住）。
+v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导；修复选件落盘抹 jt_link_mode（模式记不住） · v1.39 标准件下放工具包重组（`stdparts\NX8兼容_x_t` + `stdparts\_nx_export` 合并收拢改名 `tools\NX向下兼容工具\`：export_xt.py / verify_import.py / import_xt_to_prt.py / 一键导入.bat；x_t 统一入包内 `xt\`，产出 prt 在包内 `x_t转prt\`（prt 版本=执行导入的本机 NX 版本）；stage/tmp 跑完自删，使用说明重写，弃用 v1 export_ps 清理；NX2312 端到端实测 14/14） · v1.40 NX10/12 兼容收尾+显示刷新+CX 修正：`_set_expr`(旧版无 Expression.SetFormula→RightHandSide)、`_dlg_show`(旧版 BlockDialog 无 Launch→Show)、`_refresh_display`(无界面/旧版末帧不重绘→图层全开+Unblank+RedisplayObject+重建，交互与批量共用)、`stdparts_dir` 回退固定读 stdparts(旧版 .prt 直接放入)、CX 结束改按 CX 起始−偏移(不再跟 JT 结束)；配套探针 v2.3(API026)+新增 `batch_smoke.py` 端到端冒烟；NX10/NX12 真机端到端通过。
 
-**NX10/12 向下兼容改造（进行中，暂未 bump 版本号，待端到端 `--batch` 通过后定）**：主脚本新增 `_add_to_section_compat`/`_sc_rule_options`/`_import_module_from_path` 三兼容助手 + EdgeBlend 逐属性守卫（详见 §4 第 21~24 条与 `docs\NX10-12兼容性评估报告.md` v2.0）；`--selftest` 全绿；探针 `probe_nx_compat.py` 迭代至 v2.2。
+**NX10/12 向下兼容改造（已随 v1.40 入库）**：主脚本兼容助手 `_add_to_section_compat`(旧版 AddToSection 用类型化 null)/`_sc_rule_options`(旧版无 CreateRuleOptions)/`_set_expr`(旧版无 Expression.SetFormula)/`_dlg_show`(旧版 BlockDialog 无 Launch)/`_import_module_from_path`(NX10 importlib) + `_refresh_display`(无界面/旧版末帧重绘) + EdgeBlend 逐属性守卫；`stdparts_dir()` 固定读 `stdparts`，旧版交付把 `tools\NX向下兼容工具\` 还原的本机 .prt 直接放入 `stdparts\`(覆盖同名)，无版本切换。详见 §4 第 21~28 条与 `docs\NX10-12兼容性评估报告.md`。`--selftest` 全绿；探针 `tools\probe_nx_compat.py` v2.3；端到端 `batch_smoke.py`/交互在 NX10/NX12 真机实测通过（建模主链 + 显示 + 标准件加载 + CX 联动）。**下放工具链在 `tools\NX向下兼容工具\`**（export_xt.py / verify_import.py / import_xt_to_prt.py / 一键导入.bat；x_t 入包内 `xt\`、产出 prt 在 `x_t转prt\`、运行日志 `*_log.txt` 均已 gitignore），导出→校验→导入在 NX2312 实测 14/14。
 
 ## 8. 用户工作偏好（遵守）
 

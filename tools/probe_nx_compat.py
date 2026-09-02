@@ -1,11 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""probe_nx_compat.py — NX 版本兼容性运行时探针 v2.0
+r"""probe_nx_compat.py — NX 版本兼容性运行时探针 v2.0
 ====================================================================
 用途: 在目标 NX 实机(本次锁定 10/12)上一次性探明 nx_extrude_runner.py
 兼容改造所需的全部"需要验证"项, 输出结构化清单, 不修改任何部件/配置。
 
-v2.2 修订(据 NX10/NX12 实机 v2.1 结果):
+v2.3 修订(据 NX10/NX12 端到端 batch 实测):
+  - batch 端到端暴露两处新问题, runner 已修, 探针同步补测:
+      * 'NXOpen.Expression' object has no attribute 'SetFormula'(旧版无此方法) →
+        runner 加 _set_expr(先 SetFormula 后 .RightHandSide); 新增 API026 探
+        Expression 公式写入通道(SetFormula vs RightHandSide)。
+      * stdparts 母版是 NX2312 格式, 旧版 AddComponent 报"不是部件文件/更新版本"
+        (.prt 只向下兼容)。交付旧版: 用 tools\NX向下兼容工具\ 把母版还原成目标机
+        版本 .prt, 直接放进 stdparts\; 目录名不变, runner 无按版本切换逻辑。
+  - 好消息: 本版探针在 NX10/NX12 实测 API006(拉伸)/API010(EdgeBlend 全链)/
+    API011(删面)均 AVAILABLE —— 前期 v2.1/v2.2 绑定层修复全部生效。
+  - v2.2 修订(据 NX10/NX12 实机 v2.1 结果):
   - v2.1 两遍二分命中根因: API006 变 AVAILABLE, API020 给出配方 =
     AddToSection([rule], NXObject.Null, NXObject.Null, NXObject.Null, Point3d,
     Mode.Create, False)。即旧版要求 seed/两 connector 传类型化 NXObject.Null 而非
@@ -94,10 +104,11 @@ import json
 import os
 import sys
 
-PROBE_VERSION = "2.2"
+PROBE_VERSION = "2.3"
 TEMP_PART_NAME = "nx_compat_probe"
 ENUM_BLOCK_ID = "probe_enum"
 ENUM_LABELS = ["甲", "乙"]
+_PROBE_STD_DIR = [None]
 
 RESULTS = []
 
@@ -1108,7 +1119,7 @@ def probe_api(nx, session, uf):
         add("API001", "API", "新建临时 Part (NewDisplay+Work)", "ERROR",
             "%s: %s —— API 组全部跳过" % (type(ex).__name__, ex))
     if part is None:
-        for i in range(2, 26):
+        for i in range(2, 27):
             add("API%03d" % i, "API", "(前置失败)", "SKIP", "API001 失败")
         for i in range(1, 7):
             add("MAR%03d" % i, "MAR", "(前置失败)", "SKIP", "API001 失败")
@@ -1609,7 +1620,9 @@ def probe_api(nx, session, uf):
             "%s: %s" % (type(ex).__name__, ex))
 
     # --- API017 AddComponent 双签名 --------------------------------------------
+    # 标准件目录 = 脚本同级 stdparts(旧版机交付时把低版本 .prt 直接放进去)。
     std_dir = os.path.join(script_dir(), "stdparts")
+    _PROBE_STD_DIR[0] = std_dir
     prt = None
     if os.path.isdir(std_dir):
         cands = sorted(f for f in os.listdir(std_dir)
@@ -1656,6 +1669,36 @@ def probe_api(nx, session, uf):
                         % os.path.basename(prt))
             add("API017", "API", "ComponentAssembly.AddComponent 双签名",
                 "ERROR", "%s: %s%s" % (type(ex).__name__, ex, hint))
+
+    # --- API026 Expression 公式写入通道 + stdparts 目录选择 --------------------
+    try:
+        import NXOpen.Features
+        _b = part.Features.CreateExtrudeBuilder(NXOpen.Features.Feature.Null)
+        try:
+            _e = _b.Offset.StartOffset
+            has_setf = hasattr(_e, "SetFormula")
+            has_rhs = hasattr(_e, "RightHandSide")
+            _setv = "SetFormula" if has_setf else ("RightHandSide" if has_rhs else "无!")
+            wrote = ""
+            try:
+                if has_setf:
+                    _e.SetFormula("1.0"); wrote = "SetFormula OK"
+                elif has_rhs:
+                    _e.RightHandSide = "1.0"; wrote = "RightHandSide OK"
+            except Exception as ex:
+                wrote = "写失败(%s)" % type(ex).__name__
+            add("API026", "API", "Expression 公式通道 + stdparts 目录", "INFO",
+                "type=%s SetFormula=%s RightHandSide=%s → runner _set_expr 用[%s] %s; stdparts目录=%s"
+                % (type(_e).__name__, has_setf, has_rhs, _setv, wrote,
+                   os.path.basename(_PROBE_STD_DIR[0] or "?")))
+        finally:
+            try:
+                _b.Destroy()
+            except Exception:
+                pass
+    except Exception as ex:
+        add("API026", "API", "Expression 公式通道 + stdparts 目录", "ERROR",
+            "%s: %s" % (type(ex).__name__, ex))
 
     # --- MAR 组: 各数组参数编组体检(定位 runner _na() 覆盖面) --------------------
     try:
@@ -1859,7 +1902,7 @@ def main():
             "无 NX 环境")
         add("VER005", "VER", "NXOpen 模块路径版本解析(首选通道)", "SKIP",
             "无 NX 环境")
-        for i in range(1, 26):
+        for i in range(1, 27):
             add("API%03d" % i, "API", "NXOpen API", "SKIP", "无 NX 环境")
         for i in range(1, 7):
             add("MAR%03d" % i, "MAR", "数组参数编组", "SKIP", "无 NX 环境")

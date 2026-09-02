@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-# Round-trip check: import each exported .x_t back into NX and count solid bodies.
+# Round-trip check: import each .x_t in the "xt" subfolder back into NX, count
+# solid bodies, compare with stdparts sources. Run inside NX2312.
 import NXOpen
 import NXOpen.UF
 import os
 
-SRC    = r"C:\Users\5600\Documents\ZDH\NX\stdparts"
-OUTDIR = os.path.join(SRC, "NX8兼容_x_t")
-TMP    = r"C:\Users\5600\Documents\ZDH\NX\stdparts\_nx_export\tmp"
+_HERE  = os.path.dirname(os.path.abspath(__file__))   # tools\NX向下兼容工具
+_ROOT  = os.path.dirname(os.path.dirname(_HERE))      # project root
+SRC    = os.path.join(_ROOT, "stdparts")
+OUTDIR = os.path.join(_HERE, "xt")                    # x_t 都在 xt 子目录
+TMP    = os.path.join(_HERE, "tmp")
 TMPL   = os.path.join(os.environ.get("UGII_BASE_DIR", r"C:\Program Files\Siemens\NX2312"),
                       "UGII", "templates", "model-plain-1-mm-template.prt")
-REPORT = os.path.join(SRC, "_nx_export", "verify.txt")
+REPORT = os.path.join(_HERE, "verify.txt")
 
 _lines = []
 
@@ -28,7 +31,13 @@ def main():
     if not os.path.isdir(TMP):
         os.makedirs(TMP)
 
-    xts = sorted([f for f in os.listdir(OUTDIR) if f.lower().endswith(".x_t")])
+    xts = sorted([f for f in os.listdir(OUTDIR) if f.lower().endswith(".x_t")]) \
+        if os.path.isdir(OUTDIR) else []
+    if not xts:
+        w("VERIFY ABORT: no .x_t in %s (run export_xt.py first)" % OUTDIR)
+        with open(REPORT, "w", encoding="utf-8") as f:
+            f.write("\n".join(_lines))
+        return
     w("VERIFY %d files" % len(xts))
     bad = 0
 

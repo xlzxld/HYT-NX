@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 # Export .prt -> Parasolid 24.0 (NX8 schema), with everything NX sees forced ASCII.
+# Run inside NX2312 (File -> Execute -> NX Open). Output .x_t lands in the "xt"
+# subfolder of this package, ready for import_xt_to_prt.py on a lower-version NX.
 #
 # Why: NX writes the source part name into the .x_t header. A Chinese part name
 # becomes UTF-8 bytes inside the file, and NX10 in locale mode (GBK) rejects it:
@@ -12,10 +14,12 @@ import os
 import shutil
 import codecs
 
-SRC = r"C:\Users\5600\Documents\ZDH\NX\stdparts"
-OUT = r"C:\Users\5600\Documents\ZDH\NX\stdparts\_nx_export\new_xt"
-STAGE = r"C:\Users\5600\Documents\ZDH\NX\stdparts\_nx_export\stage"
-LOG = r"C:\Users\5600\Documents\ZDH\NX\stdparts\_nx_export\export_v2.txt"
+_HERE = os.path.dirname(os.path.abspath(__file__))   # tools\NX向下兼容工具
+_ROOT = os.path.dirname(os.path.dirname(_HERE))      # project root
+SRC   = os.path.join(_ROOT, "stdparts")
+OUT   = os.path.join(_HERE, "xt")                    # 产物 x_t 统一放 xt 子目录
+STAGE = os.path.join(_HERE, "stage")                 # ASCII 暂存区, 跑完自动删
+LOG   = os.path.join(_HERE, "export_log.txt")
 
 _lines = []
 
@@ -97,6 +101,13 @@ def main():
     w("DONE ok=%d fail=%d" % (ok, len(failed)))
     with codecs.open(LOG, "w", "utf-8") as f:
         f.write("\n".join(_lines))
+
+    # 收尾: stage 里的文件已逐个清空, 顺手删掉空目录壳; 删不掉(被占用)就留到下次
+    try:
+        if os.path.isdir(STAGE):
+            os.rmdir(STAGE)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

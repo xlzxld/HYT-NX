@@ -18,3 +18,12 @@ nx_extrude_params.json
 stdparts_归零/
 _staging_*.prt
 _preview_*.prt
+
+# 旧版实机回传的探针/报告日志目录（按机器命名，不入库）
+NX10/
+NX12/
+
+# NX 向下兼容工具：x_t 交换件/导入输出/运行日志均可再生，只入脚本
+tools/NX向下兼容工具/xt/
+tools/NX向下兼容工具/x_t转prt/
+tools/NX向下兼容工具/*_log.txt

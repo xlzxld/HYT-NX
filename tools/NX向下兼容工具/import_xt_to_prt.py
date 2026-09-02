@@ -3,9 +3,11 @@
 # NX8 ~ NX2312 : batch import Parasolid .x_t -> save as .prt
 #
 # HOW TO USE
-#   1. Copy this whole folder (the .x_t files + this .py) to the NX10 machine.
+#   1. Copy this whole folder (the xt\ subfolder with the .x_t files + this .py)
+#      to the target NX machine.
 #   2. Double click "一键导入.bat", or inside NX: File -> Execute -> NX Open.
-#   3. Results land in the sibling folder "NX10_prt". Check import_log.txt.
+#   3. Results land in the "x_t转prt" folder next to "xt". Check import_log.txt
+#      (written next to this script).
 #
 # WHY THE ASCII STAGING
 #   NX10 runs in locale mode (GBK on a Chinese Windows) by default. Handing it a
@@ -17,8 +19,11 @@
 #   staging paths. Afterwards Python renames the saved .prt to its Chinese name.
 #
 # NOTES
-#   - Source folder = this script's own folder (or pass a path as an argument).
-#   - Output folder = sibling folder named "NX10_prt".
+#   - Source folder = the "xt" subfolder next to this script (or pass a path as
+#     an argument).
+#   - Output folder = sibling folder of the source, named "x_t转prt".
+#   - Output .prt format = whatever NX version runs this script (the .x_t
+#     carrier itself is Parasolid 24.0, i.e. NX8 schema, readable by NX8+).
 #   - UNITS: 1 = millimeter, 2 = inch. All 14 source parts are millimeters.
 #   - Imported bodies have no feature history (Parasolid is dumb geometry).
 #   - Python 2.7 (NX8~NX11) and Python 3 (NX1847+) compatible.
@@ -31,7 +36,7 @@ import shutil
 import codecs
 
 UNITS = 1              # 1 = millimeter, 2 = inch
-OUT_DIRNAME = "NX10_prt"
+OUT_DIRNAME = "x_t转prt"
 LOG_NAME = "import_log.txt"
 
 _lines = []
@@ -53,10 +58,7 @@ def is_ascii(s):
         return False
 
 
-def src_dir():
-    for a in sys.argv[1:]:
-        if os.path.isdir(a):
-            return os.path.abspath(a)
+def script_dir():
     try:
         d = os.path.dirname(os.path.abspath(__file__))
         if d and os.path.isdir(d):
@@ -64,6 +66,17 @@ def src_dir():
     except Exception:
         pass
     return os.path.abspath(".")
+
+
+def src_dir():
+    for a in sys.argv[1:]:
+        if os.path.isdir(a):
+            return os.path.abspath(a)
+    d = script_dir()
+    xt = os.path.join(d, "xt")     # x_t 统一放在 xt 子目录
+    if os.path.isdir(xt):
+        return xt
+    return d
 
 
 def ascii_tmpdir(preferred_parent):
@@ -101,7 +114,7 @@ def main():
     tmp = ascii_tmpdir(out)
     if tmp is None:
         w("FATAL: no pure-ASCII staging directory available.")
-        with codecs.open(os.path.join(src, LOG_NAME), "w", "utf-8") as f:
+        with codecs.open(os.path.join(script_dir(), LOG_NAME), "w", "utf-8") as f:
             f.write("\n".join(_lines))
         return
     if not os.path.isdir(tmp):
@@ -112,7 +125,7 @@ def main():
     w("FOUND %d x_t file(s)" % len(xts))
     if not xts:
         w("ABORT: no .x_t in %s" % src)
-        with codecs.open(os.path.join(src, LOG_NAME), "w", "utf-8") as f:
+        with codecs.open(os.path.join(script_dir(), LOG_NAME), "w", "utf-8") as f:
             f.write("\n".join(_lines))
         return
 
@@ -178,11 +191,18 @@ def main():
     except Exception:
         pass
 
+    # 收尾: 暂存文件已逐个清空, 顺手删掉空目录壳; 删不掉(被占用)就留着, 不影响使用
+    try:
+        if os.path.isdir(tmp):
+            os.rmdir(tmp)
+    except Exception:
+        pass
+
     w("DONE  ok=%d  fail=%d" % (ok, len(failed)))
     if failed:
         w("FAILED: %s" % ", ".join(failed))
 
-    with codecs.open(os.path.join(src, LOG_NAME), "w", "utf-8") as f:
+    with codecs.open(os.path.join(script_dir(), LOG_NAME), "w", "utf-8") as f:
         f.write("\n".join(_lines))
 
 

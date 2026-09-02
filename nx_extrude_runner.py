@@ -1,7 +1,42 @@
 # -*- coding: utf-8 -*-
-"""
-nx_extrude_runner.py — NX 2312 分层拉伸自动化（CAD DXF → 3D）  v1.38  2026-09-01
+r"""
+nx_extrude_runner.py — NX 分层拉伸自动化（CAD DXF → 3D）  v1.40  2026-09-02
 
+v1.40: NX10/12 兼容收尾 + 显示刷新 + CX 联动修正（本次会话；配套探针 v2.3）:
+      ① _set_expr: NX10/12 的 NXOpen.Expression 无 SetFormula(str)(2312 才有),
+        旧版拉伸 offset/draft 因此崩、JRT 加热条全废 → 先 SetFormula(2312 零
+        回归) 后 .RightHandSide=str(旧版同款); 新增写表达式处一律走 _set_expr;
+      ② _dlg_show: 旧版 BlockStyler.BlockDialog 无 Launch()(报 no attribute
+        Launch, 交互三段框第一步即崩) → 按存在性选 Launch/Show/ReplayDialog;
+      ③ _refresh_display: 无界面批量/旧版末帧不自动重绘(标准件实体、DXF 曲线
+        要用户 hide/show+图层全开才显形, 数据本无误) → run_pipeline 成功收尾
+        + batch_run 双跑后各调一次(图层全开 SetObjectsVisibilityOnLayer + 逐
+        体/曲线 Unblank+RedisplayObject + DoRebuilds), 交互与批量两条路径共用,
+        逐步 try 兜底不影响模型/2312;
+      ④ CX 联动修正: CX 结束原按 JT 结束−偏移(JT 结束随模式漂移不合理)→ 改为
+        CX 结束 = CX 起始(=JT 起始)−偏移, 槽深固定; config CX_LINK_END_OFFSET
+        默认 35; 默认普通模式 CX 由 -30/-135 变 -30/-65;
+      ⑤ stdparts 目录回退: 去掉按版本切 stdparts_nx8 的设想(及 _nx_version_major),
+        stdparts_dir() 固定读 STDPARTS_DIRNAME=stdparts; 旧版交付把 tools\
+        NX向下兼容工具\ 还原的本机 .prt 直接放入 stdparts\ 覆盖同名即可;
+      ⑥ 配套 probe_nx_compat.py→v2.3(API026 探 Expression 通道/stdparts 目录;
+        S3 两遍二分坐实 AddToSection 用类型化 null), 新增 batch_smoke.py 无界面
+        端到端冒烟; NX10/NX12 真机实测 API006/010/011/017 全绿、端到端通过。
+      (①②⑤承接 1.38 的 _add_to_section_compat/_sc_rule_options/_import 三梯,
+       本会话把剩余绑定层断点补齐; v1.39 工具包重组见下条, 二者随本版一并入库。)
+
+v1.39: 标准件下放工具包重组:
+      stdparts\NX8兼容_x_t + stdparts\_nx_export 两目录合并收拢, 移入
+      tools\NX向下兼容工具\: export_xt.py(原 export_ps_v2.py)把 stdparts
+      母版导出 Parasolid 24.0(NX8 schema) x_t, 统一入包内 xt\;
+      verify_import.py 回读校验实体数; import_xt_to_prt.py(原
+      import_to_nx10.py)拷到低版本机双击 一键导入.bat 还原 prt, 产出
+      入包内 x_t转prt\(prt 版本=执行导入的本机 NX 版本, 旧版格式须在
+      低版本机上导入); stage/tmp 暂存目录跑完自动删除; 使用说明.txt
+      彻底重写; 弃用 export_ps.py(v1)与历史日志清理。导出→校验→导入
+      链 NX2312 端到端实测 14/14(实体数零丢失); 低版本实机导入复验
+      仍待做。文档同步: 使用手册目录表新增工具包行, NX10-12兼容性
+      评估报告 v2.2 脚注。
 v1.38: CX 联动 + 兜底默认: CX 起始恒=JT 起始, CX 结束=假体(JT)结束
       −CX_LINK_END_OFFSET(config 默认 35; 假体结束 -35 → CX -70);
       无记忆兜底默认改为 FLB -40/-85, 其余联动层按规则从 FLB 推导
@@ -459,7 +494,7 @@ _JRT_R_MIN = _cfg_num(getattr(_USER_CFG, "JRT_R_MIN_DEFAULT", 3.7)
 # §0 参数表与常量(单一数据源: 新增图层 = 加一行)
 # ============================================================================
 
-SCRIPT_VERSION = "1.38"
+SCRIPT_VERSION = "1.40"
 
 
 def _cfg(key, default):
@@ -593,14 +628,15 @@ def jt_mode_with_memory(state):
     return JT_LINK_DEFAULT
 
 
-# CX 联动(v1.38): CX 起始恒=JT 起始; CX 结束 = 假体(JT)结束 − 偏移
-# (config CX_LINK_END_OFFSET 可改, 默认 35; 假体结束 -35 → CX -70)。
+# CX 联动(v1.38): CX 起始恒=JT 起始; CX 结束 = CX 起始 − 偏移(槽深固定, 随自身
+# 顶面走; 不再跟 JT 结束——JT 结束会随联动模式漂移, 不适合作槽底基准)。
+# config CX_LINK_END_OFFSET 可改, 默认 35; CX 起始 -30 → 结束 -65。
 _CX_LINK_END_OFF = _cfg_num(_cfg("CX_LINK_END_OFFSET", 35.0), 35.0)
 
 
-def _cx_link_values(jt_start, jt_end):
-    """JT 起/止 → CX (起始, 结束): 起始同 JT, 结束=JT 结束−偏移。"""
-    return (jt_start, jt_end - _CX_LINK_END_OFF)
+def _cx_link_values(cx_start):
+    """CX 起始(=JT 起始) → CX (起始, 结束): 起始原样, 结束=起始−偏移。"""
+    return (cx_start, cx_start - _CX_LINK_END_OFF)
 
 
 def derive_linked(top, bottom, jt_mode=None):
@@ -709,6 +745,11 @@ def anchors_overflow(anchors, rule):
 
 
 def stdparts_dir():
+    """标准件目录 = 脚本同级的 STDPARTS_DIRNAME(默认 stdparts)。
+
+    跨版本约定: .prt 只向下不向上兼容, NX2312 母版在旧版 NX(8/10/12) 打不开。
+    故交付旧版时, 用 tools\\NX向下兼容工具\\ 把母版还原成目标机版本 .prt, 直接
+    放进 stdparts\\(覆盖同名), 脚本按同目录读即可——无需按版本切换目录。"""
     return os.path.join(script_dir(), STDPARTS_DIRNAME)
 
 
@@ -871,7 +912,7 @@ def default_params():
     for code, (v1, v2) in linked.items():
         if code in out:
             out[code] = (v1, v2)
-    out["CX"] = _cx_link_values(*linked["JT"])
+    out["CX"] = _cx_link_values(linked["JT"][0])
     return out
 
 
@@ -2313,6 +2354,18 @@ def _sc_rule_options(work_part):
     return opts
 
 
+def _set_expr(expr, value_str):
+    """跨版本写 NXOpen.Expression 公式。
+
+    NX2312 的 Expression 有 SetFormula(str)；NX10/12 绑定无该方法(实机端到端报
+    'NXOpen.Expression' object has no attribute 'SetFormula')，改用 .RightHandSide
+    =str(与本文件 Limits 各处同款, 旧版可用)。先试 SetFormula 保证 2312 零回归。"""
+    try:
+        expr.SetFormula(value_str)
+    except Exception:
+        expr.RightHandSide = value_str
+
+
 def extrude_curves(work_part, curves, start, end, name, bool_op=None, help_pt=None,
                    offset=None, draft=None):
     """拉伸一组封闭环曲线: start/end 为绝对 Z 距离。
@@ -2346,11 +2399,11 @@ def extrude_curves(work_part, curves, start, end, name, bool_op=None, help_pt=No
         bldr.Limits.EndExtend.Value.RightHandSide = _fmt_num(end)
         bldr.DistanceTolerance = CHAIN_TOL
         if offset is not None:
-            bldr.Offset.StartOffset.SetFormula(_fmt_num(offset[0]))
-            bldr.Offset.EndOffset.SetFormula(_fmt_num(offset[1]))
+            _set_expr(bldr.Offset.StartOffset, _fmt_num(offset[0]))
+            _set_expr(bldr.Offset.EndOffset, _fmt_num(offset[1]))
         if draft is not None:
-            bldr.Draft.FrontDraftAngle.SetFormula(_fmt_num(draft))
-            bldr.Draft.BackDraftAngle.SetFormula(_fmt_num(draft))
+            _set_expr(bldr.Draft.FrontDraftAngle, _fmt_num(draft))
+            _set_expr(bldr.Draft.BackDraftAngle, _fmt_num(draft))
         bldr.Direction = work_part.Directions.CreateDirection(
             nx.Point3d(0.0, 0.0, 0.0), nx.Vector3d(0.0, 0.0, 1.0),
             nx.SmartObject.UpdateOption.DontUpdate)
@@ -3899,6 +3952,7 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
             nfeat, "; ".join("%s 曲线%d/轮廓%d/%s" % (
                 c, stats[c]["curves"], stats[c]["profiles"], stats[c]["note"] or "OK")
                 for c in list(LAYER_CODES) + ["JRT", "STD"] if c in stats)))
+        _refresh_display(session, work_part, log)
         return True, stats
     except Exception as ex:
         import traceback
@@ -3920,6 +3974,18 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
 # ============================================================================
 # §6 Block UI Styler 对话框(回调类模式同官方 ChangeFaceColor 样例)
 # ============================================================================
+
+def _dlg_show(dialog):
+    """跨版本弹出 BlockStyler 对话框: NX2312 用 Launch(); NX10/11/12 无 Launch
+    (实机交互报 'BlockDialog' object has no attribute 'Launch')→ 用 Show()。
+    按存在性选方法(Launch→Show→ReplayDialog), 2312 恒先命中 Launch=零回归。
+    返回底层方法的响应码(int; Show/Launch 语义一致)。"""
+    for _m in ("Launch", "Show", "ReplayDialog"):
+        _f = getattr(dialog, _m, None)
+        if callable(_f):
+            return _f()
+    raise AttributeError("BlockDialog 无 Launch/Show/ReplayDialog 显示方法")
+
 
 class SelectionDialog(object):
     """第一段"标准件选择"对话框(每件一个复选框; 取消=中止整个流程)。"""
@@ -3994,7 +4060,7 @@ class SelectionDialog(object):
 
     def Launch(self):
         try:
-            self.theDialog.Launch()
+            _dlg_show(self.theDialog)
         except Exception as ex:
             self.theUI.NXMessageBox.Show(
                 "CAD3D", self.nx.NXMessageBox.DialogType.Error, str(ex))
@@ -4461,7 +4527,7 @@ class ParamDialog(_BlockDialogBase):
                                              self.jt_mode)
                     self._find("JT_start").Value = v1
                     self._find("JT_end").Value = v2
-                    cs, ce = _cx_link_values(v1, v2)
+                    cs, ce = _cx_link_values(v1)
                     self._find("CX_start").Value = cs
                     self._find("CX_end").Value = ce
                     return 0
@@ -4470,9 +4536,7 @@ class ParamDialog(_BlockDialogBase):
             # CX 跟 JT(v1.38): 手改 JT 起/止 → CX 立即跟随
             try:
                 if block in (self._find("JT_start"), self._find("JT_end")):
-                    js = self._get_double("JT_start", 0.0)
-                    je = self._get_double("JT_end", 0.0)
-                    cs, ce = _cx_link_values(js, je)
+                    cs, ce = _cx_link_values(self._get_double("JT_start", 0.0))
                     self._find("CX_start").Value = cs
                     self._find("CX_end").Value = ce
                     return 0
@@ -4492,9 +4556,8 @@ class ParamDialog(_BlockDialogBase):
                             self._find(bid).Value = val
                         except Exception:
                             pass
-                # CX 跟 JT(v1.38): 起始同 JT, 结束=JT 结束−偏移
-                jt1, jt2 = linked["JT"]
-                cs, ce = _cx_link_values(jt1, jt2)
+                # CX 跟 JT起始(v1.38 修订): 起始同 JT, 结束=起始−偏移(槽深固定)
+                cs, ce = _cx_link_values(linked["JT"][0])
                 try:
                     self._find("CX_start").Value = cs
                     self._find("CX_end").Value = ce
@@ -4521,6 +4584,10 @@ class ParamDialog(_BlockDialogBase):
             s = self._get_double(code + "_start", d_s)
             e = self._get_double(code + "_end", d_e)
             params[code] = (s, e)
+        # CX 恒随 JT(v1.38 设计): 采集时直接从"最终 JT"重算, 兜底旧版对话框
+        # 块程序化赋值后可能不即时重绘、导致 CX_end 停在旧值(如固定 -135)。
+        if "JT" in params and "CX" in params:
+            params["CX"] = _cx_link_values(params["JT"][0])
         return params
 
     def _collect_jrt(self):
@@ -4570,7 +4637,7 @@ class ParamDialog(_BlockDialogBase):
 
     def Launch(self):
         try:
-            return self.theDialog.Launch()
+            return _dlg_show(self.theDialog)
         except Exception as ex:
             self.theUI.NXMessageBox.Show("CAD3D", self.nx.NXMessageBox.DialogType.Error,
                                          str(ex))
@@ -4739,7 +4806,7 @@ class StdParamsDialog(_BlockDialogBase):
 
     def Launch(self):
         try:
-            return self.theDialog.Launch()
+            return _dlg_show(self.theDialog)
         except Exception as ex:
             self.theUI.NXMessageBox.Show("CAD3D", self.nx.NXMessageBox.DialogType.Error,
                                          str(ex))
@@ -5020,14 +5087,14 @@ def selftest(dxf_path=None):
     check("derive_linked 带 jt_mode 输出 JT",
           derive_linked(-40.0, -85.0, jt_mode="针阀模式")["JT"]
           == (-25.0, -100.0))
-    check("CX 联动: 起始同 JT, 结束=JT 结束-35",
-          _cx_link_values(-30.0, -100.0) == (-30.0, -135.0))
-    check("CX 联动示例: 假体(JT)结束-35 → CX 结束-70",
-          _cx_link_values(-30.0, -35.0) == (-30.0, -70.0))
+    check("CX 联动: 起始=JT起始, 结束=起始-35",
+          _cx_link_values(-30.0) == (-30.0, -65.0))
+    check("CX 联动示例: 起始-25 → 结束-60",
+          _cx_link_values(-25.0) == (-25.0, -60.0))
     dp = default_params()
     check("兜底 FLB -40/-85", dp["FLB"] == (-40.0, -85.0))
     check("兜底联动层推导(普通模式)",
-          dp["JT"] == (-30.0, -100.0) and dp["CX"] == (-30.0, -135.0)
+          dp["JT"] == (-30.0, -100.0) and dp["CX"] == (-30.0, -65.0)
           and dp["RZ"] == (-72.0, -85.0) and dp["DK"] == (-40.0, -43.0)
           and dp["LS"] == (-40.0, -85.0) and dp["DP"][0] == -78.2977)
     check("jt 模式记忆恢复", jt_mode_with_memory(
@@ -5626,6 +5693,46 @@ def selftest(dxf_path=None):
     return ok
 
 
+def _refresh_display(session, work_part, log=None):
+    """末帧强制刷新图形显示: 复刻用户手工"图层全开 + 全部隐藏再显示 + 重建"。
+
+    无界面/批量后新加体·组件·曲线常不自动重绘(旧版尤甚), 数据是对的, 只是视图
+    没刷。交互与 batch 两条路径末尾都调它。纯显示、每步 try 兜底, 任一 API 在
+    某版本缺失都跳过, 绝不影响模型正确性或中断流程。"""
+    if session is None or work_part is None:
+        return
+    # a) 全部图层置可见(view-based, NX 老版本即有):
+    try:
+        import NXOpen.Layer as _NL
+        _view = work_part.ModelingViews.WorkView
+        _states = [_NL.StateInfo(_i, _NL.State.Visible) for _i in range(1, 257)]
+        work_part.Layers.SetObjectsVisibilityOnLayer(_view, _states, True)
+    except Exception:
+        pass
+    # b) 逐个体/曲线 Unblank + RedisplayObject(等价"全部隐藏再显示"):
+    for _coll in (getattr(work_part, "Bodies", None),
+                  getattr(work_part, "Curves", None)):
+        if _coll is None:
+            continue
+        try:
+            _objs = list(_coll)
+        except Exception:
+            _objs = []
+        for _o in _objs:
+            for _m in ("Unblank", "RedisplayObject"):
+                try:
+                    getattr(_o, _m)()
+                except Exception:
+                    pass
+    # c) 全量重建:
+    for _inv in ("DoRebuilds", "DoUpdateAll"):
+        try:
+            getattr(session.UpdateManager, _inv)()
+            break
+        except Exception:
+            pass
+
+
 def batch_run(dxf_arg=None, params_override=None, std_override=None,
               jrt_override=None, new_part_name=None):
     """run_journal 无 UI 直跑(冒烟): 新建部件 → 跑两遍(第二遍验证清理重建)。
@@ -5672,7 +5779,9 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
     ok1, stats1 = run_pipeline(dxf, params, session=session, work_part=work_part,
                                log=log, std_rules=std_rules, jrt=jrt)
     ok2, stats2 = run_pipeline(dxf, params, session=session, work_part=work_part,
-                               log=log, std_rules=std_rules, jrt=jrt)
+                                log=log, std_rules=std_rules, jrt=jrt)
+    # 末帧刷新: run_pipeline 内部已调 _refresh_display, 这里对 batch 双跑后再兜一次。
+    _refresh_display(session, work_part, log)
     feats = 0
     try:
         feats = len([f for f in _iter(work_part.Features)

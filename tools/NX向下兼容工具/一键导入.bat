@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set "JOURNAL=%~dp0import_to_nx10.py"
+set "JOURNAL=%~dp0import_xt_to_prt.py"
 set "RUNNER="
 
 if defined UGII_BASE_DIR if exist "%UGII_BASE_DIR%\NXBIN\run_journal.exe" set "RUNNER=%UGII_BASE_DIR%\NXBIN\run_journal.exe"
@@ -13,7 +13,7 @@ if not defined RUNNER (
   echo [ERROR] NX run_journal.exe not found.
   echo.
   echo Alternative: open NX, then
-  echo   File ^-^> Execute ^-^> NX Open ... and pick import_to_nx10.py
+  echo   File ^-^> Execute ^-^> NX Open ... and pick import_xt_to_prt.py
   echo.
   pause
   exit /b 1
@@ -24,6 +24,6 @@ echo Journal   : "%JOURNAL%"
 echo.
 "%RUNNER%" "%JOURNAL%"
 echo.
-echo Done. See import_log.txt, output folder ..\NX10_prt
+echo Done. See import_log.txt, output folder x_t转prt
 echo.
 pause
