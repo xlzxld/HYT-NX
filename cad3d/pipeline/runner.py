@@ -81,7 +81,7 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
 
         nx_purge(session, work_part, log, dxf_layers=layers)
 
-        layer_map = assign_layers(list(layers.keys()))
+        layer_map = assign_layers(list(layers.keys()), work_part=work_part, log=log)
         ensure_categories(work_part, layer_map, log)
         nx_curves = create_curves(work_part, layers, layer_map, log)
 

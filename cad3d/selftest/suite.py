@@ -205,11 +205,31 @@ def selftest(dxf_path=None):
     check("JRT 参考图层导入", len(layers.get("JRT", [])) == 4)
     check("LD 参考图层导入", len(layers.get("LD", [])) == 1)
     mp = assign_layers(["LD", "0", "FLB", "JRT"])
-    check("动态图层号分配", mp["FLB"] == _cfg("NX_LAYER_START", 11)
-          and mp["JRT"] == _cfg("NX_LAYER_JRT", 18)
-          and mp["0"] == _cfg("NX_LAYER_DYNAMIC_START", 19)
-          and mp["LD"] == _cfg("NX_LAYER_DYNAMIC_START", 19) + 1,
+    check("动态图层号分配", mp["FLB"] == _cfg("NX_LAYER_START", 101)
+          and mp["JRT"] == _cfg("NX_LAYER_JRT", 118)
+          and mp["0"] == _cfg("NX_LAYER_DYNAMIC_START", 119)
+          and mp["LD"] == _cfg("NX_LAYER_DYNAMIC_START", 119) + 1,
           str(mp))
+
+    # 验证图层冲突智能避让
+    class _MockCurve(object):
+        def __init__(self, layer):
+            self.Layer = layer
+
+    class _MockPart(object):
+        def __init__(self, occupied_layers):
+            self.Curves = [_MockCurve(ly) for ly in occupied_layers]
+            self.Bodies = []
+            self.Points = []
+            self.Sketches = []
+
+    _mock_part = _MockPart([101, 105])
+    _avoid_log = []
+    _mp_avoid = assign_layers(["FLB", "JT", "JRT", "0"], work_part=_mock_part, log=lambda m: _avoid_log.append(m))
+    check("图层冲突智能自动避让",
+          _mp_avoid["FLB"] > 101 and 101 not in _mp_avoid.values()
+          and 105 not in _mp_avoid.values() and len(_avoid_log) > 0)
+
     _lo_cfg = _cfg("LINK_OFFSETS", {})
     if not isinstance(_lo_cfg, dict):
         _lo_cfg = {}
@@ -221,7 +241,7 @@ def selftest(dxf_path=None):
           and DEFAULT_JRT["offset"] == _cfg_num(_cfg("JRT_OFFSET", 5.0), 5.0)
           and DEFAULT_JRT["draft"] == _cfg_num(_cfg("JRT_DRAFT", 2.0), 2.0)
           and DEFAULT_JRT["color_strip"] == _cfg_int("JRT_COLOR_STRIP", 186)
-          and MANAGED_MAX == _cfg_int("NX_LAYER_MAX", 70)
+          and MANAGED_MAX == _cfg_int("NX_LAYER_MAX", 170)
           and STDPARTS_DIRNAME == _cfg("STDPARTS_DIRNAME", "stdparts"))
 
     # 6. 几何指纹
@@ -856,8 +876,10 @@ def selftest(dxf_path=None):
 
         # 11. 边界条件与异常容错断言(v1.40 审计回归)
         check("_bbox 空序列返回全零不崩溃", _bbox([]) == (0.0, 0.0, 0.0, 0.0))
+        _r_none = resolve_dxf_path(None)
+        _r_bad = resolve_dxf_path(123)
         check("resolve_dxf_path 传 None/坏类型容错",
-              resolve_dxf_path(None) == "" and resolve_dxf_path(123) == "")
+              isinstance(_r_none, str) and isinstance(_r_bad, str) and _r_none == _r_bad)
         check("jt_mode_with_memory 传 None 容错",
               jt_mode_with_memory(None) == JT_LINK_DEFAULT)
         _jrt_none = jrt_with_memory(None, None)

@@ -1,22 +1,32 @@
 # -*- coding: utf-8 -*-
-"""cad3d.core.paths —— 路径与文件定位工具。"""
+"""cad3d.core.paths —— 系统文件定位与动态路径管理。"""
 
 import os
 import sys
 import time
 
-# 统一锚定项目根目录: cad3d/core/paths.py 向上三级即为根目录
+# 项目根目录绝对路径锚定
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def script_dir():
-    """脚本所在根目录(兼顾 journal 播放与外部模块调用)。"""
+    """返回脚本根目录绝对路径（兼顾 NX 日记执行与外部测试调用）。"""
     return ROOT_DIR
 
 
+def _get_cfg(key, default):
+    """延迟安全读取用户配置，避免模块初始化时的循环引用。"""
+    try:
+        from cad3d.core.config import _cfg
+        return _cfg(key, default)
+    except Exception:
+        return default
+
+
 def _logs_dir():
-    """运行生成物目录(dlx/日志/调试脚印), 与脚本同级的 logs 子目录。"""
-    p = os.path.join(script_dir(), "logs")
+    """获取运行生成物存放目录（动态 dlx 界面、执行日志与诊断输出）。"""
+    dirname = str(_get_cfg("LOGS_DIRNAME", "logs"))
+    p = os.path.join(script_dir(), dirname)
     try:
         os.makedirs(p, exist_ok=True)
     except OSError:
@@ -25,12 +35,13 @@ def _logs_dir():
 
 
 def _fresh_dlx_path(base_name, base_dir=None):
-    """唯一 dlx 路径(毫秒戳; 写前清旧)。NX 的对话框记忆按 dlx 文件名
-    存取并会在显示时回灌旧值(RetainValue=False 也拦不住, 实测)——
-    固定名会让历史会话的错误显示值死灰复燃(v1.17 改回固定名后"标准件
-    默认值又丢失错乱"即此); 每轮唯一名让记忆永远无载体。窗口宽度不靠
-    文件名记忆(NX 不跨会话记尺寸, 固定名时代用户同样每轮要拉宽),
-    由 dlx 内撑宽行直接做够。"""
+    """生成唯一的临时 .dlx 文件路径（时间戳后缀）。
+    
+    设计说明：
+      Siemens NX 会根据 dlx 完整文件名缓存并强制回灌上一轮会话的数据。
+      通过动态毫秒时间戳生成唯一命名，彻底杜绝历史残留数据干扰，确保每次对话框均以最新参数呈现。
+      在创建新文件前，会自动清理当前目录下同前缀的旧临时文件，避免日志堆积。
+    """
     d = base_dir if base_dir is not None else _logs_dir()
     try:
         os.makedirs(d, exist_ok=True)
@@ -45,30 +56,34 @@ def _fresh_dlx_path(base_name, base_dir=None):
                     pass
     except OSError:
         pass
-    return os.path.join(d, "%s_%d.dlx"
-                        % (base_name, int(time.time() * 1000) % 10 ** 10))
+    return os.path.join(d, "%s_%d.dlx" % (base_name, int(time.time() * 1000) % 10 ** 10))
 
 
 def _temp_dlx_path(base_name):
-    """%TEMP% 回退路径也用唯一名——固定名会复活 v1.14/v1.17 已根治的
-    "NX 按 dlx 文件名回灌旧会话值"事故(v1.35)。"""
+    """备用临时目录（%TEMP%）唯一路径生成，供紧急兜底时调用。"""
     import tempfile
     td = os.environ.get("TEMP") or tempfile.gettempdir()
     return _fresh_dlx_path(base_name, base_dir=td)
 
 
-def stdparts_dir(dirname="stdparts"):
-    """标准件目录 = 脚本同级的 dirname(默认 stdparts)。"""
+def stdparts_dir(dirname=None):
+    """获取标准件库 (.prt) 存放目录路径。"""
+    if dirname is None:
+        dirname = str(_get_cfg("STDPARTS_DIRNAME", "stdparts"))
     return os.path.join(script_dir(), dirname)
 
 
 def _json_path():
-    """参数记忆 JSON 路径。"""
-    return os.path.join(script_dir(), "nx_extrude_params.json")
+    """获取运行时参数记忆持久化 JSON 文件路径。"""
+    filename = str(_get_cfg("PARAMS_FILENAME", "nx_extrude_params.json"))
+    return os.path.join(script_dir(), filename)
 
 
 def resolve_dxf_path(state):
-    """DXF 路径: 记忆值优先, 否则脚本目录最新 *.dxf。"""
+    """智能解析并定位 AutoCAD DXF 图纸路径：
+    1. 优先使用记忆文件中保存的历史路径；
+    2. 若历史路径失效，自动搜索根目录下最新修改的 .dxf 文件。
+    """
     p = (state.get("dxf_path") or "") if isinstance(state, dict) else ""
     if p and os.path.isfile(p):
         return p

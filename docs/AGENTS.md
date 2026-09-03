@@ -1,4 +1,4 @@
-# AGENTS.md —— NX 分层拉伸自动化（AI 接手文档）  v2.0
+# AGENTS.md —— NX 分层拉伸自动化（AI 接手文档）  v2.1
 
 > 本文档写给**接手本项目的 AI**，位于 docs\ 子目录。用户手册（给人看）在同目录 `使用手册.md`。
 
@@ -6,7 +6,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 主脚本 | `nx_extrude_runner.py`（v2.0 兼容门面 Facade + 日记入口；核心位于 `cad3d/` 包） |
+| 主脚本 | `nx_extrude_runner.py`（v2.1 兼容门面 Facade + 日记入口；核心位于 `cad3d/` 包） |
 | 可移植性 | 整个 NX\ 文件夹自包含，脚本头已内置绝对路径引导与字节码禁写，可随意移动/拷贝 |
 | 生成物 | dlx/运行报告/调试脚印统一写入 `logs\`；__pycache__ 已禁生成 |
 | 配置 | `nx_std_config.py`（用户手工编辑；主脚本 `_load_user_config()` 动态加载，缺文件/缺键逐项回退内置默认） |
@@ -125,14 +125,14 @@
 | `JRT_INTRUSION_DEFAULT` | 加热条入侵深度默认 7.5 |
 | `JRT_OFFSET/JRT_DRAFT` | 壁偏置 5.0/拔模 2.0 |
 | `JRT_COLOR_STRIP/MODEL/TRANSLUCENCY` | 186/78/50 |
-| `NX_LAYER_START/JRT/DYNAMIC_START/MAX` | 图层分配 11/18/19/70 |
+| `NX_LAYER_START/JRT/DYNAMIC_START/MAX` | 高位图层分配 101/118/119/170（支持冲突智能自动避让） |
 | `LAYER_START_DEFAULTS` | 兜底初始拉伸距离（FLB -40/-85；联动层由 runner 按 FLB 推导，表中数值为普通模式快照） |
 | `STD_MAX_ANCHORS` | 单件放置数护栏 200 |
 | `JRT_BLEND_R/R_STEP/R_MIN_DEFAULT` | 3.9/0.1/3.7（永不进记忆） |
 
 ## 7. 版本历史（详见主脚本文件头；此处仅骨架）
 
-v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导；修复选件落盘抹 jt_link_mode（模式记不住） · v1.39 标准件下放工具包重组（`stdparts\NX8兼容_x_t` + `stdparts\_nx_export` 合并收拢改名 `tools\NX向下兼容工具\`：export_xt.py / verify_import.py / import_xt_to_prt.py / 一键导入.bat；x_t 统一入包内 `xt\`，产出 prt 在包内 `x_t转prt\`（prt 版本=执行导入的本机 NX 版本）；stage/tmp 跑完自删，使用说明重写，弃用 v1 export_ps 清理；NX2312 端到端实测 14/14） · v1.40 NX10/12 兼容收尾+显示刷新+CX 修正：`_set_expr`(旧版无 Expression.SetFormula→RightHandSide)、`_dlg_show`(旧版 BlockDialog 无 Launch→Show)、`_refresh_display`(无界面/旧版末帧不重绘→图层全开+Unblank+RedisplayObject+重建，交互与批量共用)、`stdparts_dir` 回退固定读 stdparts(旧版 .prt 直接放入)、CX 结束改按 CX 起始−偏移(不再跟 JT 结束)；配套探针 v2.3(API026)+新增 `batch_smoke.py` 端到端冒烟；NX10/NX12 真机端到端通过 · v2.0 全面架构模块化定版：解耦拆分为 cad3d 核心包（core/geom/modeling/pipeline/ui/selftest）+ nx_extrude_runner.py 320 行 Facade 兼容门面，补齐绝对路径引导与字节码禁写，全套边界异常防崩加固，180 项断言全绿通过。
+v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导；修复选件落盘抹 jt_link_mode（模式记不住） · v1.39 标准件下放工具包重组（`stdparts\NX8兼容_x_t` + `stdparts\_nx_export` 合并收拢改名 `tools\NX向下兼容工具\`：export_xt.py / verify_import.py / import_xt_to_prt.py / 一键导入.bat；x_t 统一入包内 `xt\`，产出 prt 在包内 `x_t转prt\`（prt 版本=执行导入的本机 NX 版本）；stage/tmp 跑完自删，使用说明重写，弃用 v1 export_ps 清理；NX2312 端到端实测 14/14） · v1.40 NX10/12 兼容收尾+显示刷新+CX 修正：`_set_expr`(旧版无 Expression.SetFormula→RightHandSide)、`_dlg_show`(旧版 BlockDialog 无 Launch→Show)、`_refresh_display`(无界面/旧版末帧不重绘→图层全开+Unblank+RedisplayObject+重建，交互与批量共用)、`stdparts_dir` 回退固定读 stdparts(旧版 .prt 直接放入)、CX 结束改按 CX 起始−偏移(不再跟 JT 结束)；配套探针 v2.3(API026)+新增 `batch_smoke.py` 端到端冒烟；NX10/NX12 真机端到端通过 · v2.0 全面架构模块化定版：解耦拆分为 cad3d 核心包（core/geom/modeling/pipeline/ui/selftest）+ nx_extrude_runner.py 320 行 Facade 兼容门面，补齐绝对路径引导与字节码禁写，全套边界异常防崩加固，180 项断言全绿通过 · v2.1 全量配置解耦与高位图层智能避让：消灭所有写死数据与硬编码，nx_std_config.py 划分为 7 大工程模块，nx_extrude_params.json 注入 $schema_description 详细说明元数据与自愈机制；默认采用 101~170 高位图层将 1~100 完全物理留给用户自绘图形；内置图层冲突检测与连续空闲图层自动平移避让引擎；测试断言增至 181 项全绿通过。
 
 **NX10/12 向下兼容改造（已随 v1.40 入库）**：主脚本兼容助手 `_add_to_section_compat`(旧版 AddToSection 用类型化 null)/`_sc_rule_options`(旧版无 CreateRuleOptions)/`_set_expr`(旧版无 Expression.SetFormula)/`_dlg_show`(旧版 BlockDialog 无 Launch)/`_import_module_from_path`(NX10 importlib) + `_refresh_display`(无界面/旧版末帧重绘) + EdgeBlend 逐属性守卫；`stdparts_dir()` 固定读 `stdparts`，旧版交付把 `tools\NX向下兼容工具\` 还原的本机 .prt 直接放入 `stdparts\`(覆盖同名)，无版本切换。详见 §4 第 21~28 条与 `docs\NX10-12兼容性评估报告.md`。`--selftest` 全绿；探针 `tools\probe_nx_compat.py` v2.3；端到端 `batch_smoke.py`/交互在 NX10/NX12 真机实测通过（建模主链 + 显示 + 标准件加载 + CX 联动）。**下放工具链在 `tools\NX向下兼容工具\`**（export_xt.py / verify_import.py / import_xt_to_prt.py / 一键导入.bat；x_t 入包内 `xt\`、产出 prt 在 `x_t转prt\`、运行日志 `*_log.txt` 均已 gitignore），导出→校验→导入在 NX2312 实测 14/14。
 

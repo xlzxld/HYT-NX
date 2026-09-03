@@ -128,18 +128,34 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
             except Exception:
                 pass
         tmp = "%s.tmp" % p
+        data = {
+            "$schema_description": {
+                "file_purpose": "CAD3D 自动化分层拉伸运行时参数记忆持久化文件（由程序自动维护）",
+                "tips": "如遇参数错乱，可直接删除本文件，系统下次运行会自动以 nx_std_config.py 出厂配置重建",
+                "fields": {
+                    "schema": "记忆数据结构版本号，需与 nx_std_config.py 的 CONFIG_SCHEMA_VERSION 保持一致",
+                    "dxf_path": "上次成功读取的 AutoCAD 2D 图纸 (.dxf) 绝对路径",
+                    "params": "各图层的拉伸起始与结束绝对坐标 [起始, 结束] (mm)",
+                    "std_parts": "各标准件的独立参数微调字典（图层、搜索半径、Z基准、布尔方式、姿态偏移）",
+                    "selected": "上次在【标准件选择窗口】中勾选激活的标准件零件文件名清单",
+                    "jrt_se": "加热条 (JRT) 的起止区间 [起始, 结束] (mm)",
+                    "jt_link_mode": "上次选中的假体 (JT) 联动模式（如'普通模式'或'针阀模式'）"
+                }
+            },
+            "schema": SCHEMA_VERSION,
+            "dxf_path": dxf_path,
+            "params": params,
+            "std_parts": std_rules or {},
+            "selected": _name_list(selected),
+            "jrt_se": (list(jrt_se)
+                       if isinstance(jrt_se, (list, tuple))
+                       and len(jrt_se) == 2 else None),
+            "jt_link_mode": (jt_link_mode
+                             if isinstance(jt_link_mode, str)
+                             else None)
+        }
         with io.open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"schema": SCHEMA_VERSION,
-                       "dxf_path": dxf_path, "params": params,
-                       "std_parts": std_rules or {},
-                       "selected": _name_list(selected),
-                       "jrt_se": (list(jrt_se)
-                                  if isinstance(jrt_se, (list, tuple))
-                                  and len(jrt_se) == 2 else None),
-                       "jt_link_mode": (jt_link_mode
-                                        if isinstance(jt_link_mode, str)
-                                        else None)}, f,
-                      ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, p)
         tmp = None
     except Exception as ex:
