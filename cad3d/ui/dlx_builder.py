@@ -412,11 +412,12 @@ def build_dlx(params=None, jrt=None, jt_mode=None):
 
     # 文件组
     g_file = _group_item(
-        "grp_file", "输入文件",
-        _blk_filebrowser("dxf_file", "DXF 文件", "*.dxf") + _blk_label(
+        "grp_file", "输入图纸文件 (DWG / DXF)",
+        _blk_filebrowser("dxf_file", "图纸文件", "*.dwg;*.dxf") + _blk_label(
             "hint_label",
-            "提示: 起始=结束=0 的图层跳过; LS/RZ/DK 拉伸后从 FLB 减去; "
-            "曲线按图层导入到 NX 图层 %d~%d, 特征名前缀 CAD3D_。"
+            "提示: 支持直接选取 .dwg 或 .dxf 图纸(DWG 自动后台无头转换并即用即销); "
+            "起始=结束=0 的图层跳过; LS/RZ/DK 拉伸后从 FLB 减去; "
+            "曲线默认导入 NX 高位图层 %d~%d (冲突自动避让)。"
             % (MANAGED_MIN, MANAGED_MAX)),
         columns=1)
 

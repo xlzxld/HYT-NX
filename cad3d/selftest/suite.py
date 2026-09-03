@@ -15,7 +15,8 @@ import time
 import xml.etree.ElementTree as ET
 
 from cad3d.core.paths import (
-    script_dir, _fresh_dlx_path, _json_path, _temp_dlx_path, resolve_dxf_path
+    script_dir, _fresh_dlx_path, _json_path, _temp_dlx_path, resolve_dxf_path,
+    _logs_dir
 )
 from cad3d.core.config import (
     _CFG_NOTES, _cfg, _cfg_num, _cfg_int, _USER_CFG, SCHEMA_VERSION
@@ -191,11 +192,7 @@ def selftest(dxf_path=None):
     check("两半弧成环 + 圆轮廓", len(profs4) == 2)
 
     # 5. 合成 DXF 解析
-    sample = os.path.join(script_dir(), ".zcode", "sample_layers.dxf")
-    try:
-        os.makedirs(os.path.dirname(sample), exist_ok=True)
-    except OSError:
-        pass
+    sample = os.path.join(_logs_dir(), "sample_layers.dxf")
     make_sample_dxf(sample)
     layers, stats = parse_dxf(sample)
     check("合成 DXF 各层曲线数",
@@ -913,6 +910,36 @@ def selftest(dxf_path=None):
               "Dialog" in build_std_dlx({"part.prt": {}}, {}))
         _bld_b, _bld_r = build_layer(None, None, "FLB", "分流板", "target", {}, {}, None, [], Log(), {})
         check("build_layer 传 None 参数安全跳过不崩溃", _bld_b == [] and _bld_r == [])
+
+        # 12. AutoCAD DWG 后台转换与自动销毁验证
+        from cad3d.geom.dwg_converter import (
+            find_acad_executable, convert_dwg_to_dxf, DwgConversionError
+        )
+        _acad_exe, _is_core = find_acad_executable()
+        check("AutoCAD 转换程序智能探测(返回元组)",
+              (_acad_exe is None or isinstance(_acad_exe, str)) and isinstance(_is_core, bool))
+
+        _fixture_dwg = os.path.join(script_dir(), "test", "fixtures", "3Dtest.dwg")
+        if _acad_exe and os.path.isfile(_fixture_dwg):
+            _conv_dxf = convert_dwg_to_dxf(_fixture_dwg)
+            check("DWG 后台自动转 DXF 生成有效文件",
+                  os.path.isfile(_conv_dxf) and os.path.getsize(_conv_dxf) > 1000)
+            _dwg_layers, _dwg_stats = parse_dxf(_conv_dxf)
+            check("DWG 转换产物 DXF 可被核心解析器完整解析",
+                  "FLB" in _dwg_layers and _dwg_stats["total"] > 50)
+            try:
+                os.remove(_conv_dxf)
+            except Exception:
+                pass
+            check("DWG 临时 DXF 缓存安全即用即销", not os.path.isfile(_conv_dxf))
+        else:
+            # 异常防御分支验证
+            _bad_dwg_caught = False
+            try:
+                convert_dwg_to_dxf(os.path.join(script_dir(), "non_existent.dwg"))
+            except DwgConversionError:
+                _bad_dwg_caught = True
+            check("DWG 文件不存在时抛出 DwgConversionError 防御异常", _bad_dwg_caught)
     finally:
         _sh.rmtree(_td, ignore_errors=True)
 

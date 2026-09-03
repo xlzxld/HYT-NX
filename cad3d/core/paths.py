@@ -80,16 +80,16 @@ def _json_path():
 
 
 def resolve_dxf_path(state):
-    """智能解析并定位 AutoCAD DXF 图纸路径：
+    """智能解析并定位 AutoCAD 图纸路径 (DWG / DXF)：
     1. 优先使用记忆文件中保存的历史路径；
-    2. 若历史路径失效，自动搜索根目录下最新修改的 .dxf 文件。
+    2. 若历史路径失效，自动搜索根目录下最新修改的 .dwg 或 .dxf 文件。
     """
     p = (state.get("dxf_path") or "") if isinstance(state, dict) else ""
     if p and os.path.isfile(p):
         return p
     try:
         cands = [os.path.join(script_dir(), n) for n in os.listdir(script_dir())
-                 if n.lower().endswith(".dxf")]
+                 if n.lower().endswith((".dxf", ".dwg"))]
         if cands:
             return max(cands, key=os.path.getmtime)
     except OSError:

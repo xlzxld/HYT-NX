@@ -13,3 +13,6 @@ from cad3d.geom.eval import (
     _q, _nx_curve_fp, _dxf_ent_fp, dxf_fingerprints, _faces_healthy,
     _flush_start_r, _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides
 )
+from cad3d.geom.dwg_converter import (
+    convert_dwg_to_dxf, find_acad_executable, DwgConversionError
+)

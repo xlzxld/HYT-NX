@@ -224,3 +224,9 @@ STD_MAX_ANCHORS = 200
 STDPARTS_DIRNAME = "stdparts"                 # 标准件 .prt 存放库目录
 LOGS_DIRNAME     = "logs"                     # 动态 .dlx 与调试日志生成目录
 PARAMS_FILENAME  = "nx_extrude_params.json"   # 运行时记忆持久化文件名
+
+# AutoCAD 转换引擎路径（可选；用于自动将 .dwg 图纸后台静默转换为 .dxf 建模）
+# 默认 None 表示系统自动探测（自动查找注册表及高低版本 AutoCAD 路径）
+# 若您的电脑将 AutoCAD 安装在自定义特殊目录，可在此直接指定路径，例如：
+# ACAD_CONSOLE_PATH = r"C:\Program Files\Autodesk\AutoCAD 2024\accoreconsole.exe"
+ACAD_CONSOLE_PATH = None

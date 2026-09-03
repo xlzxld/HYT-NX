@@ -7,7 +7,7 @@ from cad3d.core.config import (
 )
 
 # 脚本与系统版本标识
-SCRIPT_VERSION = "2.1"
+SCRIPT_VERSION = "2.2"
 
 # 命名空间前缀配置（支持在 nx_std_config.py 中自定义）
 FEATURE_PREFIX = str(_cfg("FEATURE_PREFIX", "CAD3D_"))

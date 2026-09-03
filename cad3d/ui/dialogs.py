@@ -418,11 +418,13 @@ class ParamDialog(_BlockDialogBase):
     def _dxf_valid_or_warn(self):
         p = self._get_path()
         if p and os.path.isfile(p):
-            return True
+            ext = os.path.splitext(p)[1].lower()
+            if ext in (".dxf", ".dwg"):
+                return True
         try:
             self.theUI.NXMessageBox.Show(
                 "CAD3D", self.nx.NXMessageBox.DialogType.Warning,
-                "DXF 文件不存在或路径无效:\n%s\n\n请重新选择有效的 .dxf 图纸。"
+                "图纸文件不存在或路径无效:\n%s\n\n请重新选择有效的 .dwg 或 .dxf 图纸。"
                 % (p or "(未选择)"))
         except Exception:
             pass
@@ -431,7 +433,7 @@ class ParamDialog(_BlockDialogBase):
     def _prefill_all(self):
         self._initializing = True
         try:
-            self._set_label("grp_file", "输入文件")
+            self._set_label("grp_file", "输入图纸文件 (DWG / DXF)")
             self._set_label("grp_flb", DIALOG_GROUPS[0][1])
             self._set_label("grp_plain", DIALOG_GROUPS[1][1])
             self._set_label("grp_sub", DIALOG_GROUPS[2][1])
@@ -454,7 +456,7 @@ class ParamDialog(_BlockDialogBase):
                     except Exception:
                         pass
             try:
-                self.theDialog.TopBlock.Label = "NX 分层拉伸 (DXF→3D)"
+                self.theDialog.TopBlock.Label = "NX 分层拉伸 (DWG/DXF→3D)"
             except Exception:
                 pass
             p = self.state.get("dxf_path") or resolve_dxf_path(self.state)
