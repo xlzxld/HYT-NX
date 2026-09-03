@@ -6,7 +6,7 @@ from cad3d.core.config import (
     _JRT_BLEND_R, _JRT_R_STEP, _JRT_R_MIN, SCHEMA_VERSION
 )
 
-SCRIPT_VERSION = "1.40"
+SCRIPT_VERSION = "2.0"
 FEATURE_PREFIX = "CAD3D_"          # 本脚本产出的特征名前缀(清理/重建依据)
 COMP_PREFIX    = FEATURE_PREFIX + "C_"   # 标准件组件实例名前缀
 LOOP_TOL       = 0.01              # 环链端点连接容差(mm)

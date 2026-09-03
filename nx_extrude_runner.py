@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""nx_extrude_runner.py — NX 分层拉伸自动化（CAD DXF → 3D）  v1.40  2026-09-02
+"""nx_extrude_runner.py — NX 分层拉伸自动化（CAD DXF → 3D）  v2.0  2026-09-03
 
 重构说明:
   本文件作为向后兼容门面 (Facade)，向外部保留全部历史公共与私有符号 API。
@@ -15,6 +15,14 @@
 import io
 import os
 import sys
+
+# ----------------------------------------------------------------------------
+# 运行时环境配置与绝对路径引导 (确保在任意外部工作目录/NX日记播放均能正确定位)
+# ----------------------------------------------------------------------------
+sys.dont_write_bytecode = True
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 # ----------------------------------------------------------------------------
 # NX Journal 解释器持久化缓存驱逐: 确保每次播放日记都重新加载 cad3d 包代码
