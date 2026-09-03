@@ -406,6 +406,17 @@ def _note(msg):
         _CFG_NOTES.append(msg)
 
 
+def notes():
+    """(P0 拆分前置) 提示队列只读快照 —— 消费方统一取这里, 不直接碰全局列表。
+
+    背景: 此前三处消费方(run_pipeline/自测/batch_run)直接迭代全局
+    _CFG_NOTES。该列表将来会随规则层搬进 nx_rules, 跨模块共享可变全局是
+    拆分地雷(搬走后主脚本这里是 None, 搬到的模块里是另一份)。改走访问器后
+    无论底层列表在哪, 消费侧代码不变。语义与旧代码逐字一致(只取快照)。
+    """
+    return list(_CFG_NOTES)
+
+
 def _cfg_num(v, default):
     """任意配置值 → float; 类型/值非法(含 nan/inf)回 default, 不崩。"""
     try:
@@ -613,40 +624,10 @@ if JT_LINK_DEFAULT not in JT_LINK_MODES:
 JT_LINK_OPTS = [(k, k) for k in JT_LINK_MODES]
 
 
-def _jt_link_values(top, bottom, mode):
-    """FLB top/bottom + 联动模式 → JT (起始, 结束)。模式无效回默认模式。"""
-    off = (JT_LINK_MODES.get(mode) or JT_LINK_MODES.get(JT_LINK_DEFAULT)
-           or _JT_LINK_FALLBACK["普通模式"])
-    return (top + off[0], bottom + off[1])
-
-
-def jt_mode_with_memory(state):
-    """打开时的 JT 联动模式: 记忆有效用记忆, 否则回 config 默认。"""
-    m = state.get("jt_link_mode")
-    if isinstance(m, str) and m in JT_LINK_MODES:
-        return m
-    return JT_LINK_DEFAULT
-
-
 # CX 联动(v1.38): CX 起始恒=JT 起始; CX 结束 = CX 起始 − 偏移(槽深固定, 随自身
 # 顶面走; 不再跟 JT 结束——JT 结束会随联动模式漂移, 不适合作槽底基准)。
 # config CX_LINK_END_OFFSET 可改, 默认 35; CX 起始 -30 → 结束 -65。
 _CX_LINK_END_OFF = _cfg_num(_cfg("CX_LINK_END_OFFSET", 35.0), 35.0)
-
-
-def _cx_link_values(cx_start):
-    """CX 起始(=JT 起始) → CX (起始, 结束): 起始原样, 结束=起始−偏移。"""
-    return (cx_start, cx_start - _CX_LINK_END_OFF)
-
-
-def derive_linked(top, bottom, jt_mode=None):
-    """FLB top/bottom → 联动层参数 {code: (v1, v2)} + JRT 区间。
-    jt_mode 给定时额外返回 JT 联动值(v1.37)。"""
-    out = {code: fn(top, bottom) for code, fn in LINK_RULES.items()}
-    out["JRT"] = (top, top - JRT_FROM_TOP)
-    if jt_mode is not None:
-        out["JT"] = _jt_link_values(top, bottom, jt_mode)
-    return out
 
 # ---------------------------------------------------------------------------
 # 标准件规则(stdparts 目录每 .prt 文件一条; 选项表 = 值/中文标签, 对话框按序号映射)
@@ -695,7 +676,41 @@ if _USER_CFG is not None:
         _ZMODE_DEFS = _zm
     else:
         _note("ZMODE_DEFS 为空或无有效行, 回退内置三种基准。")
-ZMODE_OPTS     = [(k, lbl + "+偏移") for k, lbl, _ly, _sd in _ZMODE_DEFS]
+
+
+def zmode_defs():
+    """(P0 拆分前置) Z 基准表只读快照 —— sanitize/_std_z/选项表/自测统一取这里。
+
+    背景: 此前消费方直接引用全局 _ZMODE_DEFS, 自测还临时 append/pop 该全局表
+    验证"动态加基准"。该表将来随规则层搬进 nx_rules, 跨模块共享可变全局表是
+    拆分地雷。改走访问器 + 下方 temporary_zmode 上下文管理器后语义逐字不变。
+    """
+    return list(_ZMODE_DEFS)
+
+
+class temporary_zmode(object):
+    """临时向 Z 基准表追加一行, 退出时必还原(异常也不污染全局), 仅供自测。
+
+    等价于旧代码的手工 try/finally append/pop, 但把"用完必还原"固化成上下文
+    管理器, 拆分后测试代码不依赖全局表的物理位置。
+    """
+
+    def __init__(self, row):
+        self._row = tuple(row)
+
+    def __enter__(self):
+        _ZMODE_DEFS.append(self._row)
+        return self
+
+    def __exit__(self, *exc_info):
+        try:
+            _ZMODE_DEFS.remove(self._row)
+        except ValueError:
+            pass
+        return False
+
+
+ZMODE_OPTS     = [(k, lbl + "+偏移") for k, lbl, _ly, _sd in zmode_defs()]
 BOOL_OPTS      = [("PLACE", "仅放置"), ("PLACE_SUBTRACT", "放置+减去"),
                   ("SUBTRACT", "仅减去(隐藏件)"), ("UNITE", "合并进FLB")]
 DIR_OPTS       = [("+Z", "+Z插入"), ("-Z", "-Z翻转")]
@@ -713,186 +728,8 @@ JRT_FIELDS = [
     ("r_min", "边倒圆R下限"),
 ]
 
-def jrt_with_memory(state, params):
-    """打开时的加热条参数: 三几何参数恒默认; 起始/结束有记忆用记忆,
-    无记忆按 FLB 当前参数联动。"""
-    jrt = dict(DEFAULT_JRT)
-    se = None
-    if state.get("schema") == SCHEMA_VERSION:
-        v = state.get("jrt_se")
-        if isinstance(v, (list, tuple)) and len(v) == 2:
-            try:
-                se = (float(v[0]), float(v[1]))
-            except (TypeError, ValueError):
-                se = None
-    if se is None:
-        s, e = params.get(TARGET_CODE, (0.0, 0.0))
-        se = derive_linked(max(s, e), min(s, e)).get(
-            "JRT", (DEFAULT_JRT["start"], DEFAULT_JRT["end"]))
-    jrt["start"], jrt["end"] = se
-    return jrt
-
-
 # 单件最大放置数量护栏(nx_std_config.STD_MAX_ANCHORS 可调; 非法回默认)
 STD_MAX_ANCHORS = (_cfg_int("STD_MAX_ANCHORS", 200))
-
-
-def anchors_overflow(anchors, rule):
-    """(纯逻辑) 数量超限或"空图层+大半径"指纹 → True。"""
-    if len(anchors) > STD_MAX_ANCHORS:
-        return True
-    return (not rule.get("layer")) and float(rule.get("r_max", 0.0)) >= 999.0
-
-
-def stdparts_dir():
-    """标准件目录 = 脚本同级的 STDPARTS_DIRNAME(默认 stdparts)。
-
-    跨版本约定: .prt 只向下不向上兼容, NX2312 母版在旧版 NX(8/10/12) 打不开。
-    故交付旧版时, 用 tools\\NX向下兼容工具\\ 把母版还原成目标机版本 .prt, 直接
-    放进 stdparts\\(覆盖同名), 脚本按同目录读即可——无需按版本切换目录。"""
-    return os.path.join(script_dir(), STDPARTS_DIRNAME)
-
-
-def std_part_defaults(fname, table=None):
-    """件的默认规则(两级匹配)或 None(无默认——新件)。
-
-    v1.30 两级匹配: 精确文件名行(带/不带 .prt)优先于关键词子串行;
-    每件实测的参考点写在精确行里。table 参数供 selftest 注入测试表。
-      主进胶(DP,0~8,FLB底,仅放置) 垫片(DK,0~5,FLB顶,放置+减去)
-      大水口/点胶口(RZ,0~15,FLB底,仅放置) 螺丝(LS,0~5,FLB顶,放置+减去)
-    恢复默认按钮仅对返回非 None 的件显示(无默认的新件点按钮=无效不报错)。
-    """
-    # 出厂默认表在 nx_std_config.py(注释齐全可自行编辑); 这里只是
-    # 配置文件缺失时的内置兜底(内容同款)。
-    if table is None and _USER_CFG is not None:
-        try:
-            table = [(str(k), dict(v))
-                     for k, v in _USER_CFG.STD_PART_DEFAULTS]
-        except Exception:
-            table = None
-    if not table:
-        table = (
-            ("主进胶", {"layer": "DP", "r_min": 0.0, "r_max": 8.0,
-                      "z_mode": "FLB_BOTTOM",
-                      "bool_mode": "PLACE_SUBTRACT"}),
-            ("大水口", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0,
-                      "z_mode": "FLB_BOTTOM"}),
-            ("点胶口", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0,
-                      "z_mode": "FLB_BOTTOM"}),
-            ("热咀", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0,
-                     "z_mode": "FLB_BOTTOM"}),
-            ("nozzle", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0,
-                       "z_mode": "FLB_BOTTOM"}),
-            ("螺丝", {"layer": "LS", "r_min": 0.0, "r_max": 5.0,
-                    "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
-            ("screw", {"layer": "LS", "r_min": 0.0, "r_max": 5.0,
-                     "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
-            ("ls-", {"layer": "LS", "r_min": 0.0, "r_max": 5.0,
-                   "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
-            ("接线盒", {"layer": "CXK", "z_mode": "CX_TOP"}),
-            ("垫片", {"layer": "DK", "r_min": 0.0, "r_max": 5.0,
-                    "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
-            ("washer", {"layer": "DK", "r_min": 0.0, "r_max": 5.0,
-                      "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
-        )
-    low = fname.lower()
-    stem = low[:-4] if low.endswith('.prt') else low
-    for key, over in table:
-        k = key.lower()
-        if k == low or k == stem or k == stem + '.prt':
-            r = dict(DEFAULT_STD_RULE)
-            r.update(over)
-            return r
-    for key, over in table:
-        if key.lower() in low:
-            r = dict(DEFAULT_STD_RULE)
-            r.update(over)
-            return r
-    return None
-
-
-def guess_std_rule(fname):
-    """按文件名猜默认规则(无命中回通用默认; ref 必填由 config 提供)。"""
-    d = std_part_defaults(fname)
-    return d if d is not None else dict(DEFAULT_STD_RULE)
-
-
-def sanitize_std_rule(rule):
-    """规则字段规范化(坏值回默认, r_min/r_max 保序)。"""
-    out = dict(DEFAULT_STD_RULE)
-    if not isinstance(rule, dict):
-        return out
-    lay = str(rule.get("layer", "") or "").upper()
-    out["layer"] = lay if lay in LAYER_CODES + ["CXK"] else ""
-    for k in ("r_min", "r_max", "off_x", "off_y", "off_z"):
-        try:
-            out[k] = float(rule.get(k, out[k]))
-        except (TypeError, ValueError):
-            pass
-    if out["r_max"] < out["r_min"]:
-        out["r_min"], out["r_max"] = out["r_max"], out["r_min"]
-    if rule.get("z_mode") in [k for k, _l, _ly, _sd in _ZMODE_DEFS]:
-        out["z_mode"] = rule["z_mode"]
-    if rule.get("bool_mode") in [v for v, _t in BOOL_OPTS]:
-        out["bool_mode"] = rule["bool_mode"]
-    if rule.get("dir") in [v for v, _t in DIR_OPTS]:
-        out["dir"] = rule["dir"]
-    ref = rule.get("ref")
-    if isinstance(ref, (list, tuple)) and len(ref) == 3:
-        try:
-            out["ref"] = [float(ref[0]), float(ref[1]), float(ref[2])]
-        except (TypeError, ValueError):
-            out["ref"] = None
-    else:
-        out["ref"] = None
-    return out
-
-
-def _rule_usable(rule):
-    """(纯逻辑) 规则可用 = ref 为 3 个数字。"""
-    ref = rule.get("ref") if isinstance(rule, dict) else None
-    return (isinstance(ref, (list, tuple)) and len(ref) == 3
-            and all(isinstance(v, float) for v in ref))
-
-def _unusable_names(rules):
-    """(纯逻辑) {文件名: 规则} → 未配置 ref 的文件名排序列表。"""
-    return sorted(f for f, r in rules.items() if not _rule_usable(r))
-
-def discover_std_parts():
-    """扫描 stdparts 目录下 .prt(目录不存在则创建) → 排序文件名列表。"""
-    d = stdparts_dir()
-    try:
-        os.makedirs(d, exist_ok=True)
-    except OSError:
-        return []
-    try:
-        return sorted(n for n in os.listdir(d) if n.lower().endswith(".prt"))
-    except OSError:
-        return []
-
-
-def merge_std_rules(state):
-    """发现到的文件 × (JSON 记忆 | 文件名猜测) → {文件名: 规范化规则}。
-
-    v1.9: JSON 带 schema:2 才读记忆(旧 JSON 的规则字段已改, 忽略防
-    旧记忆覆盖新默认); 首次保存后恢复正常记忆。
-    """
-    if state.get("schema") != SCHEMA_VERSION:
-        state = {}
-    saved = state.get("std_parts") or {}
-    out = {}
-    for fname in discover_std_parts():
-        out[fname] = sanitize_std_rule(saved.get(fname) or guess_std_rule(fname))
-    return out
-
-
-def merge_jrt(state):
-    """JRT 参数: 每次固定默认(3.9/0.1/3.7), 不再读 JSON 记忆。
-
-    (v1.9 教训: JSON 记忆覆盖默认值, 用户改过一次后默认值就"变了";
-    start/end 由对话框 FLB 联动实时刷新, 也无需记忆。)
-    """
-    return dict(DEFAULT_JRT)
 
 
 def script_dir():
@@ -903,1124 +740,160 @@ def script_dir():
         return os.path.dirname(os.path.abspath(sys.argv[0]))
 
 
-def default_params():
-    """无记忆时的兜底参数: FLB 取 config 默认(-40/-85), 其余联动层按
-    联动规则从 FLB 推导(JT 按默认模式, CX 随 JT)。"""
-    out = {r[0]: (float(r[3]), float(r[4])) for r in LAYER_TABLE}
-    s, e = out[TARGET_CODE]
-    linked = derive_linked(max(s, e), min(s, e), jt_mode=JT_LINK_DEFAULT)
-    for code, (v1, v2) in linked.items():
-        if code in out:
-            out[code] = (v1, v2)
-    out["CX"] = _cx_link_values(linked["JT"][0])
-    return out
+# ============================================================================
+# ============================================================================
+# §1.5 子模块加载器(P1 起): 按绝对路径加载同目录纯逻辑模块并注入共享符号
+# ============================================================================
+#
+# 设计契约(详见 docs/模块拆分实施计划.md §1):
+#   - 子模块禁止 import 兄弟模块, 跨模块依赖一律由主脚本注入为模块属性;
+#   - 复用 _import_module_from_path 三级梯(NX10 无 importlib.util / 3.12 无
+#     imp 均已覆盖), 按绝对路径加载, 不依赖 sys.path / cwd;
+#   - 子模块缺失 = 立即抛错, 绝不静默回退。
+_LOADED_SUB = {}
 
+
+def _sub_path(name):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py")
+
+
+def _load_sub(name):
+    """按绝对路径加载同目录子模块(纯逻辑层)。加载失败直接抛, 不掩盖。"""
+    mod = _import_module_from_path(name, _sub_path(name))
+    sys.modules[name] = mod
+    _LOADED_SUB[name] = mod
+    return mod
+
+
+def _inject(mod, **kw):
+    for _k, _v in kw.items():
+        setattr(mod, _k, _v)
+    return mod
+
+
+# nx_geom: DXF 解析 + 环链几何 + 几何指纹(纯 Python, 无 NX 依赖)
+_nx_geom = _inject(_load_sub("nx_geom"),
+                   LAYER_CODES=LAYER_CODES,
+                   LOOP_TOL=LOOP_TOL)
+
+# 再导出(外部消费者 test/test_batch111.py 用 m.parse_dxf; 内部 build_layer/
+# build_jrt/nx_purge/selftest 均按原名字可见, 零改动):
+DXLine = _nx_geom.DXLine
+DXArc = _nx_geom.DXArc
+DXCircle = _nx_geom.DXCircle
+_read_dxf_text = _nx_geom._read_dxf_text
+parse_dxf = _nx_geom.parse_dxf
+_pkey = _nx_geom._pkey
+_near_keys = _nx_geom._near_keys
+find_chains = _nx_geom.find_chains
+loop_polygon = _nx_geom.loop_polygon
+poly_area = _nx_geom.poly_area
+_bbox = _nx_geom._bbox
+point_in_poly = _nx_geom.point_in_poly
+_loop_in_loop = _nx_geom._loop_in_loop
+organize_loops = _nx_geom.organize_loops
+_q = _nx_geom._q
+_nx_curve_fp = _nx_geom._nx_curve_fp
+_dxf_ent_fp = _nx_geom._dxf_ent_fp
+dxf_fingerprints = _nx_geom.dxf_fingerprints
+
+# nx_rules: 标准件规则 / 分层联动 / 参数记忆(纯逻辑, 无 NX 依赖)
+_nx_rules = _inject(_load_sub("nx_rules"),
+                    script_dir=script_dir,
+                    STDPARTS_DIRNAME=STDPARTS_DIRNAME,
+                    DEFAULT_STD_RULE=DEFAULT_STD_RULE,
+                    DEFAULT_JRT=DEFAULT_JRT,
+                    STD_MAX_ANCHORS=STD_MAX_ANCHORS,
+                    SCHEMA_VERSION=SCHEMA_VERSION,
+                    _USER_CFG=_USER_CFG,
+                    LAYER_CODES=LAYER_CODES,
+                    LAYER_TABLE=LAYER_TABLE,
+                    TARGET_CODE=TARGET_CODE,
+                    LOOP_TOL=LOOP_TOL,
+                    LINK_RULES=LINK_RULES,
+                    JRT_FROM_TOP=JRT_FROM_TOP,
+                    JT_LINK_MODES=JT_LINK_MODES,
+                    JT_LINK_DEFAULT=JT_LINK_DEFAULT,
+                    _JT_LINK_FALLBACK=_JT_LINK_FALLBACK,
+                    _CX_LINK_END_OFF=_CX_LINK_END_OFF,
+                    BOOL_OPTS=BOOL_OPTS,
+                    DIR_OPTS=DIR_OPTS,
+                    zmode_defs=zmode_defs,
+                    _note=_note,
+                    _cfg_num=_cfg_num)
+
+# 再导出 nx_rules(外部消费者 test/test_batch111.py 用 m.guess_std_rule /
+# m.sanitize_std_rule / m.collect_circle_anchors; 内部 build_layer/place_std_parts/
+# 对话框/自测 均按原名字可见, 零改动):
+_jt_link_values = _nx_rules._jt_link_values
+jt_mode_with_memory = _nx_rules.jt_mode_with_memory
+_cx_link_values = _nx_rules._cx_link_values
+derive_linked = _nx_rules.derive_linked
+jrt_with_memory = _nx_rules.jrt_with_memory
+anchors_overflow = _nx_rules.anchors_overflow
+stdparts_dir = _nx_rules.stdparts_dir
+std_part_defaults = _nx_rules.std_part_defaults
+guess_std_rule = _nx_rules.guess_std_rule
+sanitize_std_rule = _nx_rules.sanitize_std_rule
+_rule_usable = _nx_rules._rule_usable
+_unusable_names = _nx_rules._unusable_names
+discover_std_parts = _nx_rules.discover_std_parts
+merge_std_rules = _nx_rules.merge_std_rules
+merge_jrt = _nx_rules.merge_jrt
+default_params = _nx_rules.default_params
+set_json_path_provider = _nx_rules.set_json_path_provider
+set_stdparts_lister = _nx_rules.set_stdparts_lister
+_json_path = _nx_rules._json_path
+load_state = _nx_rules.load_state
+_name_list = _nx_rules._name_list
+save_state = _nx_rules.save_state
+merge_params = _nx_rules.merge_params
+resolve_dxf_path = _nx_rules.resolve_dxf_path
+_place_delta = _nx_rules._place_delta
+_center_seen = _nx_rules._center_seen
+collect_circle_anchors = _nx_rules.collect_circle_anchors
+_std_z = _nx_rules._std_z
+# nx_dlx: .dlx 对话框生成器(纯字符串模板)
+_nx_dlx = _inject(_load_sub("nx_dlx"),
+                  LAYER_TABLE=LAYER_TABLE,
+                  DIALOG_GROUPS=DIALOG_GROUPS,
+                  JRT_FIELDS=JRT_FIELDS,
+                  MANAGED_MIN=MANAGED_MIN,
+                  MANAGED_MAX=MANAGED_MAX,
+                  DEFAULT_JRT=DEFAULT_JRT,
+                  ZMODE_OPTS=ZMODE_OPTS,
+                  BOOL_OPTS=BOOL_OPTS,
+                  DIR_OPTS=DIR_OPTS,
+                  LAYER_SEL_OPTS=LAYER_SEL_OPTS,
+                  JT_LINK_OPTS=JT_LINK_OPTS,
+                  script_dir=script_dir,
+                  _std_z=_std_z,
+                  default_params=default_params)
+
+# 再导出(外部消费者 tools/nx_zero_ref.py 用 build_selection_dlx/_fresh_dlx_path;
+# 内部 build_dlx/write_dlx 等按原名可见, 零改动):
+_esc = _nx_dlx._esc
+_blk_double = _nx_dlx._blk_double
+_blk_label = _nx_dlx._blk_label
+_blk_button = _nx_dlx._blk_button
+_blk_filebrowser = _nx_dlx._blk_filebrowser
+_blk_enum = _nx_dlx._blk_enum
+_blk_toggle = _nx_dlx._blk_toggle
+build_selection_dlx = _nx_dlx.build_selection_dlx
+_group_item = _nx_dlx._group_item
+_opt_index = _nx_dlx._opt_index
+build_dlx = _nx_dlx.build_dlx
+build_std_dlx = _nx_dlx.build_std_dlx
+_logs_dir = _nx_dlx._logs_dir
+_fresh_dlx_path = _nx_dlx._fresh_dlx_path
+_temp_dlx_path = _nx_dlx._temp_dlx_path
+write_std_dlx = _nx_dlx.write_std_dlx
+write_dlx = _nx_dlx.write_dlx
 
 # ============================================================================
-# §1 DXF 解析器(纯 Python, 无 NX 依赖)
+# §4 参数记忆(nx_extrude_params.json) —— 已搬至 nx_rules.py, 由加载器再导出
 # ============================================================================
 
-class DXLine(object):
-    __slots__ = ("p1", "p2")
-    kind = "line"
-    def __init__(self, p1, p2):
-        self.p1, self.p2 = p1, p2
-
-
-class DXArc(object):
-    __slots__ = ("c", "r", "a0", "a1")     # 角度: 弧度, CCW a0→a1
-    kind = "arc"
-    def __init__(self, c, r, a0, a1):
-        self.c, self.r, self.a0, self.a1 = c, r, a0, a1
-    @property
-    def p1(self):
-        return (self.c[0] + self.r * math.cos(self.a0),
-                self.c[1] + self.r * math.sin(self.a0))
-    @property
-    def p2(self):
-        return (self.c[0] + self.r * math.cos(self.a1),
-                self.c[1] + self.r * math.sin(self.a1))
-
-
-class DXCircle(object):
-    __slots__ = ("c", "r")
-    kind = "circle"
-    def __init__(self, c, r):
-        self.c, self.r = c, r
-
-
-def _read_dxf_text(path):
-    """DXF 文本读取: 优先 UTF-8, 失败按 GBK($DWGCODEPAGE=ANSI_936), 再失败 replace。"""
-    with open(path, "rb") as _f:
-        raw = _f.read()
-    for enc in ("utf-8-sig", "utf-8", "gbk"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("gbk", errors="replace")
-
-
-def parse_dxf(path):
-    """解析 DXF 的 ENTITIES 段(建模只认 LINE/CIRCLE/ARC, 与 offset_runner
-    生成物一致)。
-
-    返回 (layers, stats):
-      layers: {图层名大写: [DXLine/DXArc/DXCircle, ...]}
-      stats : {"ref_layers": {非建模图层名: 数},
-               "unsupported": {实体类型: 数},       # 全部不支持的(含参考图层)
-               "unsupported_model": 数,             # 其中的建模图层部分(弹窗口径)
-               "nonplanar": 数, "total": 数}        # total 只计受支持实体
-    """
-    lines = _read_dxf_text(path).splitlines()
-    n = len(lines)
-    pairs = []
-    for i in range(0, n - 1, 2):
-        pairs.append((lines[i].strip(), lines[i + 1].strip("\r\n")))
-
-    layers, stats = {}, {"ref_layers": {}, "unsupported": {},
-                         "unsupported_model": 0, "nonplanar": 0, "total": 0}
-
-    # 定位 ENTITIES 段(记起点, 实体切到 ENDSEC 为止)
-    start = None
-    for i in range(1, len(pairs)):
-        if pairs[i] == ("2", "ENTITIES") and pairs[i - 1] == ("0", "SECTION"):
-            start = i
-            break
-    if start is None:
-        return layers, stats
-
-    def entities_of(seg_pairs):
-        """把 (code,val) 序列切成实体块 [{code: first-val}] 列表。
-
-        全部实体类型都切块输出(含不支持的)——支持与否由上层判定并统计,
-        保证 LWPOLYLINE 等被丢弃时有计数与警告, 不静默丢几何(v1.35)。
-        """
-        out, cur, ctype = [], None, None
-        for code, val in seg_pairs:
-            if code == "0":
-                if ctype is not None:
-                    out.append(cur)
-                ctype = val
-                cur = {"0": val}
-            elif ctype is not None and code not in cur:
-                cur[code] = val
-        if ctype is not None:
-            out.append(cur)
-        return out
-
-    seg2 = []
-    for k in range(start, len(pairs)):   # 从 ENTITIES 段起, 截到 ENDSEC
-        code, val = pairs[k]
-        if code == "0" and val == "ENDSEC":
-            break
-        seg2.append((code, val))
-
-    for e in entities_of(seg2):
-        etype = e.get("0") or "?"
-        if etype not in ("LINE", "CIRCLE", "ARC"):
-            # LWPOLYLINE/SPLINE/INSERT 等: 计数并警告, 不静默丢(v1.35)
-            layer = (e.get("8") or "0").upper()
-            stats["unsupported"][etype] = \
-                stats["unsupported"].get(etype, 0) + 1
-            if layer in LAYER_CODES:
-                stats["unsupported_model"] += 1
-            continue
-        stats["total"] += 1
-        layer = (e.get("8") or "0").upper()
-        if layer not in LAYER_CODES:
-            stats["ref_layers"][layer] = stats["ref_layers"].get(layer, 0) + 1
-            # 参考图层照常保留(导入 NX 但不建模)
-
-        def fnum(key):
-            return float(e.get(key, "0") or "0")
-
-        z = fnum("30")
-        if abs(z) > 1e-9:
-            stats["nonplanar"] += 1
-        try:
-            if etype == "LINE":
-                obj = DXLine((fnum("10"), fnum("20")), (fnum("11"), fnum("21")))
-                if math.hypot(obj.p2[0] - obj.p1[0], obj.p2[1] - obj.p1[1]) < 1e-9:
-                    continue                      # 零长线丢弃
-            elif etype == "CIRCLE":
-                obj = DXCircle((fnum("10"), fnum("20")), fnum("40"))
-            else:                                  # ARC
-                a0, a1 = math.radians(float(e["50"])), math.radians(float(e["51"]))
-                if a1 <= a0:
-                    a1 += 2.0 * math.pi
-                obj = DXArc((fnum("10"), fnum("20")), fnum("40"), a0, a1)
-        except (KeyError, ValueError) as ex:
-            k = "<解析失败:%s>" % ex
-            stats["unsupported"][k] = stats["unsupported"].get(k, 0) + 1
-            continue
-        layers.setdefault(layer, []).append(obj)
-    return layers, stats
-
-
-# ============================================================================
-# §2 环链几何(纯 Python 可自测): 端点连链 → 封闭环/开口链 → 嵌套分组
-# ============================================================================
-
-def _pkey(p, tol=LOOP_TOL):
-    return (int(round(p[0] / tol)), int(round(p[1] / tol)))
-
-
-def _near_keys(p, tol=LOOP_TOL):
-    """端点所在量化桶及 3×3 邻桶。
-
-    (v1.35) 此前只查单桶: 两点间距 <tol 但跨量化格边界时永远配不上,
-    该闭合的链被判开 → 轮廓不拉伸/JRT 多画桥接线。
-    """
-    kx, ky = _pkey(p, tol)
-    return [(kx + dx, ky + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)]
-
-
-def find_chains(segs):
-    """把线/弧按端点重合连成链(容差 LOOP_TOL, 3×3 邻桶搜索)。
-
-    返回 (closed, open_): closed=[[(idx, rev), ...] 每项为(曲线索引, 是否反向)],
-    闭合链首尾相接; open_ 为两端悬空的链。
-    (v1.35) 端点三叉及以上(T 形相接/重复线)时, 不再按字典序任意配对,
-    优先取"方向延续性最好"的段——纯任意配对会把两条共端点轮廓串成错链。
-    """
-    from collections import defaultdict
-    ep = defaultdict(list)
-    for i, s in enumerate(segs):
-        if s.kind == "circle":
-            continue
-        ep[_pkey(s.p1)].append((i, 0))
-        ep[_pkey(s.p2)].append((i, 1))
-
-    used = [False] * len(segs)
-
-    def _take(pt, prev_pt):
-        """邻桶内找未用段: 与链方向延续性最好、其次距离最近的端点配对。"""
-        vx = pt[0] - prev_pt[0]
-        vy = pt[1] - prev_pt[1]
-        vlen = math.hypot(vx, vy)
-        best = None
-        for k in _near_keys(pt):
-            for (j, e) in ep.get(k, ()):
-                if used[j]:
-                    continue
-                q = segs[j].p1 if e == 0 else segs[j].p2
-                d = math.hypot(q[0] - pt[0], q[1] - pt[1])
-                if d > LOOP_TOL:
-                    continue
-                other = segs[j].p2 if e == 0 else segs[j].p1
-                ux, uy = other[0] - q[0], other[1] - q[1]
-                ulen = math.hypot(ux, uy)
-                # turn=1−cosθ: 直线延续→0, 折返→2; 无方向(链首)时 0.5 中性
-                if vlen > 1e-12 and ulen > 1e-12:
-                    turn = 1.0 - (ux * vx + uy * vy) / (ulen * vlen)
-                else:
-                    turn = 0.5
-                cand = (turn, d, j, e)
-                if best is None or cand[:2] < best[:2]:
-                    best = cand
-        if best is None:
-            return None
-        _turn, _d, j, e = best
-        used[j] = True
-        return j, e
-
-    closed, open_ = [], []
-    for i in range(len(segs)):
-        if used[i] or segs[i].kind == "circle":
-            continue
-        used[i] = True
-        chain = [(i, False)]
-        # 从链头(i 的 p1)与链尾(i 的 p2)双向延伸
-        for direction in ("tail", "head"):
-            pt = segs[i].p1 if direction == "tail" else segs[i].p2
-            prev_pt = segs[i].p2 if direction == "tail" else segs[i].p1
-            forward = direction == "head"
-            while True:
-                got = _take(pt, prev_pt)
-                if got is None:
-                    break
-                j, e = got
-                # e: 曲线 j 与当前链端相连的端(0=p1, 1=p2); 判定进入方向
-                rev = (e == 1)
-                if forward:
-                    chain.append((j, rev))
-                else:
-                    chain.insert(0, (j, not rev))
-                prev_pt = pt
-                pt = segs[j].p1 if e == 1 else segs[j].p2
-        head_pt = segs[chain[0][0]].p1 if not chain[0][1] else segs[chain[0][0]].p2
-        tail_pt = segs[chain[-1][0]].p2 if not chain[-1][1] else segs[chain[-1][0]].p1
-        if _pkey(head_pt) == _pkey(tail_pt):
-            closed.append(chain)
-        else:
-            open_.append(chain)
-    return closed, open_
-
-
-def loop_polygon(chain, segs, arc_step_deg=10.0):
-    """把链离散为多边形顶点序列(用于包含测试/面积), 按链遍历方向。"""
-    pts = []
-    for idx, rev in chain:
-        s = segs[idx]
-        if s.kind == "line":
-            a, b = (s.p2, s.p1) if rev else (s.p1, s.p2)
-            if not pts:
-                pts.append(a)
-            pts.append(b)
-        else:  # arc
-            a0, a1 = s.a0, s.a1
-            if rev:
-                a0, a1 = a1, a0
-            if not pts:
-                pts.append((s.c[0] + s.r * math.cos(a0), s.c[1] + s.r * math.sin(a0)))
-            span = a1 - a0
-            steps = max(2, int(math.ceil(abs(span) / math.radians(arc_step_deg))))
-            for k in range(1, steps + 1):
-                ang = a0 + span * k / steps
-                pts.append((s.c[0] + s.r * math.cos(ang), s.c[1] + s.r * math.sin(ang)))
-    return pts
-
-
-def poly_area(poly):
-    s = 0.0
-    for i in range(len(poly)):
-        x1, y1 = poly[i]
-        x2, y2 = poly[(i + 1) % len(poly)]
-        s += x1 * y2 - x2 * y1
-    return s / 2.0
-
-
-def _bbox(poly):
-    xs = [p[0] for p in poly]
-    ys = [p[1] for p in poly]
-    return (min(xs), min(ys), max(xs), max(ys))
-
-
-def point_in_poly(pt, poly):
-    x, y = pt
-    inside = False
-    n = len(poly)
-    j = n - 1
-    for i in range(n):
-        xi, yi = poly[i]
-        xj, yj = poly[j]
-        if (yi > y) != (yj > y):
-            xx = xi + (y - yi) * (xj - xi) / (yj - yi)
-            if x < xx:
-                inside = not inside
-        j = i
-    return inside
-
-
-def _loop_in_loop(poly_a, poly_b, samples=8):
-    """环 A 是否被环 B 包含: 取 A 的至多 samples 个顶点投票(射线法)。
-
-    (v1.35) 此前只用 A 的首顶点——首顶点恰落在 B 的边上(相切/共边)时
-    判定随机; 多点投票对"真包含"(多数点在内)与"部分重叠"(少数点在内)
-    区分更稳。
-    """
-    n = len(poly_a)
-    step = max(1, n // samples)
-    pts = poly_a[::step][:samples]
-    hits = sum(1 for p in pts if point_in_poly(p, poly_b))
-    return hits * 2 > len(pts)
-
-
-def organize_loops(segs):
-    """图层曲线 → 轮廓组织。
-
-    返回 (profiles, opens, n_circles):
-      profiles = [{"outer": poly, "outer_chain": chain, "holes": [(chain, poly), ...]}, ...]
-      opens    = 开口链列表(警告用)
-      圆独立成 profile(无 holes)。
-    """
-    closed, opens = find_chains(segs)
-    loops = []
-    for chain in closed:
-        poly = loop_polygon(chain, segs)
-        if len(poly) < 3:
-            continue
-        loops.append({"chain": chain, "poly": poly, "area": abs(poly_area(poly)),
-                      "bbox": _bbox(poly)})
-    for s in segs:
-        if s.kind == "circle":
-            cx, cy = s.c
-            r = s.r
-            # 圆用 8 边形近似即可满足包含/面积判定
-            poly = [(cx + r * math.cos(math.pi / 4 * k), cy + r * math.sin(math.pi / 4 * k))
-                    for k in range(8)]
-            loops.append({"chain": None, "circle": s, "poly": poly,
-                          "area": math.pi * r * r, "bbox": _bbox(poly)})
-
-    # 重复描线去重(v1.35): 完全重合的环只留一个——重复环会被"最小包含
-    # 环"逻辑判成第一个环的孔, 材料被错误掏空(AutoCAD 双重描线常见)。
-    # 键取环顶点序列的规范化形式(起点取最小顶点+两个绕向取小),
-    # 使同一几何的重复环即使链起点不同也能判重。
-    def _canon_ring(pts):
-        m = min(range(len(pts)), key=lambda t: pts[t])
-        r = pts[m:] + pts[:m]
-        return tuple((round(x, 3), round(y, 3)) for x, y in r)
-
-    _seen_poly = set()
-    _uniq = []
-    for lp in loops:
-        _p = lp["poly"]
-        _k = min(_canon_ring(_p), _canon_ring(_p[::-1]))
-        if _k in _seen_poly:
-            continue
-        _seen_poly.add(_k)
-        _uniq.append(lp)
-    loops = _uniq
-
-    # 嵌套: 面积降序, 每环找包含它的【最小】外环 → 父子深度
-    # v1.29 修复: 过去按 j=0.. 正序扫描(=面积由大到小)取第一个命中, 拿到的
-    # 是"最大的包含环" —— 三层嵌套(A⊃B⊃C)时 C 的父环被判成 A 而非 B,
-    # depth(C)=1 被当成 A 的第二个孔 → 岛的材料被错误减掉(应独立成体)。
-    # 改为 j=i-1.. 逆序扫描(=面积由小到大), 第一个命中即最小包含环,
-    # depth(C)=2 → 独立轮廓(下面"岛"分支才真正生效)。
-    loops.sort(key=lambda d: -d["area"])
-    parent = [-1] * len(loops)
-    for i in range(len(loops)):
-        bi0, bi1, bi2, bi3 = loops[i]["bbox"]
-        for j in range(i - 1, -1, -1):  # j 面积更大; 逆序=先试最小的
-            bj0, bj1, bj2, bj3 = loops[j]["bbox"]
-            if bi0 >= bj0 and bi1 >= bj1 and bi2 <= bj2 and bi3 <= bj3 \
-                    and _loop_in_loop(loops[i]["poly"], loops[j]["poly"]):
-                parent[i] = j
-                break
-
-    def depth(i):
-        d, k = 0, i
-        while parent[k] != -1:
-            k = parent[k]
-            d += 1
-        return d
-
-    profiles = []
-    for i, lp in enumerate(loops):
-        d = depth(i)
-        if d % 2 == 0:                      # 偶数层=实体(外轮廓或岛)
-            prof = {"outer": lp, "holes": []}
-            for k in range(len(loops)):
-                if parent[k] == i and depth(k) % 2 == 1:   # 奇数层=孔
-                    prof["holes"].append(loops[k])
-                # depth 为偶数的子环=岛(体中体), 由它自己的那轮独立成 profile
-            profiles.append(prof)
-    return profiles, opens, sum(1 for s in segs if s.kind == "circle")
-
-
-# ============================================================================
-# §3 .dlx 对话框生成器(块模板取自本机 NX2312 官方样例 dlx, 见文件尾注释)
-# ============================================================================
-
-def _esc(s):
-    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-             .replace('"', "&quot;"))
-
-
-def _blk_double(bid, title, value):
-    return (
-        '<Property class="UICOMP_double" hierarchy="UGS::UICOMP_group" id="{id}" mask="256" '
-        'name="{id}" presentation="Double" type="uicomp">'
-        '<item Expanded="1" class="UICOMP_double" hierarchy="" icon="styler_real" id="{id}" '
-        'name="{id}" notes="" presentation="Double" type="uicomp">'
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="API Name" '
-        'mask="16656" name="API Name" sname="BlockID" source="3" type="string" value="{id}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="Visibility" '
-        'mask="0" name="Visibility" sname="Show" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="Sensitivity" '
-        'mask="0" name="Sensitivity" sname="Enable" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="Group" '
-        'mask="16384" name="Group" sname="Group" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="Expanded" '
-        'mask="4" name="Expanded" sname="Expanded" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="HideGroup" '
-        'mask="69636" name="HideGroup" sname="HideGroup" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="Focus" '
-        'mask="69636" name="Focus" sname="Focus" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="CanFocus" '
-        'mask="69636" name="CanFocus" sname="CanFocus" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="KeyboardFocus" '
-        'mask="69636" name="KeyboardFocus" sname="KeyboardFocus" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="CanKeyboardFocus" '
-        'mask="69636" name="CanKeyboardFocus" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_double" id="ReadWrite" '
-        'mask="0" name="ReadWrite" sname="RetainValue" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_double" id="UIOnly" '
-        'mask="69636" name="UIOnly" sname="RetainValueInUIOnly" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_double" id="Translated" '
-        'mask="16384" name="Translated" sname="Localize" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_value" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="TitleVisibility" mask="0" name="TitleVisibility" sname="TitleVisibility" source="1" '
-        'type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_value" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="UserLockable" mask="69632" name="UserLockable" sname="UserLockable" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UIFW_spin_options" group="Block Specific::" '
-        'hierarchy="UGS::UIFW_spin_options" id="Increment" mask="0" name="Increment" sname="Increment" '
-        'source="1" type="double" value="1"/>'
-        '<Property ClassID="UGS::UICOMP_value" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="MinInclusive" mask="4" name="MinInclusive" sname="MinInclusive" source="1" '
-        'type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_value" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="MaxInclusive" mask="4" name="MaxInclusive" sname="MaxInclusive" source="1" '
-        'type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_integer" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="ReadOnlyValue" mask="2" name="ReadOnlyValue" sname="ReadOnlyValue" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_value" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="RequiredInput" mask="69632" name="RequiredInput" sname="RequiredInput" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_value" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="AllowUnassignedValue" mask="69632" name="AllowUnassignedValue" sname="AllowUnassignedValue" '
-        'source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_double" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="VisibleDecimals" mask="69632" name="VisibleDecimals" sname="VisibleDecimals" source="1" '
-        'type="integer" value="2"/>'
-        '<Property ClassID="UGS::UICOMP_double" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="MaximumValue" mask="0" name="MaximumValue" sname="MaximumValue" source="1" type="double" '
-        'value="1.0E+09"/>'
-        '<Property ClassID="UGS::UICOMP_double" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="LimitCheckTolerance" mask="0" name="LimitCheckTolerance" sname="LimitCheckTolerance" '
-        'source="1" type="double" value="-1"/>'
-        '<Property ClassID="UGS::UICOMP_double" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="BalloonTooltipText" mask="0" name="BalloonTooltipText" sname="BalloonTooltipText" source="1" '
-        'type="utfstring" value=""/>'
-        '<Property ClassID="UGS::UICOMP_double" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="BalloonTooltipImage" mask="0" name="BalloonTooltipImage" sname="BalloonTooltipImage" '
-        'source="1" type="string" value=""/>'
-        '<Property ClassID="UGS::UICOMP_double" brief="0" dynamic="0" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_double" id="BalloonTooltipLayout" mask="0" name="BalloonTooltipLayout" '
-        'sname="BalloonTooltipLayout" source="1" type="enum" selected="0">'
-        '<Option name="Horizontal" value="0"/><Option name="Vertical" value="1"/></Property>'
-        '<Property ClassID="UGS::UICOMP_value" brief="0" dynamic="0" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_double" id="PresentationStyle" mask="16640" name="PresentationStyle" '
-        'sname="PresentationStyle" source="1" type="enum" selected="0">'
-        '<Option name="Keyin" value="0"/><Option name="Spin" value="1"/><Option name="Scale" value="2"/>'
-        '<Option name="ScaleKeyin" value="3"/><Option name="Combo" value="4"/></Property>'
-        '<Property ClassID="UGS::UICOMP_double" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="MinimumValue" mask="256" name="MinimumValue" sname="MinimumValue" source="1" type="double" '
-        'value="-1.0E+09"/>'
-        '<Property ClassID="UGS::UICOMP_double" group="Block Specific::" hierarchy="UGS::UICOMP_double" '
-        'id="Value" mask="256" name="Value" sname="Value" source="4" type="double" value="{val}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_double" id="Title" '
-        'mask="256" name="Title" sname="Label" source="1" type="utfstring" value="{title}"/>'
-        '<Property ClassID="UGS::UIFW_unit_options" group="Block Specific::" '
-        'hierarchy="UGS::UIFW_unit_options" id="ShowUnitLabel" mask="0" name="ShowUnitLabel" '
-        'sname="ShowUnitLabel" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UIFW_unit_options" group="Block Specific::" '
-        'hierarchy="UGS::UIFW_unit_options" id="AllowUnitEdit" mask="0" name="AllowUnitEdit" '
-        'sname="AllowUnitEdit" source="1" type="logical" value="False"/>'
-        '</PropertyList></item></Property>'
-    ).format(id=bid, title=_esc(title), val=("%.4f" % float(value)).rstrip("0").rstrip(".") or "0")
-
-
-def _blk_label(bid, text, wrap=True):
-    return (
-        '<Property class="UICOMP_label" hierarchy="UGS::UICOMP_group" id="{id}" mask="256" '
-        'name="{id}" presentation="Label/Bitmap" type="uicomp">'
-        '<item Expanded="1" class="UICOMP_label" hierarchy="" icon="styler_label.bmp" id="{id}" '
-        'name="{id}" notes="" presentation="Label/Bitmap" type="uicomp">'
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_label" id="API Name" '
-        'mask="16400" name="API Name" sname="BlockID" source="3" type="string" value="{id}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_label" id="Title" '
-        'mask="0" name="Title" sname="Label" source="1" type="utfstring" value="{text}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_label" id="Visibility" '
-        'mask="0" name="Visibility" sname="Show" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_label" id="Sensitivity" '
-        'mask="0" name="Sensitivity" sname="Enable" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_label" id="Group" '
-        'mask="16384" name="Group" sname="Group" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_label" id="Translated" '
-        'mask="16384" name="Translated" sname="Localize" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_label" group="Block Specific::" hierarchy="UGS::UICOMP_label" '
-        'id="WordWrap" mask="16384" name="WordWrap" sname="WordWrap" source="1" type="logical" value="%s"/>'
-        '</PropertyList></item></Property>'
-    ).format(id=bid, text=_esc(text), wrap="True" if wrap else "False")
-
-
-def _blk_button(bid, title):
-    """Action Button 块(模板: ListPointProperties.dlx 的 UICOMP_button)。
-
-    按钮激活经 BlockStyler 的 update 回调送达(block 即该按钮), 处理见
-    StdParamsDialog.update_cb / ParamDialog.update_cb。
-    """
-    return (
-        '<Property class="UICOMP_button" hierarchy="UGS::UICOMP_group" id="{id}" mask="256" '
-        'name="{id}" presentation="Action Button" type="uicomp">'
-        '<item Expanded="1" class="UICOMP_button" hierarchy="UGS::UI::Comp::SuperPoint" '
-        'icon="styler_browser_pushbutton.bmp" id="{id}" name="{id}" notes="" '
-        'presentation="Action Button" type="uicomp">'
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_button" id="API Name" '
-        'mask="16400" name="API Name" sname="BlockID" source="3" type="string" value="{id}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_button" id="Title" '
-        'mask="0" name="Title" sname="Label" source="1" type="utfstring" value="{title}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_button" id="Visibility" '
-        'mask="0" name="Visibility" sname="Show" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_button" id="Sensitivity" '
-        'mask="0" name="Sensitivity" sname="Enable" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_button" id="Group" '
-        'mask="16384" name="Group" sname="Group" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_button" id="Expanded" '
-        'mask="4" name="Expanded" sname="Expanded" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="Other::" hierarchy="UGS::UICOMP_button" id="UIOnly" '
-        'mask="69636" name="UIOnly" sname="RetainValueInUIOnly" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="Other::" hierarchy="UGS::UICOMP_button" id="Translated" '
-        'mask="16384" name="Translated" sname="Localize" source="1" type="logical" value="True"/>'
-        '</PropertyList></item></Property>'
-    ).format(id=bid, title=_esc(title))
-
-
-def _blk_filebrowser(bid, title, filt):
-    return (
-        '<Property class="UGS::UI::Comp::NativeFileBrowser" hierarchy="UGS::UICOMP_group" id="{id}" '
-        'mask="256" name="{id}" presentation="File Selection with Browse" type="uicomp">'
-        '<item Expanded="1" class="UGS::UI::Comp::NativeFileBrowser" hierarchy="" '
-        'icon="report_in_folder.bmp" id="{id}" name="{id}" notes="" '
-        'presentation="File Selection with Browse" type="uicomp">'
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UI::Comp::NativeFileBrowser" '
-        'id="API Name" mask="16656" name="API Name" sname="BlockID" source="3" type="string" value="{id}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UI::Comp::NativeFileBrowser" '
-        'id="Title" mask="0" name="Title" sname="Label" source="1" type="utfstring" value="{title}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UI::Comp::NativeFileBrowser" '
-        'id="Visibility" mask="0" name="Visibility" sname="Show" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UI::Comp::NativeFileBrowser" '
-        'id="Sensitivity" mask="0" name="Sensitivity" sname="Enable" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UI::Comp::NativeFileSystemBrowser" group="Block Specific::" '
-        'hierarchy="UGS::UI::Comp::NativeFileBrowser" id="Path" mask="0" name="Path" sname="Path" '
-        'source="3" type="string" value=""/>'
-        '<Property ClassID="UGS::UI::Comp::NativeFileSystemBrowser" group="Block Specific::" '
-        'hierarchy="UGS::UI::Comp::NativeFileBrowser" id="RetainStringValue" mask="0" '
-        'name="RetainStringValue" sname="RetainStringValue" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UI::Comp::NativeFileBrowser" group="Block Specific::" '
-        'hierarchy="UGS::UI::Comp::NativeFileBrowser" id="Filter" mask="256" name="Filter" '
-        'sname="Filter" source="2" type="string" value="{filt}"/>'
-        '</PropertyList></item></Property>'
-    ).format(id=bid, title=_esc(title), filt=_esc(filt))
-
-
-def _blk_enum(bid, title, labels, selected=0):
-    """下拉选择块; labels 为中文标签列表, 值由代码按序号映射。"""
-    opts = "".join('<Option name="%s" value="%d"/>' % (_esc(t), i)
-                   for i, t in enumerate(labels))
-    return (
-        '<Property class="UICOMP_enum" hierarchy="UGS::UICOMP_group" id="{id}" mask="256" '
-        'name="{id}" presentation="Enumeration" type="uicomp">'
-        '<item Expanded="1" SupportsDisablingLogic="1" class="UICOMP_enum" hierarchy="" '
-        'icon="styler_optionmenu.bmp" id="{id}" name="{id}" notes="" '
-        'presentation="Enumeration" type="uicomp">'
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="API Name" mask="16656" name="API Name" sname="BlockID" source="3" type="string" '
-        'value="{id}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="Visibility" mask="0" name="Visibility" sname="Show" source="1" type="logical" '
-        'value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="Sensitivity" mask="0" name="Sensitivity" sname="Enable" source="1" '
-        'type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="Group" mask="16384" name="Group" sname="Group" source="1" type="logical" '
-        'value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="Expanded" mask="4" name="Expanded" sname="Expanded" source="1" type="logical" '
-        'value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="CanFocus" mask="69636" name="CanFocus" sname="CanFocus" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="CanKeyboardFocus" mask="69636" name="CanKeyboardFocus" sname="CanKeyboardFocus" '
-        'source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_enum" '
-        'id="ReadWrite" mask="0" name="ReadWrite" sname="RetainValue" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_enum" '
-        'id="UIOnly" mask="69636" name="UIOnly" sname="RetainValueInUIOnly" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_enum" '
-        'id="Translated" mask="16384" name="Translated" sname="Localize" source="1" '
-        'type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="TitleVisibility" mask="16384" name="TitleVisibility" sname="LabelVisibility" '
-        'source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_enum" brief="0" dynamic="0" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_enum" id="PresentationStyle" mask="16384" '
-        'name="PresentationStyle" sname="PresentationStyle" source="1" type="enum" '
-        'selected="0">'
-        '<Option name="Option Menu" value="0"/><Option name="Radio Box" value="1"/>'
-        '<Option name="Pulldown" value="2"/></Property>'
-        '<Property ClassID="UGS::UICOMP_enum" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_enum" id="MaximumValue" mask="69636" name="MaximumValue" '
-        'sname="MaximumValue" source="1" type="integer" value="0"/>'
-        '<Property ClassID="UGS::UICOMP_enum" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_enum" id="MinimumValue" mask="69636" name="MinimumValue" '
-        'sname="MinimumValue" source="1" type="integer" value="0"/>'
-        '<Property ClassID="UGS::UICOMP_enum" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_enum" id="Titles" mask="69636" name="Titles" sname="Items" '
-        'source="1" type="utfstrings"/>'
-        '<Property ClassID="UGS::UICOMP_enum" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_enum" id="Value" mask="69636" name="Value" '
-        'sname="TEMPVALUE" source="1" type="integer" value="{sel}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_enum" '
-        'id="Title" mask="257" name="Title" sname="Label" source="1" type="utfstring" '
-        'value="{title}"/>'
-        '<Property ClassID="UGS::UICOMP_enum" brief="0" dynamic="1" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_enum" id="Titles_1" mask="256" name="Titles_1" '
-        'selected="{sel}" sname="Value" source="4" type="enum">{opts}</Property>'
-        '</PropertyList></item></Property>'
-    ).format(id=bid, title=_esc(title), opts=opts, sel=int(selected))
-
-
-def _blk_toggle(bid, label, value):
-    """复选块(模板取自本机 CheckDeepHoles_Customization.dlx 的 SaveInPart)。"""
-    return (
-        '<Property class="UICOMP_toggle" hierarchy="UGS::UICOMP_group" id="{id}" mask="256" '
-        'name="{id}" presentation="Toggle" type="uicomp">'
-        '<item Expanded="1" SupportsDisablingLogic="1" class="UICOMP_toggle" hierarchy="" '
-        'icon="styler_toggle.bmp" id="{id}" name="{id}" notes="" presentation="Toggle" '
-        'type="uicomp">'
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="API Name" mask="16656" name="API Name" sname="BlockID" source="3" type="string" '
-        'value="{id}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="Visibility" mask="0" name="Visibility" sname="Show" source="1" type="logical" '
-        'value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="Sensitivity" mask="0" name="Sensitivity" sname="Enable" source="1" type="logical" '
-        'value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="Group" mask="16384" name="Group" sname="Group" source="1" type="logical" '
-        'value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="Expanded" mask="4" name="Expanded" sname="Expanded" source="1" type="logical" '
-        'value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="HideGroup" mask="69636" name="HideGroup" sname="HideGroup" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="Focus" mask="69636" name="Focus" sname="Focus" source="1" type="logical" '
-        'value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="CanFocus" mask="69636" name="CanFocus" sname="CanFocus" source="1" type="logical" '
-        'value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="KeyboardFocus" mask="69636" name="KeyboardFocus" sname="KeyboardFocus" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="CanKeyboardFocus" mask="69636" name="CanKeyboardFocus" sname="CanKeyboardFocus" '
-        'source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_toggle" '
-        'id="ReadWrite" mask="0" name="ReadWrite" sname="RetainValue" source="1" type="logical" '
-        'value="False"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_toggle" '
-        'id="UIOnly" mask="69636" name="UIOnly" sname="RetainValueInUIOnly" source="1" '
-        'type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP_widget" group="Other::" hierarchy="UGS::UICOMP_toggle" '
-        'id="Translated" mask="16384" name="Translated" sname="Localize" source="1" '
-        'type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP_toggle" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_toggle" id="Icon" mask="128" name="Icon" sname="Bitmap" '
-        'source="3" type="string" value=""/>'
-        '<Property ClassID="UGS::UICOMP_toggle" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_toggle" id="BitmapOnly" mask="16384" name="BitmapOnly" '
-        'sname="BitmapOnly" source="1" type="logical" value="False"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_toggle" '
-        'id="Title" mask="256" name="Title" sname="Label" source="1" type="utfstring" '
-        'value="{label}"/>'
-        '<Property ClassID="UGS::UICOMP_toggle" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_toggle" id="Value" mask="256" name="Value" sname="Value" '
-        'source="4" type="logical" value="{val}"/>'
-        '</PropertyList></item></Property>'
-    ).format(id=bid, label=_esc(label), val="True" if value else "False")
-
-
-def build_selection_dlx(files, selected):
-    """第一段"标准件选择"对话框: 每个件一个复选框。"""
-    children = []
-    if not files:
-        children.append(_blk_label("sel_hint", "stdparts 目录为空。"))
-    for i, f in enumerate(files):
-        children.append(_blk_toggle("SEL%d" % i, f, f in selected))
-    grp = _group_item("grp_sel", "勾选本次要加载的标准件（新件默认不勾）",
-                      "".join(children), columns=1)
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<Dialog ContainerItems="1" Expanded="1" NX="2312.0.0" class="" id="Dialog" '
-        'languageInfo="Language and Codeset: english 17" name="Dialog" notes="" '
-        'title="NX StdPartSelect" type="uicomp" version="1.0.0">'
-        + grp +
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Title" mask="256" name="Title" sname="Label" source="1" type="utfstring" '
-        'value="标准件选择"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Cue" mask="256" name="Cue" sname="Cue" source="1" type="utfstring" '
-        'value="选择本次要加载的标准件"/>'
-        '<Property ClassID="UGS::UICOMP" brief="0" dynamic="0" group="General::Other::" '
-        'hierarchy="UGS::Styler::DialogItem" id="NavigationStyle" mask="393472" '
-        'name="NavigationStyle" selected="0" sname="Navigation Style" source="1" type="enum">'
-        '<Option name="OK Cancel" value="0"/><Option name="Close" value="1"/>'
-        '<Option name="OK Apply Cancel" value="2"/></Property>'
-        '</PropertyList></Dialog>\n'
-    )
-
-
-def _group_item(gid, title, children_xml, columns=2, collapsed=False):
-    return (
-        '<item Expanded="{exp}" class="UGS::UICOMP_group" hierarchy="" id="{id}" name="{id}" notes="" '
-        'presentation="Group" type="uicomp"><PropertyList>'
-        '<Property class="UGS::UI::Comp::Container" dynamic="1" group="Block Specific::" '
-        'hierarchy="UGS::UICOMP_group" id="Members" mask="0" name="Members" sname="Members" source="1" '
-        'type="array"><PropertyList Expanded="1" class="UGS::UI::Comp::Container" '
-        'hierarchy="UGS::UICOMP_group" id="ContainerItems" mode="1">{children}</PropertyList></Property>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_group" id="API Name" '
-        'mask="16400" name="API Name" sname="BlockID" source="3" type="string" value="{id}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_group" id="Title" '
-        'mask="1" name="Title" sname="Label" source="1" type="utfstring" value="{title}"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_group" id="Visibility" '
-        'mask="0" name="Visibility" sname="Show" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_group" id="Sensitivity" '
-        'mask="0" name="Sensitivity" sname="Enable" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_group" id="Group" '
-        'mask="86020" name="Group" sname="Group" source="1" type="logical" value="True"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::UICOMP_group" id="Expanded" '
-        'mask="0" name="Expanded" sname="Expanded" source="2" type="logical" value="{exp}"/>'
-        '<Property ClassID="UGS::UICOMP_group" group="Block Specific::" hierarchy="UGS::UICOMP_group" '
-        'id="Column" mask="16384" name="Column" sname="Column" source="1" type="integer" value="{col}"/>'
-        '</PropertyList></item>'
-    ).format(id=gid, title=_esc(title), children=children_xml, col=columns,
-            exp=("False" if collapsed else "True"))
-
-
-def _opt_index(opts, value):
-    for i, (v, _t) in enumerate(opts):
-        if v == value:
-            return i
-    return 0
-
-
-def build_dlx(params=None, jrt=None, jt_mode=None):
-    """从 LAYER_TABLE + JRT 参数生成窗口②完整 .dlx XML(UTF-8)。
-    jt_mode 给定时在普通拉伸组顶部生成"JT 联动模式"下拉(v1.37)。
-
-    (v1.35) 删除两段式时代的休眠"标准件组"生成——三段式改造后 main 恒以
-    无标准件组调用本函数, 标准件参数页由 build_std_dlx(窗口③)负责。
-    """
-    if params is None:
-        params = default_params()
-    if jrt is None:
-        jrt = dict(DEFAULT_JRT)
-
-    zh = {r[0]: r[1] for r in LAYER_TABLE}
-
-    # 文件组
-    g_file = _group_item(
-        "grp_file", "输入文件",
-        _blk_filebrowser("dxf_file", "DXF 文件", "*.dxf") + _blk_label(
-            "hint_label",
-            "提示: 起始=结束=0 的图层跳过; LS/RZ/DK 拉伸后从 FLB 减去; "
-            "曲线按图层导入到 NX 图层 %d~%d, 特征名前缀 CAD3D_。"
-            % (MANAGED_MIN, MANAGED_MAX)),
-        columns=1)
-
-    # 参数组(每层两个 double 块: <code>_start / <code>_end)
-    groups_xml = []
-    for gid, title, codes in DIALOG_GROUPS:
-        children = []
-        if gid == "grp_plain" and jt_mode:
-            children.append(_blk_enum(
-                "jt_link", "JT 联动模式",
-                [t for _v, t in JT_LINK_OPTS],
-                _opt_index(JT_LINK_OPTS, jt_mode)))
-        for code in codes:
-            s, e = params.get(code, (0.0, 0.0))
-            children.append(_blk_double(code + "_start", "%s %s 起始距离" % (code, zh[code]), s))
-            children.append(_blk_double(code + "_end", "%s %s 结束距离" % (code, zh[code]), e))
-        # v1.21: 单列布局——DialogSizing 无自适应项(实测仅 Allow Resize/
-        # Follow Policy)且块模型无宽度属性, 双列行宽超默认窗口被裁;
-        # 单列后行宽≈标签+单字段, 默认窗口完整显示。
-        groups_xml.append(_group_item(gid, title, "".join(children), columns=1))
-
-    # 加热条组(JRT; 起始==结束 即停用; 区间随 FLB 联动, 底侧自动镜像;
-    # 颜色/透明度按期刊固定 186/78/50, 不进界面; 块 id 统一 "jrt_"+key)
-    jrt_children = [
-        _blk_double("jrt_" + key, label, jrt.get(key, DEFAULT_JRT[key]))
-        for key, label in JRT_FIELDS
-    ]
-    jrt_children.append(_blk_button("jrt_reset", "恢复默认"))
-    groups_xml.append(_group_item(
-        "grp_jrt", "加热条 JRT（齐平板面/入侵深度/两端倒圆+圆顶；深度0停用）",
-        "".join(jrt_children), columns=1))
-
-    dlx = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<Dialog ContainerItems="1" Expanded="1" NX="2312.0.0" class="" id="Dialog" '
-        'languageInfo="Language and Codeset: english 17" name="Dialog" notes="" '
-        'title="NX FenCengLaShen" type="uicomp" version="1.0.0">'
-        + g_file + "".join(groups_xml) +
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Title" mask="256" name="Title" sname="Label" source="1" type="utfstring" '
-        'value="NX 分层拉伸 (DXF→3D)"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Cue" mask="256" name="Cue" sname="Cue" source="1" type="utfstring" '
-        'value="设置各图层拉伸参数"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Sensitivity" mask="0" name="Sensitivity" sname="Enable" source="1" type="logical" '
-        'value="True"/>'
-        '<Property ClassID="UGS::UICOMP" brief="0" dynamic="0" group="General::Other::" '
-        'hierarchy="UGS::Styler::DialogItem" id="NavigationStyle" mask="393472" name="NavigationStyle" '
-        'selected="2" sname="Navigation Style" source="1" type="enum">'
-        '<Option name="OK Cancel" value="0"/><Option name="Close" value="1"/>'
-        '<Option name="OK Apply Cancel" value="2"/></Property>'
-        '</PropertyList></Dialog>\n'
-    )
-    return dlx
-
-
-def build_std_dlx(std_rules, params):
-    """第三段"标准件参数"对话框: 每件一个可收起组(13 参数块 + Z 基准值标签)。"""
-    groups_xml = []
-    for i, fname in enumerate(sorted(std_rules)):
-        r = std_rules[fname]
-        p = "SP%d_" % i
-        zval = _std_z(params, r)
-        children = [
-            _blk_label(p + "zval", "Z基准值: %.4g" % zval),
-            _blk_enum(p + "layer", "定位图层",
-                      [t for _v, t in LAYER_SEL_OPTS],
-                      _opt_index(LAYER_SEL_OPTS, r["layer"])),
-        ] + ([]
-             if r["layer"] == "CXK" else
-             [_blk_double(p + "rmin", "半径min", r["r_min"]),
-              _blk_double(p + "rmax", "半径max", r["r_max"])]) + [
-            _blk_enum(p + "zmode", "Z基准",
-                      [t for _v, t in ZMODE_OPTS],
-                      _opt_index(ZMODE_OPTS, r["z_mode"])),
-            _blk_double(p + "offx", "X偏移", r["off_x"]),
-            _blk_double(p + "offy", "Y偏移", r["off_y"]),
-            _blk_double(p + "offz", "Z偏移", r["off_z"]),
-            _blk_enum(p + "bool", "布尔",
-                      [t for _v, t in BOOL_OPTS],
-                      _opt_index(BOOL_OPTS, r["bool_mode"])),
-            _blk_enum(p + "dir", "方向",
-                      [t for _v, t in DIR_OPTS],
-                      _opt_index(DIR_OPTS, r["dir"])),
-        ]
-        # v1.19: 每件都有恢复默认按钮(无内置默认的件=恢复通用安全默认:
-        # 全部图层/全半径/FLB顶/仅放置/+Z/零偏移——压线板一案)
-        children.append(_blk_button(p + "reset", "恢复默认"))
-        groups_xml.append(_group_item("grp_" + p, fname, "".join(children),
-                                      columns=1))   # v1.21 单列; 默认展开
-    if not groups_xml:
-        groups_xml.append(_group_item("grp_sp_empty", "无选中标准件",
-                                      _blk_label("sp_empty_hint",
-                                                 "本窗口无参数可设, 直接确定执行。"),
-                                      columns=1))
-
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<Dialog ContainerItems="1" Expanded="1" NX="2312.0.0" class="" id="Dialog" '
-        'languageInfo="Language and Codeset: english 17" name="Dialog" notes="" '
-        'title="NX StdParams" type="uicomp" version="1.0.0">'
-        + "".join(groups_xml) +
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Title" mask="256" name="Title" sname="Label" source="1" type="utfstring" '
-        'value="标准件参数"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Cue" mask="256" name="Cue" sname="Cue" source="1" type="utfstring" '
-        'value="每个标准件一个格子, 点标题展开/收起"/>'
-        '<Property ClassID="UGS::UICOMP" brief="0" dynamic="0" group="General::Other::" '
-        'hierarchy="UGS::Styler::DialogItem" id="NavigationStyle" mask="393472" '
-        'name="NavigationStyle" selected="2" sname="Navigation Style" source="1" type="enum">'
-        '<Option name="OK Cancel" value="0"/><Option name="Close" value="1"/>'
-        '<Option name="OK Apply Cancel" value="2"/></Property>'
-        '</PropertyList></Dialog>\n'
-    )
-
-
-def _logs_dir():
-    """运行生成物目录(dlx/日志/调试脚印), 与脚本同级的 logs 子目录。"""
-    p = os.path.join(script_dir(), "logs")
-    try:
-        os.makedirs(p, exist_ok=True)
-    except OSError:
-        p = script_dir()
-    return p
-
-
-def _fresh_dlx_path(base_name, base_dir=None):
-    """唯一 dlx 路径(毫秒戳; 写前清旧)。NX 的对话框记忆按 dlx 文件名
-    存取并会在显示时回灌旧值(RetainValue=False 也拦不住, 实测)——
-    固定名会让历史会话的错误显示值死灰复燃(v1.17 改回固定名后"标准件
-    默认值又丢失错乱"即此); 每轮唯一名让记忆永远无载体。窗口宽度不靠
-    文件名记忆(NX 不跨会话记尺寸, 固定名时代用户同样每轮要拉宽),
-    由 dlx 内撑宽行直接做够。"""
-    d = base_dir if base_dir is not None else _logs_dir()
-    try:
-        os.makedirs(d, exist_ok=True)
-    except OSError:
-        pass
-    try:
-        for n in os.listdir(d):
-            if n.endswith(".dlx") and n.startswith(base_name):
-                try:
-                    os.remove(os.path.join(d, n))
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    return os.path.join(d, "%s_%d.dlx"
-                        % (base_name, int(time.time() * 1000) % 10 ** 10))
-
-
-def _temp_dlx_path(base_name):
-    """%TEMP% 回退路径也用唯一名——固定名会复活 v1.14/v1.17 已根治的
-    "NX 按 dlx 文件名回灌旧会话值"事故(v1.35)。"""
-    return _fresh_dlx_path(base_name, base_dir=os.environ.get("TEMP") or ".")
-
-
-def write_std_dlx(std_rules, params):
-    """生成第三段 .dlx 到脚本目录(唯一名), 失败回退 %TEMP%(同样唯一名)。"""
-    xml = build_std_dlx(std_rules, params)
-    candidates = [_fresh_dlx_path("nx_std_params"), _temp_dlx_path("nx_std_params")]
-    for path in candidates:
-        try:
-            with io.open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(xml)
-            return path
-        except IOError:
-            continue
-    return None
-
-
-def write_dlx(params=None, jrt=None, jt_mode=None):
-    """生成窗口② .dlx 到脚本目录(唯一名), 失败回退 %TEMP%(对应 dt:find-dcl 回退链)。"""
-    xml = build_dlx(params, jrt, jt_mode)
-    candidates = [_fresh_dlx_path("nx_extrude_runner"),
-                  _temp_dlx_path("nx_extrude_runner")]
-    for path in candidates:
-        try:
-            with io.open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(xml)
-            return path
-        except IOError:
-            continue
-    return None
-
-
-# ============================================================================
-# §4 参数记忆(nx_extrude_params.json)
-# ============================================================================
-
-def _json_path():
-    return os.path.join(script_dir(), "nx_extrude_params.json")
-
-
-def load_state():
-    p = _json_path()
-    try:
-        with io.open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        # 坏记忆隔离留证(改名备份), 防止下次 save 用默认值覆盖掉现场
-        if os.path.isfile(p):
-            try:
-                bak = "%s.bad-%s" % (p, time.strftime("%Y%m%d-%H%M%S"))
-                os.replace(p, bak)
-                _note("nx_extrude_params.json 损坏, 已隔离为 %s, "
-                                  "本次按全新记忆处理。" % os.path.basename(bak))
-            except OSError:
-                pass
-        return {}
-
-
-def _name_list(v):
-    """记忆中的文件名列表容错: list/tuple → [str]; 其余(含坏类型)→ []。"""
-    if isinstance(v, (list, tuple)):
-        return [str(x) for x in v]
-    return []
-
-
-def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
-               jt_link_mode=None):
-    """落盘记忆(临时文件+原子替换: 中途崩溃/断电不损原记忆)。
-
-    jrt_se 只存加热条起始/结束两个距离(三个几何参数永不落盘,
-    打开恒 3.9/0.1/3.7); 传 None 时原样写 null(=无记忆, 按 FLB 联动)。
-    jt_link_mode 存 JT 联动模式(v1.37); None 写 null(=无记忆, 回 config 默认)。
-    """
-    try:
-        p = _json_path()
-        if not isinstance(jt_link_mode, str):
-            # 未显式给模式 → 保留旧记忆里的模式(v1.38 修复: 选件落盘等
-            # 局部保存不带 jt_link_mode, 曾把已选模式抹成 null)
-            try:
-                with io.open(p, encoding="utf-8") as f_old:
-                    _old_mode = json.load(f_old).get("jt_link_mode")
-                if isinstance(_old_mode, str):
-                    jt_link_mode = _old_mode
-            except Exception:
-                pass
-        tmp = "%s.tmp" % p
-        with io.open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"schema": SCHEMA_VERSION,
-                       "dxf_path": dxf_path, "params": params,
-                       "std_parts": std_rules or {},
-                       "selected": _name_list(selected),
-                       "jrt_se": (list(jrt_se)
-                                  if isinstance(jrt_se, (list, tuple))
-                                  and len(jrt_se) == 2 else None),
-                       "jt_link_mode": (jt_link_mode
-                                        if isinstance(jt_link_mode, str)
-                                        else None)}, f,
-                      ensure_ascii=False, indent=2)
-        os.replace(tmp, p)
-    except Exception as ex:
-        _note("记忆保存失败(%s: %s)。" % (type(ex).__name__, ex))
-
-
-def merge_params(state):
-    """记忆值与默认值合并(记忆优先)。
-
-    schema 门控(v1.35): 版本不符时界面参数(params)一并回默认——与
-    config 注释"调大 CONFIG_SCHEMA_VERSION 连界面参数一起回默认"一致。
-    """
-    out = default_params()
-    if not isinstance(state, dict) or state.get("schema") != SCHEMA_VERSION:
-        return out
-    raw = state.get("params")
-    if not isinstance(raw, dict):
-        return out                # 坏类型(列表/字符串等)按无记忆处理, 不崩
-    for code, v in raw.items():
-        if code in out and isinstance(v, (list, tuple)) and len(v) == 2:
-            try:
-                out[code] = (float(v[0]), float(v[1]))
-            except (TypeError, ValueError):
-                pass
-    return out
-
-
-def resolve_dxf_path(state):
-    """DXF 路径: 记忆值优先, 否则脚本目录最新 *.dxf。"""
-    p = state.get("dxf_path") or ""
-    if p and os.path.isfile(p):
-        return p
-    try:
-        cands = [os.path.join(script_dir(), n) for n in os.listdir(script_dir())
-                 if n.lower().endswith(".dxf")]
-        if cands:
-            return max(cands, key=os.path.getmtime)
-    except OSError:
-        pass
-    return ""
 
 
 # ============================================================================
@@ -2028,7 +901,42 @@ def resolve_dxf_path(state):
 # ============================================================================
 
 # 本会话创建的特征登记(名字可能被 NX 自动改尾号导致前缀清理漏网, 双保险)
-_CREATED_FEATURES = []
+#
+# (P0 拆分前置) 原为模块级裸列表 _CREATED_FEATURES —— 6 处 append 分散在
+# 拉伸/提升/布尔/边倒圆/删面五个工序, 2 处清空在 nx_purge 与 _remove_parameters,
+# 是全局可变状态里扇入最高的一处, 也是模块拆分的最大地雷(拆开后两个模块各持
+# 一份 → 清理漏删上一轮产物 或 误删用户图形)。升级为显式对象后: 谁持有
+# registry 谁负责, 调用语义逐字不变。兼容别名见下, 改口完成后删除。
+class FeatureRegistry(object):
+    """本会话创建特征的登记表(语义等价于原模块级列表 _CREATED_FEATURES)。"""
+
+    def __init__(self):
+        self._items = []
+
+    def add(self, feat):
+        """登记一个特征; None 忽略(调用侧 try 内可能拿到 None)。"""
+        if feat is not None:
+            self._items.append(feat)
+
+    def all(self):
+        """只读快照(遍历用, 不清空)。"""
+        return list(self._items)
+
+    def take(self):
+        """取出全部并清空(nx_purge 的"登记表双保险"路径: 取走即归零)。"""
+        out = list(self._items)
+        del self._items[:]
+        return out
+
+    def clear(self):
+        """清空(移除参数后特征已不存在, 登记表作废)。"""
+        del self._items[:]
+
+    def __len__(self):
+        return len(self._items)
+
+
+registry = FeatureRegistry()
 
 # 脚本曲线所有权标记(NX 对象属性): 清理只删带标记的曲线, 用户自有图形不受影响
 MARK_ATTR = "CAD3D"
@@ -2048,49 +956,8 @@ def _is_marked(obj):
         return False
 
 
-def _q(v, nd=4):
-    return round(float(v), nd)
-
-
-def _nx_curve_fp(c):
-    """NX 曲线 → 几何指纹(线=两端点; 弧=圆心,半径,起终角)。取不到返回 None。"""
-    tname = type(c).__name__
-    try:
-        if tname == "Line":
-            a, b = c.StartPoint, c.EndPoint
-            p1, p2 = (_q(a.X), _q(a.Y)), (_q(b.X), _q(b.Y))
-            return ("L",) + tuple(sorted((p1, p2)))
-        if tname == "Arc":
-            ctr = c.CenterPoint
-            return ("A", _q(ctr.X), _q(ctr.Y), _q(c.Radius),
-                    _q(c.StartAngle, 6), _q(c.EndAngle, 6))
-    except Exception:
-        return None
-    return None
-
-
-def _dxf_ent_fp(e):
-    """DXF 实体 → 几何指纹(与 _nx_curve_fp 同一套量化, 可互相匹配)。"""
-    if e.kind == "line":
-        p1, p2 = (_q(e.p1[0]), _q(e.p1[1])), (_q(e.p2[0]), _q(e.p2[1]))
-        return ("L",) + tuple(sorted((p1, p2)))
-    if e.kind == "arc":
-        return ("A", _q(e.c[0]), _q(e.c[1]), _q(e.r), _q(e.a0, 6), _q(e.a1, 6))
-    # circle → 整圆弧(0..2π), 与 create_curves 的建法一致
-    return ("A", _q(e.c[0]), _q(e.c[1]), _q(e.r), 0.0, round(2 * math.pi, 6))
-
-
-def dxf_fingerprints(layers):
-    """全部 DXF 实体的指纹多重集(旧版无标记曲线的迁移匹配用)。"""
-    from collections import Counter
-    fps = Counter()
-    for ents in (layers or {}).values():
-        for e in ents:
-            fp = _dxf_ent_fp(e)
-            if fp is not None:
-                fps[fp] += 1
-    return fps
-
+# 几何指纹(_q/_nx_curve_fp/_dxf_ent_fp/dxf_fingerprints)已搬至 nx_geom.py,
+# 由上方加载器再导出(同名可见, 调用方零改动)。
 
 def _iter(coll):
     """NX 集合迭代: for-in 优先, 失败退 GetObjects()。"""
@@ -2138,7 +1005,7 @@ class Log(object):
                 pass
 
 
-def nx_purge(session, work_part, log, dxf_layers=None):
+def nx_purge(session, work_part, log, dxf_layers=None, nx=None):
     """清理上一轮产物(只删自己的东西, 不碰用户图形):
     - 特征: CAD3D_ 前缀 + 本会话登记表(按所属部件过滤);
     - 已标记体: v1.9 移除参数后留下的哑体(特征已删, 按 CAD3D 属性标记
@@ -2150,8 +1017,13 @@ def nx_purge(session, work_part, log, dxf_layers=None):
       不重合=用户自有图形, 保留并警告。
 
     返回实际删除对象数(仅供诊断; 调用方目前忽略返回值)。
+
+    (P0) nx: 显式传入 NXOpen 模块引用(调用方 run_pipeline 传它已 import 的)。
+    此前本函数 `global NXOpen` 依赖 run_pipeline 在入口赋值全局——跨模块的
+    隐式依赖, 拆分后必然断链; 缺省时自行 import, 旧调用点行为不变。
     """
-    global NXOpen
+    if nx is None:
+        import NXOpen as nx
     feats, curves, comps = [], [], []
     try:
         for f in _iter(work_part.Features):
@@ -2159,13 +1031,14 @@ def nx_purge(session, work_part, log, dxf_layers=None):
                 feats.append(f)
     except Exception as ex:
         log("【清理】特征枚举失败: %s" % ex)
-    for f in list(_CREATED_FEATURES):               # 登记表双保险(仅本工作部件)
+    # (P0) registry.take() 与原 "list(_CREATED_FEATURES) + del[:]" 等价:
+    # 取走全部并清空(登记表双保险, 仅本工作部件)
+    for f in registry.take():
         try:
             if f not in feats and f.OwningPart == work_part:
                 feats.append(f)
         except Exception:
             pass
-    del _CREATED_FEATURES[:]
     try:                                            # 标准件组件实例
         root = work_part.ComponentAssembly.RootComponent
         if root is not None:                        # 纯部件(未成装配)时为 None
@@ -2202,7 +1075,7 @@ def nx_purge(session, work_part, log, dxf_layers=None):
         try:
             session.UpdateManager.AddToDeleteList(feats + curves + comps)
             session.UpdateManager.DoUpdate(
-                session.SetUndoMark(NXOpen.Session.MarkVisibility.Invisible, "CAD3D 清理"))
+                session.SetUndoMark(nx.Session.MarkVisibility.Invisible, "CAD3D 清理"))
         except Exception as ex:
             log("【清理】删除失败(可能有特征引用曲线): %s" % ex)
             return 0                    # 返回值=实际删除数, 未删成即 0
@@ -2219,7 +1092,7 @@ def nx_purge(session, work_part, log, dxf_layers=None):
         try:
             session.UpdateManager.AddToDeleteList(mbodies)
             session.UpdateManager.DoUpdate(
-                session.SetUndoMark(NXOpen.Session.MarkVisibility.Invisible, "CAD3D 清理体"))
+                session.SetUndoMark(nx.Session.MarkVisibility.Invisible, "CAD3D 清理体"))
         except Exception as ex:
             log("【清理】已标记体删除失败: %s" % ex)
             return len(feats) + len(curves) + len(comps)   # 体未删掉
@@ -2426,7 +1299,7 @@ def extrude_curves(work_part, curves, start, end, name, bool_op=None, help_pt=No
             feat.SetName(name)
         except Exception:
             pass
-        _CREATED_FEATURES.append(feat)
+        registry.add(feat)
         return feat
     finally:
         try:
@@ -2612,86 +1485,8 @@ def _matrix3x3(nx, flip):
         return m
 
 
-def _place_delta(ref, flip, off):
-    """(纯逻辑)放置位移: basePoint = 锚点 + 本函数返回值。
-
-    basePoint = 锚点 − R·ref + off(R 为插入姿态矩阵):
-      +Z(R=I)      → (−ref_x+ox, −ref_y+oy, −ref_z+oz)
-      -Z(绕X 180°) → ref 的 y/z 分量随零件坐标系翻转反号——此前直接用
-                     −ref, 翻转件对位误差 = (0, 2·ref_y, 2·ref_z)(v1.35 修复)
-    """
-    rx = _cfg_num(ref[0], 0.0)
-    ry = _cfg_num(ref[1], 0.0)
-    rz = _cfg_num(ref[2], 0.0)
-    ox = _cfg_num(off[0], 0.0)
-    oy = _cfg_num(off[1], 0.0)
-    oz = _cfg_num(off[2], 0.0)
-    if flip:
-        ry, rz = -ry, -rz
-    return (-rx + ox, -ry + oy, -rz + oz)
-
-
-
-
-def _center_seen(grid, x, y, tol=LOOP_TOL):
-    """量化网格 + 3×3 邻桶判同心: 已见返回 True, 未见登记并返回 False。
-
-    (v1.35) 替代对 found 的 O(n²) 线性 any() 扫描——"空图层+全半径"配错
-    时上万圆心的去重曾先行卡死, 护栏来不及救。
-    """
-    kx, ky = int(round(x / tol)), int(round(y / tol))
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            for px, py in grid.get((kx + dx, ky + dy), ()):
-                if abs(px - x) < tol and abs(py - y) < tol:
-                    return True
-    grid.setdefault((kx, ky), []).append((x, y))
-    return False
-
-
-def collect_circle_anchors(layers, rule):
-    """规则筛选圆/圆弧圆心 → [(cx, cy, r)]; 同心去重。
-
-    v1.10: 定位图层=CXK 时改为"线中点"锚点——2D 图 CXK 层只画一条线,
-    中点即放置点(接线盒规则; 半径字段对该层无意义, 忽略)。
-    """
-    lay = rule.get("layer") or ""
-    if lay == "CXK":
-        found, grid = [], {}
-        for e in (layers.get("CXK") or []):
-            if e.kind == "line":
-                mx = (e.p1[0] + e.p2[0]) / 2.0
-                my = (e.p1[1] + e.p2[1]) / 2.0
-                if not _center_seen(grid, mx, my):
-                    found.append((mx, my, 0.0))
-        return found
-    codes = [lay] if lay else LAYER_CODES
-    rmin, rmax = rule["r_min"], rule["r_max"]
-    found, grid = [], {}
-    for code in codes:
-        for e in (layers.get(code) or []):
-            if e.kind in ("circle", "arc") and (rmin - 1e-9) <= e.r <= (rmax + 1e-9):
-                c = e.c
-                if not _center_seen(grid, c[0], c[1]):
-                    found.append((c[0], c[1], e.r))
-    return found
-
-
-def _std_z(params, rule):
-    """插入点 Z = z_mode 查 ZMODE_DEFS 选出的基准面 + off_z。
-
-    负区间也正确(top=max, bottom=min)。查不到的 z_mode(如旧 json 的
-    ABS)回 FLB 顶面。
-    """
-    zm = rule["z_mode"]
-    for _k, _lbl, layer, side in _ZMODE_DEFS:
-        if _k == zm:
-            s, e = params.get(layer, (0.0, 0.0))
-            base = max(s, e) if side == "TOP" else min(s, e)
-            return base + rule["off_z"]
-    s, e = params.get(TARGET_CODE, (0.0, 0.0))
-    return max(s, e) + rule["off_z"]
-
+# 放置/锚点/Z 基准纯逻辑(_place_delta/_center_seen/collect_circle_anchors/
+# _std_z)已搬至 nx_rules.py, 由加载器再导出(同名可见, 调用方零改动)。
 
 def _pick_target(flb_regions, cx, cy, log=None):
     """按锚点 XY 找包含它的 FLB 体。
@@ -2754,7 +1549,7 @@ def _promote_body(work_part, comp, feat_name, log, body_index=None):
                              else "%s_%d" % (feat_name, len(out) + 1))
             except Exception:
                 pass
-            _CREATED_FEATURES.append(feat)
+            registry.add(feat)
             bs = _bodies_of(feat)
             if bs:
                 out.append(bs[0])
@@ -2837,7 +1632,7 @@ def _bool_feature(work_part, op, target, tools, name, log, retain_tools=False):
             f.SetName(name or ("%sBOOL_%d" % (FEATURE_PREFIX, i)))
         except Exception:
             pass
-        _CREATED_FEATURES.append(f)
+        registry.add(f)
     return feats
 
 
@@ -2875,7 +1670,7 @@ def _remove_parameters(session, work_part, bodies, log):
                 bld.Destroy()
             except Exception:
                 pass
-    del _CREATED_FEATURES[:]          # 特征已无, 登记表清空
+    registry.clear()                  # 特征已无, 登记表清空
     log("【移除参数】完成: %d 个实体已去参数化(重跑按标记清理)。" % len(ok_bodies))
     return len(ok_bodies)
 
@@ -2982,7 +1777,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
             try:
                 session.UpdateManager.AddToDeleteList([comp])
                 session.UpdateManager.DoUpdate(
-                    session.SetUndoMark(NXOpen.Session.MarkVisibility.Invisible,
+                    session.SetUndoMark(nx.Session.MarkVisibility.Invisible,
                                         "CAD3D 删组件"))
             except Exception as ex:
                 log("  %s 位置 %d 组件删除失败(提升体不受影响): %s"
@@ -3015,7 +1810,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                                 session.UpdateManager.AddToDeleteList(tools_all)
                                 session.UpdateManager.DoUpdate(
                                     session.SetUndoMark(
-                                        NXOpen.Session.MarkVisibility.Invisible,
+                                        nx.Session.MarkVisibility.Invisible,
                                         "CAD3D 删多余体"))
                             except Exception:
                                 pass
@@ -3144,7 +1939,7 @@ def _edge_blend_end(work_part, uf, body, z_plane, radius, log, feat_name=None):
                 feat.SetName(feat_name)
             except Exception:
                 pass
-        _CREATED_FEATURES.append(feat)
+        registry.add(feat)
         try:
             new_faces = [f for f in body.GetFaces() if f.Tag not in before]
         except Exception:
@@ -3322,7 +2117,7 @@ def _delete_faces(work_part, faces, log, feat_name=None):
                 feat.SetName(feat_name)
             except Exception:
                 pass
-        _CREATED_FEATURES.append(feat)
+        registry.add(feat)
         return feat
     finally:
         try:
@@ -3840,12 +2635,14 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
 
 def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
                  std_rules=None, jrt=None):
-    """主流水线: 清理 → 建曲线 → 分层拉伸/布尔。返回 (ok, stats)。"""
-    global NXOpen
+    """主流水线: 清理 → 建曲线 → 分层拉伸/布尔。返回 (ok, stats)。
+
+    (P0) 不再 `global NXOpen` 赋值: 此前靠它给 nx_purge 供 NXOpen 引用——
+    跨模块隐式全局依赖, 拆分后必断链; 现改为把 _nx 显式传给 nx_purge(nx=_nx)。
+    """
     import NXOpen as _nx
     import NXOpen.Features             # 子模块显式导入(交互期刊不会自动挂包属性)
     import NXOpen.GeometricUtilities
-    NXOpen = _nx
 
     if session is None:
         session = _nx.Session.GetSession()
@@ -3857,8 +2654,9 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
 
     log("")
     log("================ NX 分层拉伸 v%s ================" % SCRIPT_VERSION)
-    for _note in _CFG_NOTES:
-        log("【配置提示】%s" % _note)
+    # (P0) 经 notes() 取快照; 循环变量不用 _note——它会遮蔽入队函数 _note(msg)
+    for _n in notes():
+        log("【配置提示】%s" % _n)
     log("【输入】DXF: %s" % dxf_path)
     if not dxf_path or not os.path.isfile(dxf_path):
         log("【错误】未找到 DXF 文件, 中止。")
@@ -3896,7 +2694,7 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
             ", ".join("%s×%d" % (c, len(layers.get(c) or [])) for c in LAYER_CODES)))
 
         # 2. 清理上一轮(只删带标记/指纹匹配的, 用户图形不碰)
-        nx_purge(session, work_part, log, dxf_layers=layers)
+        nx_purge(session, work_part, log, dxf_layers=layers, nx=_nx)
 
         # 3. 图层映射 + 类别 + 建曲线(全图导入, 建模仅针对 LAYER_TABLE 图层)
         layer_map = assign_layers(list(layers.keys()))
@@ -4825,873 +3623,18 @@ class StdParamsDialog(_BlockDialogBase):
 # §7 自测 / 合成 DXF / 批量模式 / 入口
 # ============================================================================
 
-def make_sample_dxf(path):
-    """生成 7 图层合成测试 DXF(覆盖: 多环/圆/嵌套垫片/贯穿 subtract)。"""
+# nx_selftest: 自测 / 合成 DXF / 未定义名检查(离线)
+_nx_selftest = _load_sub("nx_selftest")
+# selftest 引用主脚本近百个符号, 注入主脚本整个命名空间(去 dunder)即可;
+# 同时把注入名集传给它, 供 _undefined_name_check 排除。
+_nx_selftest.__dict__.update(
+    {_k: _v for _k, _v in globals().items() if not _k.startswith("__")})
+_nx_selftest.INJECTED_NAMES = set(
+    _k for _k in globals() if not _k.startswith("__"))
 
-    def rect(layer, x, y, w, h):
-        out = []
-        for (x1, y1, x2, y2) in [(x, y, x + w, y), (x + w, y, x + w, y + h),
-                                 (x + w, y + h, x, y + h), (x, y + h, x, y)]:
-            out += ["0", "LINE", "8", layer, "10", "%.3f" % x1, "20", "%.3f" % y1,
-                    "30", "0", "11", "%.3f" % x2, "21", "%.3f" % y2, "31", "0"]
-        return out
-
-    def circle(layer, cx, cy, r):
-        return ["0", "CIRCLE", "8", layer, "10", "%.3f" % cx, "20", "%.3f" % cy,
-                "30", "0", "40", "%.3f" % r]
-
-    body = ["0", "SECTION", "2", "ENTITIES"]
-    body += rect("FLB", 0, 0, 200, 40)        # 通道 1
-    body += rect("FLB", 0, 80, 200, 40)       # 通道 2(多体 unite 场景)
-    body += rect("JT", 250, 0, 120, 60)
-    for (cx, cy) in [(10, 10), (190, 10), (10, 30), (190, 30)]:
-        body += circle("LS", cx, cy, 4.25)
-    body += circle("RZ", 100, 20, 11.35)
-    body += circle("DK", 100, 20, 3.0)        # 与 RZ 同心(嵌套 subtract 场景)
-    body += circle("RZ", 100, 100, 11.35)
-    body += circle("DK", 100, 100, 3.0)
-    body += rect("DP", 0, -80, 60, 60)        # 垫片外环
-    body += rect("DP", 10, -70, 40, 40)       # 垫片内环(同层嵌套→孔)
-    body += rect("CX", 0, 160, 30, 10)
-    body += rect("JRT", 0, 220, 120, 30)     # 参考图层(只导入不拉伸)
-    body += ["0", "LINE", "8", "LD", "10", "0", "20", "-30", "30", "0",
-             "11", "0", "21", "-31", "31", "0"]   # 动态分配图层的参考线
-    body += ["0", "ENDSEC", "0", "EOF"]
-
-    with io.open(path, "w", encoding="ascii", newline="\n") as f:
-        f.write("\n".join(body))
-    return path
-
-
-def _undefined_name_check(path):
-    """AST 静态检查: 模块内所有 Name 引用是否可解析(模块级/内建/作用域链)。
-
-    捕捉"交互路径才炸"的拼写 NameError(教训: build_selection_dxl 笔误,
-    批量冒烟走不到 main() 交互路径未暴露)。嵌套函数可见外层局部名;
-    global 声明的名视为已解析(可能在别处赋值)。
-    """
-    import ast
-    import builtins
-
-    with io.open(path, "r", encoding="utf-8") as f:
-        tree = ast.parse(f.read())
-
-    module_names = set(dir(builtins)) | {"__name__", "__file__"}
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            module_names.add(node.name)
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                module_names.add(a.asname or a.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            for a in node.names:
-                module_names.add(a.asname or a.name)
-        elif isinstance(node, ast.Assign):
-            for t in node.targets:
-                for n in ast.walk(t):
-                    if isinstance(n, ast.Name):
-                        module_names.add(n.id)
-
-    bad = []
-
-    def fn_locals(fn):
-        local = set()
-        globs = set()
-        for n in ast.walk(fn):
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-                local.add(n.id)
-            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                ast.ClassDef)):
-                local.add(n.name)   # 函数内定义的类同样绑定局部名(v1.35)
-            elif isinstance(n, ast.arg):
-                local.add(n.arg)
-            elif isinstance(n, ast.ExceptHandler) and n.name:
-                local.add(n.name)
-            elif isinstance(n, ast.Import):
-                for a in n.names:
-                    local.add(a.asname or a.name.split(".")[0])
-            elif isinstance(n, ast.ImportFrom):
-                for a in n.names:
-                    local.add(a.asname or a.name)
-            elif isinstance(n, ast.Global):
-                globs.update(n.names)
-        return local, globs
-
-    def visit_fn(fn, enclosing):
-        local, globs = fn_locals(fn)
-        visible = enclosing | local | globs
-        for n in ast.walk(fn):
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) \
-                    and n.id not in visible:
-                bad.append("line %d: %s" % (n.lineno, n.id))
-        for child in ast.walk(fn):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                    and child is not fn:
-                visit_fn(child, visible)
-
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            visit_fn(node, module_names)
-    return bad
-
-
-
-def selftest(dxf_path=None):
-    import xml.etree.ElementTree as ET        # dlx 良构校验(全函数共用)
-
-    ok = True
-
-    def check(name, cond, extra=""):
-        nonlocal ok
-        print("[%s] %s %s" % ("PASS" if cond else "FAIL", name, extra))
-        if not cond:
-            ok = False
-
-    for _note in _CFG_NOTES:       # 配置缺失/损坏在这里可见, 不静默回退
-        print("[INFO] 配置提示: %s" % _note)
-
-    # 0. AST 未定义名称检查(防交互路径 NameError; 改名/删函数后必查)
-    _src = os.path.join(script_dir(), "nx_extrude_runner.py")
-    if os.path.isfile(_src):
-        bad_names = _undefined_name_check(_src)
-        check("AST 未定义名称=0", not bad_names, "; ".join(bad_names[:6]))
-
-    # 1. 链环: 闭合矩形
-    segs = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5)),
-            DXLine((10, 5), (0, 5)), DXLine((0, 5), (0, 0))]
-    closed, opens = find_chains(segs)
-    check("矩形闭链", len(closed) == 1 and not opens)
-
-    # 2. 开口链
-    segs2 = segs[:3]
-    closed2, opens2 = find_chains(segs2)
-    check("开口链检测", not closed2 and len(opens2) == 1)
-
-    # 3. 嵌套: 外方 + 内方 → 1 轮廓带 1 孔
-    outer = [DXLine((0, 0), (100, 0)), DXLine((100, 0), (100, 100)),
-             DXLine((100, 100), (0, 100)), DXLine((0, 100), (0, 0))]
-    inner = [DXLine((40, 40), (60, 40)), DXLine((60, 40), (60, 60)),
-             DXLine((60, 60), (40, 60)), DXLine((40, 60), (40, 40))]
-    profs, opens3, _ = organize_loops(outer + inner)
-    check("嵌套→孔", len(profs) == 1 and len(profs[0]["holes"]) == 1,
-          "profiles=%d holes=%d" % (len(profs), len(profs[0]["holes"]) if profs else -1))
-
-    # 3b. 三层嵌套(孔中岛): 岛须独立成体, 不能当成第二个孔被减掉
-    #     (v1.29 修复: parent 取"最小包含环"; 此前取到最大环→岛被判成 A 的
-    #      第二个孔, 岛的材料被一并减掉, 与 2D 图不符)
-    def _sq(x, y, w, h):
-        return [DXLine((x, y), (x + w, y)), DXLine((x + w, y), (x + w, y + h)),
-                DXLine((x + w, y + h), (x, y + h)), DXLine((x, y + h), (x, y))]
-
-    _A, _B, _C = _sq(0, 0, 100, 100), _sq(20, 20, 60, 60), _sq(40, 40, 20, 20)
-    profs3b, _o3b, _ = organize_loops(_A + _B + _C)
-    check("三层嵌套: 岛独立成轮廓(不并进孔)",
-          len(profs3b) == 2 and len(profs3b[0]["holes"]) == 1
-          and not profs3b[1]["holes"]
-          and profs3b[0]["outer"]["bbox"] == (0, 0, 100, 100)
-          and profs3b[1]["outer"]["bbox"] == (40, 40, 60, 60),
-          "profiles=%d" % len(profs3b))
-    # 3c. 四层嵌套: 外环带1孔 + 岛再带1孔
-    _D = _sq(10, 10, 80, 80)
-    profs3c, _o3c, _ = organize_loops(_A + _D + _B + _C)
-    check("四层嵌套: 外带1孔 + 岛带1孔",
-          len(profs3c) == 2 and len(profs3c[0]["holes"]) == 1
-          and len(profs3c[1]["holes"]) == 1
-          and profs3c[1]["outer"]["bbox"] == (20, 20, 80, 80),
-          "profiles=%d" % len(profs3c))
-
-    # 4. 圆独立轮廓 + 弧参与闭环
-    arc_ring = [DXArc((50, 50), 20, 0, math.pi), DXArc((50, 50), 20, math.pi, 2 * math.pi)]
-    profs4, _o4, nc4 = organize_loops(arc_ring + [DXCircle((0, 0), 5)])
-    check("两半弧成环 + 圆轮廓", len(profs4) == 2)
-
-    # 5. 合成 DXF 解析
-    sample = os.path.join(script_dir(), ".zcode", "sample_layers.dxf")
-    try:
-        os.makedirs(os.path.dirname(sample), exist_ok=True)
-    except OSError:
-        pass
-    make_sample_dxf(sample)
-    layers, stats = parse_dxf(sample)
-    check("合成 DXF 各层曲线数",
-          len(layers.get("FLB", [])) == 8 and len(layers.get("LS", [])) == 4
-          and len(layers.get("DP", [])) == 8 and len(layers.get("RZ", [])) == 2,
-          str({k: len(v) for k, v in layers.items()}))
-    check("JRT 参考图层导入", len(layers.get("JRT", [])) == 4)
-    check("LD 参考图层导入", len(layers.get("LD", [])) == 1)
-    mp = assign_layers(["LD", "0", "FLB", "JRT"])
-    check("动态图层号分配", mp["FLB"] == _cfg("NX_LAYER_START", 11)
-          and mp["JRT"] == _cfg("NX_LAYER_JRT", 18)
-          and mp["0"] == _cfg("NX_LAYER_DYNAMIC_START", 19)
-          and mp["LD"] == _cfg("NX_LAYER_DYNAMIC_START", 19) + 1,
-          str(mp))
-    _lo_cfg = _cfg("LINK_OFFSETS", {})
-    if not isinstance(_lo_cfg, dict):
-        _lo_cfg = {}
-    check("联动/JRT建模/图层号均来自 config(v1.33)",
-          _LINK_OFFSETS == {k: _cfg_num(_lo_cfg.get(k), d)
-                            for k, d in (("RZ", 13.0), ("DK", 3.0),
-                                         ("DP", 6.7023))}
-          and JRT_FROM_TOP == _cfg_num(_cfg("JRT_INTRUSION_DEFAULT", 7.5), 7.5)
-          and DEFAULT_JRT["offset"] == _cfg_num(_cfg("JRT_OFFSET", 5.0), 5.0)
-          and DEFAULT_JRT["draft"] == _cfg_num(_cfg("JRT_DRAFT", 2.0), 2.0)
-          and DEFAULT_JRT["color_strip"] == _cfg_int("JRT_COLOR_STRIP", 186)
-          and MANAGED_MAX == _cfg_int("NX_LAYER_MAX", 70)
-          and STDPARTS_DIRNAME == _cfg("STDPARTS_DIRNAME", "stdparts"))
-
-    # 6. 几何指纹(清理迁移匹配的纯逻辑部分)
-    fp_line = _dxf_ent_fp(DXLine((10.00004, 20.0), (10.0, 25.0)))
-    fp_line2 = _dxf_ent_fp(DXLine((10.0, 25.0), (10.00004, 20.0)))
-    check("线指纹与端点顺序无关", fp_line == fp_line2)
-    fp_c = _dxf_ent_fp(DXCircle((5, 5), 3))
-    fp_a = _dxf_ent_fp(DXArc((5, 5), 3, 0.0, 2 * math.pi))
-    check("圆指纹=整圆弧指纹(与建法一致)", fp_c == fp_a, "%s vs %s" % (fp_c, fp_a))
-    fps = dxf_fingerprints({"X": [DXLine((0, 0), (1, 1)), DXCircle((2, 2), 1)]})
-    check("指纹多重集", fps.get(fp_line, 0) == 0 and
-          fps.get(("L", (0.0, 0.0), (1.0, 1.0)), 0) == 1 and
-          fps.get(_dxf_ent_fp(DXCircle((2, 2), 1)), 0) == 1)
-
-    # 7. JRT 侧向区间(纯逻辑; 新签名 start/end + 底侧镜像)
-    sides = _jrt_sides(-40.0, -47.5, -85.0)
-    check("JRT 两侧区间(负 Z)",
-          sides == [("T", -40.0, -47.5), ("B", -85.0, -77.5)], str(sides))
-    sides2 = _jrt_sides(45.0, 37.5, 0.0)
-    check("JRT 两侧区间(正 Z)",
-          sides2 == [("T", 45.0, 37.5), ("B", 0.0, 7.5)], str(sides2))
-    # v1.9: JRT 恒默认不持久化(JSON 漂移污染的根治; start/end 由 FLB 联动)
-    jx = merge_jrt({"jrt": {"start": "5", "end": -2.5, "blend_r": 3.8}})
-    check("JRT 不读记忆(恒默认)", jx == dict(DEFAULT_JRT), str(jx))
-    check("JRT 默认值 3.9/0.1/3.7",
-          DEFAULT_JRT["blend_r"] == 3.9 and DEFAULT_JRT["r_step"] == 0.1
-          and DEFAULT_JRT["r_min"] == 3.7)
-
-    # 7b. FLB 联动推导
-    d = derive_linked(-40.0, -90.0)
-    check("联动推导 FLB(-40,-90)",
-          d["LS"] == (-40.0, -90.0) and d["RZ"] == (-77.0, -90.0)
-          and d["DK"] == (-40.0, -43.0)
-          and abs(d["DP"][0] - -83.2977) < 1e-9 and d["DP"][1] == -90.0
-          and d["JRT"] == (-40.0, -47.5), str(d))
-    d2 = derive_linked(45.0, 0.0)
-    check("联动推导 正 Z 参数",
-          d2["RZ"] == (13.0, 0.0) and d2["DK"] == (45.0, 42.0)
-          and d2["DP"] == (6.7023, 0.0) and d2["JRT"] == (45.0, 37.5))
-
-    # 7b-2. JT 联动模式(v1.37)
-    check("derive_linked 默认不含 JT",
-          "JT" not in derive_linked(-40.0, -85.0))
-    check("JT 联动普通模式 FLB(-40,-85)→(-30,-100)",
-          _jt_link_values(-40.0, -85.0, "普通模式") == (-30.0, -100.0))
-    check("JT 联动针阀模式 FLB(-40,-85)→(-25,-100)",
-          _jt_link_values(-40.0, -85.0, "针阀模式") == (-25.0, -100.0))
-    check("derive_linked 带 jt_mode 输出 JT",
-          derive_linked(-40.0, -85.0, jt_mode="针阀模式")["JT"]
-          == (-25.0, -100.0))
-    check("CX 联动: 起始=JT起始, 结束=起始-35",
-          _cx_link_values(-30.0) == (-30.0, -65.0))
-    check("CX 联动示例: 起始-25 → 结束-60",
-          _cx_link_values(-25.0) == (-25.0, -60.0))
-    dp = default_params()
-    check("兜底 FLB -40/-85", dp["FLB"] == (-40.0, -85.0))
-    check("兜底联动层推导(普通模式)",
-          dp["JT"] == (-30.0, -100.0) and dp["CX"] == (-30.0, -65.0)
-          and dp["RZ"] == (-72.0, -85.0) and dp["DK"] == (-40.0, -43.0)
-          and dp["LS"] == (-40.0, -85.0) and dp["DP"][0] == -78.2977)
-    check("jt 模式记忆恢复", jt_mode_with_memory(
-        {"jt_link_mode": "针阀模式"}) == "针阀模式")
-    check("jt 模式记忆无效回默认",
-          jt_mode_with_memory({"jt_link_mode": "不存在"}) == JT_LINK_DEFAULT)
-    check("jt 模式无记忆回默认", jt_mode_with_memory({}) == JT_LINK_DEFAULT)
-    check("窗口② dlx 含 JT 联动下拉",
-          "jt_link" in build_dlx(default_params(), dict(DEFAULT_JRT),
-                                 jt_mode="普通模式"))
-
-    # 7c. enum Value 属性写入选中序号(修复"全部卡第0项"的关键)
-    en = _blk_enum("t", "测试", ["甲", "乙", "丙"], 2)
-    check("enum Value=选中序号", 'sname="TEMPVALUE" source="1" type="integer" value="2"'
-          in en)
-    # dlx 加热条组
-    xml3 = build_dlx(default_params(), dict(DEFAULT_JRT))
-    try:
-        ET.fromstring(xml3)
-        check("带 JRT dlx 良构", True)
-    except ET.ParseError as ex:
-        check("带 JRT dlx 良构", False, str(ex))
-    check("dlx jrt 块数=5+重置按钮",
-          xml3.count('type="string" value="jrt_') == 6
-          and 'id="jrt_reset"' in xml3)
-    check("RetainValue 全 False(防跨窗保留污染)",
-          'sname="RetainValue" source="1" type="logical" value="True"' not in xml3)
-    for _nm, _xx in (("标准件参数dlx", build_std_dlx({}, default_params())),
-                     ("选件dlx", build_selection_dlx(["a.prt"], []))):
-        check("RetainValue False(%s)" % _nm,
-              'sname="RetainValue" source="1" type="logical" value="True"'
-              not in _xx)
-    _fp = _fresh_dlx_path("selftest_dlx")
-    check("dlx 唯一名( NX 旧值记忆无载体)",
-          "selftest_dlx_" in os.path.basename(_fp)
-          and not os.path.isfile(_fp))
-
-    # id 往返校验(v1.6 教训: dlx 块 id 与收集构造不一致 → 参数永远失效)
-    for key, _label in JRT_FIELDS:
-        check("JRT id 往返 jrt_%s" % key,
-              ('value="jrt_%s"' % key) in xml3)
-    # 7d. 标准件规则引擎(纯逻辑; v1.9 默认值表驱动)
-    g1 = guess_std_rule("垫片.prt")
-    check("猜测: 垫片→DK/FLB顶/放置+减去", g1["layer"] == "DK"
-          and g1["z_mode"] == "FLB_TOP" and g1["bool_mode"] == "PLACE_SUBTRACT")
-    g2 = guess_std_rule("大水口-25.prt")
-    check("猜测: 大水口→RZ/FLB底", g2["layer"] == "RZ"
-          and g2["z_mode"] == "FLB_BOTTOM")
-    g3 = guess_std_rule("LS-45.prt")
-    check("猜测: LS-→LS/FLB顶/放置+减去", g3["layer"] == "LS"
-          and g3["z_mode"] == "FLB_TOP"
-          and g3["bool_mode"] == "PLACE_SUBTRACT")
-    g4 = guess_std_rule("主进胶与中心定位垫片-30.prt")
-    check("猜测: 主进胶优先于垫片/DP/FLB底/放置+减去",
-          g4["layer"] == "DP" and g4["z_mode"] == "FLB_BOTTOM"
-          and g4["bool_mode"] == "PLACE_SUBTRACT")
-    check("旧字段已删(bool_body/ref_*/anchor)",
-          "bool_body" not in g3 and "ref_x" not in g3 and "anchor" not in g3)
-    g7 = guess_std_rule("接线盒-24针.prt")
-    check("猜测: 接线盒→CXK线中点/CX顶值/仅放置",
-          g7["layer"] == "CXK" and g7["z_mode"] == "CX_TOP"
-          and g7["bool_mode"] == "PLACE")
-    check("CXK 在图层选项且规则合法",
-          "CXK" in [v for v, _t in LAYER_SEL_OPTS]
-          and sanitize_std_rule({"layer": "cxk"})["layer"] == "CXK")
-    lay_k = {"CXK": [DXLine((4508.8388106206, 1791.264313510919),
-                           (4543.782447818045, 1789.27881120337))]}
-    ak = collect_circle_anchors(lay_k, sanitize_std_rule({"layer": "CXK"}))
-    check("CXK 线中点锚点≈(4526.31,1790.27)(3Dtest 实线)",
-          len(ak) == 1 and abs(ak[0][0] - 4526.3106) < 0.01
-          and abs(ak[0][1] - 1790.2716) < 0.01, str(ak))
-    # CX+CXK 合并闭环(2D 新规则: CX 单独开口, CXK 补线成环)
-    cx_open = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5)),
-               DXLine((10, 5), (0, 5))]
-    lay_m = {"CX": cx_open, "CXK": [DXLine((0, 5), (0, 0))]}
-    me = modeling_ents(lay_m, "CX")
-    profs_m, opens_m, _ = organize_loops(me)
-    check("CX+CXK 并入成环", len(me) == 4 and len(profs_m) == 1 and not opens_m)
-    check("非 CX 层不并入 CXK",
-          len(modeling_ents({"JT": cx_open, "CXK": lay_m["CXK"]}, "JT")) == 3)
-    # 顶面靠后边缘中点(纯逻辑; 三型号实测面数据回放)
-    # v1.15 防卡死护栏(nx_std_config.STD_MAX_ANCHORS + 特征指纹)
-    check("护栏: 数量超限", anchors_overflow(
-        list(range(201)), sanitize_std_rule({})))
-    check("护栏: 正常数量不超限", not anchors_overflow(
-        list(range(8)), sanitize_std_rule({"layer": "LS", "r_max": 5})))
-    check("护栏: 空图层+大半径=指纹拦截(卡死案规则)",
-          anchors_overflow(list(range(47)),
-                           sanitize_std_rule({"layer": "", "r_max": 9999})))
-    # v1.17 开链修复(123.dxf: 0.24mm 接缝两条链该合并; 25mm 缺口该桥接)
-    _oe = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5)),
-           DXLine((10, 5), (0, 5)),                       # 链1: 缺左边(断口(0,0),(0,5))
-           DXLine((0, 5.2), (0.2, 5.2)), DXLine((0.2, 5.2), (0.2, 0.2)),
-           DXLine((0.2, 0.2), (0, 0.2))]                  # 链2 三段折线, 断口(0,5.2),(0,0.2)
-    _ce, _bj, _ol = _merge_open_chains(
-        [[(0, False), (1, False), (2, False)],
-         [(3, False), (4, False), (5, False)]], _oe, tol=0.5, bridge_max=0.5)
-    check("开链修复: 近缝两链合并→2条接缝桥(≤0.5)",
-          len(_ce) == 0 and len(_bj) == 1 and len(_bj[0][1]) == 2, str(_bj))
-    _e2 = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5)),
-           DXLine((10, 5), (0, 5))]                        # 缺 10mm 左边
-    _ce2, _bj2, _ol2 = _merge_open_chains([[(0, False), (1, False), (2, False)]],
-                                          _e2, tol=0.5)
-    check("开链修复: 5mm 缺口→放弃记日志(直线桥大缺口=怪条一案)",
-          not _ce2 and not _bj2 and len(_ol2) == 1, str((_ce2, _bj2, _ol2)))
-    _ce3, _bj3, _ol3 = _merge_open_chains([[(0, False)]], [DXLine((0, 0), (10, 0))],
-                                          tol=0.5)
-    check("开链修复: 10mm 缺口→放弃", len(_bj3) == 0 and len(_ol3) == 1)
-    # 泛化: 1 接缝簇 + 2 单点簇(3Dtest 实际形态)→ 2 条桥全闭合
-    _e5 = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5)),
-           DXLine((10, 5), (10, 5.065)), DXLine((10, 5.065), (0, 5.065)),
-           DXLine((0, 0.2), (0, 4.8))]     # 右上0.065接缝 + 左边缺0.2~4.8
-    _ce5, _bj5, _ol5 = _merge_open_chains(
-        [[(0, False), (1, False), (2, False), (3, False), (4, False)]],
-        _e5, tol=0.5)
-    check("开链修复: 两处小缝(0.2/0.265)→2桥闭合",
-          not _ce5 and len(_bj5) == 1 and len(_bj5[0][1]) == 2
-          and not _ol5, str(_bj5))
-    _ce4, _bj4, _ol4 = _merge_open_chains(
-        [[(0, False), (1, False), (2, False), (3, False)]],
-        [DXLine((0, 0), (5, 0)), DXLine((6, 0), (10, 0)),
-         DXLine((0, 1), (5, 1)), DXLine((6, 1), (10, 1))], tol=0.5)
-    check("开链修复: 断口>2簇→放弃记日志",
-          not _ce4 and not _bj4 and len(_ol4) == 1)
-    # v1.17 倒圆异形检测(体积校验)
-    check("_blend_ok: 丢体11%=正常(基准样板实证)",
-          _blend_ok(41049.5, 36553.8))
-    # v1.23 面体检(jrt1 好条=全解析; 01 坏条=样条面/碎片面)
-    _good_rows = [(16, 3.9, 0), (19, 25.1, 0), (22, 0.0, 1),
-                  (18, 0.0, 0)]
-    _bad_rows = _good_rows + [(20, 0.0, 0), (23, 3.9, 0)]
-    _sliver = _good_rows + [(22, 0.0, 2)]
-    check("面体检: 好条全解析→通过", _faces_healthy(_good_rows)[0])
-    check("面体检: 样条面不算异形(v1.24, 样条墙正常产物)",
-          _faces_healthy(_bad_rows)[0])
-    check("面体检: 零尺寸碎片→异形", not _faces_healthy(_sliver)[0]
-          and "碎片" in _faces_healthy(_sliver)[1])
-    check("_blend_ok: 丢体>25%=异形", not _blend_ok(100.0, 74.0))
-    check("_blend_ok: 体积0=异形", not _blend_ok(100.0, 0.0))
-    check("_blend_ok: 测不到不拦", _blend_ok(None, None))
-    # v1.17 删面收紧(圆柱面半径匹配+距离门控; 期刊面中心距连接线≈1)
-    _rows = [(1, 10.0, 10.0, 3.9), (2, 10.0, 40.0, 3.9), (3, 50.0, 10.0, 3.9),
-             (4, 10.0, 10.0, 300.0)]                    # 第4个=巨R非倒圆面
-    check("删面: 半径匹配+距离近→选中",
-          _conn_face_pick(_rows, [(10.2, 10.0), (10.0, 39.8)], 3.9) == [1, 2])
-    check("删面: 只有错半径面→放弃",
-          _conn_face_pick([(1, 10.0, 10.0, 300.0)], [(10.0, 10.0)], 3.9) is None)
-    check("删面: 距离超门控→放弃",
-          _conn_face_pick([(1, 50.0, 50.0, 3.9)], [(10.0, 10.0)], 3.9) is None)
-    check("护栏: 全图层但半径收窄→放行(压线板式需求)",
-          not anchors_overflow(list(range(47)),
-                               sanitize_std_rule({"layer": "", "r_max": 20})))
-    # 以下三项依赖外部配置; nx_std_config.py 缺失时应跳过而非崩
-    # (v1.29: 配置按设计是可选的, 缺失走内置兜底表, 自测不该因此 AttributeError)
-    cfg = _USER_CFG
-    check("BOOL_OPTS 无停用项", all(b[0] != "OFF" for b in BOOL_OPTS))
-    if cfg is None:
-        # 配置缺失走内置回退, 不得 AttributeError 崩溃(v1.29 声明; v1.35 补守卫)
-        check("ZMODE 无绝对Z项/配置缺失回退内置",
-              all(z[0] != "ABS" for z in ZMODE_OPTS)
-              and [z[0] for z in ZMODE_OPTS]
-              == [d[0] for d in _ZMODE_FALLBACK])
-    else:
-        check("ZMODE 无绝对Z项/由config表驱动(v1.32)",
-              all(z[0] != "ABS" for z in ZMODE_OPTS)
-              and [z[0] for z in ZMODE_OPTS] ==
-              [d[0] for d in cfg.ZMODE_DEFS]
-              and [z[1] for z in ZMODE_OPTS] ==
-              [d[1] + "+偏移" for d in cfg.ZMODE_DEFS])
-    check("_std_z 查表: CX_TOP 仍正确(CX -30~-65 → -30)",
-          _std_z({"CX": (-30.0, -65.0)},
-                 sanitize_std_rule({"z_mode": "CX_TOP"})) == -30.0)
-    _ZMODE_DEFS.append(("JT_BOTTOM", "JT底面", "JT", "BOTTOM"))
-    try:
-        _ok_new = _std_z({"FLB": (-40.0, -90.0), "JT": (-30.0, -100.0)},
-                         sanitize_std_rule({"z_mode": "JT_BOTTOM"}))
-    finally:
-        _ZMODE_DEFS.pop()          # 全局表必须还原(异常也不污染, v1.35)
-    check("_std_z 查表: 动态加基准(JT底→-100)即加即用", _ok_new == -100.0)
-    check("_rule_usable: 无ref不可用",
-          not _rule_usable({"ref": None})
-          and not _rule_usable({"ref": [1, 2]})
-          and _rule_usable({"ref": [1.0, 2.0, 3.0]}))
-    check("_unusable_names: 列出未配置件",
-          _unusable_names({"a.prt": {"ref": [0.0, 0.0, 0.0]},
-                           "b.prt": {"ref": None}}) == ["b.prt"])
-    _two = [("大水口-25.prt", {"layer": "RZ", "z_mode": "FLB_BOTTOM",
-                               "ref": [1.0, 2.0, 3.0]}),
-            ("大水口", {"layer": "RZ", "z_mode": "FLB_BOTTOM"})]
-    _hit = std_part_defaults("大水口-25.prt", table=_two)
-    check("两级匹配: 精确行命中",
-          _hit is not None and _hit.get("ref") == [1.0, 2.0, 3.0])
-    _hit2 = std_part_defaults("大水口-18.prt", table=_two)
-    check("两级匹配: 落关键词行(无ref)",
-          _hit2 is not None and _hit2.get("ref") is None)
-    _old = sanitize_std_rule({"bool_mode": "OFF", "z_mode": "ABS"})
-    check("sanitize: 旧OFF/ABS回默认",
-          _old["bool_mode"] == "PLACE" and _old["z_mode"] == "FLB_TOP")
-    check("护栏常量来自配置",
-          cfg is None or STD_MAX_ANCHORS == cfg.STD_MAX_ANCHORS)
-    # 期刊 journal-djk.py 地面真值: 点胶口-18 起始点 (1594.78,-395.73,-570.189)
-    # jrt 记忆: start/end 有记忆用记忆; 无记忆按 FLB 联动; 三参数恒默认
-    jm1 = jrt_with_memory({"schema": SCHEMA_VERSION,
-                           "jrt_se": [-38.0, -45.5]},
-                          {"FLB": (-40.0, -90.0)})
-    check("jrt_with_memory 有记忆用记忆",
-          jm1["start"] == -38.0 and jm1["end"] == -45.5
-          and jm1["blend_r"] == 3.9 and jm1["r_step"] == 0.1
-          and jm1["r_min"] == 3.7)
-    jm2 = jrt_with_memory({"schema": SCHEMA_VERSION},
-                          {"FLB": (-40.0, -90.0)})
-    check("jrt_with_memory 无记忆随FLB联动",
-          jm2["start"] == -40.0 and jm2["end"] == -47.5)
-    import inspect as _insp
-    check("save_state 支持 jrt_se 字段",
-          "jrt_se" in _insp.signature(save_state).parameters)
-    check("save_state 支持 jt_link_mode 字段",
-          "jt_link_mode" in _insp.signature(save_state).parameters)
-    # 配置表归用户维护(压线板已由用户自行加入), 通用默认路径用保证
-    # 不在表中的名字测试
-    # v1.24 连接线泛化(01.dxf 环形通道: 4 条等长 6.09 跨接线)
-    _ring = [DXLine((483.5, 84.9), (483.5, 91.0)),    # 跨接线
-             DXLine((483.5, 91.0), (491.5, 91.0)),    # 出线口线(8mm)
-             DXLine((491.5, 91.0), (491.5, 84.9)),    # 跨接线
-             DXArc((500.0, 84.9), 8.5, 0, math.pi),   # 底部过渡弧
-             DXLine((508.5, 84.9), (508.5, 91.0)),
-             DXLine((516.5, 91.0), (508.5, 91.0)),    # 出线口线(8mm)
-             DXLine((516.5, 91.0), (516.5, 84.9)),
-             DXArc((500.0, 84.9), 16.5, math.pi, 0)]  # 顶部大弧闭环
-    _ring_ch = [(i, False) for i in range(len(_ring))]
-    _rc = _chain_connectors(_ring_ch, _ring)
-    check("连接线泛化: 环形通道4条跨接线",
-          len(_rc) == 4, str(_rc))
-    _om = _chain_outlet_mids(_ring_ch, _ring)
-    check("出线口线中点: 2条口线(期刊删除面锚点)",
-          len(_om) == 2
-          and any(abs(m[0] - 487.5) < 0.01 for m in _om)
-          and any(abs(m[0] - 512.5) < 0.01 for m in _om), str(_om))
-    # v1.29 参考点自助配置
-    check("sanitize ref: 合法3数保留",
-          sanitize_std_rule({"ref": [1, 2.5, -3]})["ref"] == [1.0, 2.5, -3.0])
-    check("sanitize ref: 数字字符串转float",
-          sanitize_std_rule({"ref": ["1", "2.5", "-3"]})["ref"] == [1.0, 2.5, -3.0])
-    check("sanitize ref: 非3长/坏值/缺失→None",
-          sanitize_std_rule({"ref": [1, 2]})["ref"] is None
-          and sanitize_std_rule({"ref": [1, "x", 3]})["ref"] is None
-          and sanitize_std_rule({})["ref"] is None)
-    _disc2 = discover_std_parts
-    globals()["discover_std_parts"] = lambda: ["垫片.prt"]
-    try:
-        _mr = merge_std_rules({"schema": SCHEMA_VERSION,
-                               "std_parts": {"垫片.prt": {
-                                   "layer": "DK", "ref": [7, 8, 9]}}})
-    finally:
-        globals()["discover_std_parts"] = _disc2
-    check("记忆往返: ref 不丢",
-          _mr["垫片.prt"]["ref"] == [7.0, 8.0, 9.0])
-    _rt = json.loads(json.dumps(_mr))
-    _mr2 = merge_std_rules({"schema": SCHEMA_VERSION, "std_parts": _rt})
-    check("json 往返: ref 不丢", _mr2["垫片.prt"]["ref"] == [7.0, 8.0, 9.0])
-    # v1.26 厚度预防式起试半径
-    check("齐平端起试R: 7.5厚条→3.7(用户手工值)",
-          _flush_start_r(3.9, 3.7, 7.5) == 3.7)
-    check("齐平端起试R: 厚条→用满blend_r",
-          _flush_start_r(3.9, 3.7, 20.0) == 3.9)
-    check("齐平端起试R: 不低于r_min",
-          _flush_start_r(3.9, 3.7, 4.0) == 3.7)
-    _nohit = std_part_defaults("未知新件XYZ.prt")
-    check("表外新件→None(恢复=通用安全默认)",
-          _nohit is None
-          and sanitize_std_rule(_nohit)["layer"] == ""
-          and sanitize_std_rule(_nohit)["bool_mode"] == "PLACE")
-    sr = sanitize_std_rule({"off_x": "abc", "layer": "rz", "z_mode": "XX"})
-    check("规则规范化: 坏偏移回0/坏z_mode回默认",
-          sr["off_x"] == 0.0 and sr["layer"] == "RZ"
-          and sr["z_mode"] == "FLB_TOP")
-    check("规则规范化: CXK/CX_TOP 合法保留",
-          sanitize_std_rule({"layer": "cxk", "z_mode": "cx_top",
-                             "off_x": 5})["layer"] == "CXK")
-    # JSON 记忆 schema 守卫(版本不符全忽略防污染; 调大 CONFIG_SCHEMA_VERSION
-    # 即可清洗旧规则记忆——点胶口 z_mode/垫片 bool 脏数据一案)
-    check("外部配置已加载(nx_std_config.py)", cfg is not None,
-          "缺失时走内置兜底表")
-    for k, v in (cfg.STD_PART_DEFAULTS if cfg is not None else []):
-        rr = sanitize_std_rule(v)
-        check("配置表条目合法: %s" % k,
-              rr["layer"] in LAYER_CODES + ["CXK", ""]
-              and rr["z_mode"] in [z for z, _t in ZMODE_OPTS]
-              and rr["bool_mode"] in [b for b, _t in BOOL_OPTS]
-              and rr["dir"] in [dd for dd, _t in DIR_OPTS])
-    check("JRT 三参来自配置",
-          cfg is None or (DEFAULT_JRT["blend_r"] == cfg.JRT_BLEND_R_DEFAULT
-                          and DEFAULT_JRT["r_min"] == cfg.JRT_R_MIN_DEFAULT))
-    check("配置表无重复关键词(后者永不生效)",
-          cfg is None or len([k for k, _v in cfg.STD_PART_DEFAULTS])
-          == len(set(k for k, _v in cfg.STD_PART_DEFAULTS)))
-    _disc = discover_std_parts
-    globals()["discover_std_parts"] = lambda: ["垫片.prt"]
-    try:
-        m_stale = merge_std_rules({"schema": SCHEMA_VERSION - 1,
-                                   "std_parts": {"垫片.prt": {"layer": "LS"}}})
-        m_ok = merge_std_rules({"schema": SCHEMA_VERSION,
-                                "std_parts": {"垫片.prt": {"layer": "LS"}}})
-    finally:
-        globals()["discover_std_parts"] = _disc
-    check("JSON 记忆 schema 守卫",
-          m_stale["垫片.prt"]["layer"] == "DK"
-          and m_ok["垫片.prt"]["layer"] == "LS")
-    # 选择对话框 dlx(两段式第一段)
-    sxml = build_selection_dlx(["a.prt", "b.prt"], ["b.prt"])
-    try:
-        ET.fromstring(sxml)
-        check("选择对话框 dlx 良构", True)
-    except ET.ParseError as ex:
-        check("选择对话框 dlx 良构", False, str(ex))
-    check("选择对话框 toggle=2 且 b 选中",
-          sxml.count('class="UICOMP_toggle" hierarchy="UGS::UICOMP_group"') == 2
-          and 'id="SEL1"' in sxml)
-
-    # 8. JRT 收口连接线识别(真实 3Dtest.dxf; 期刊删面位置=连接线中点旁)
-    real2 = os.path.join(script_dir(), "3Dtest.dxf")
-    if os.path.isfile(real2):
-        layers_r2, _ = parse_dxf(real2)
-        jrt_ents = layers_r2.get("JRT") or []
-        closed_r, _o = find_chains(jrt_ents)
-        if len(closed_r) == 2:
-            c1 = _chain_connectors(closed_r[0], jrt_ents)
-            c2 = _chain_connectors(closed_r[1], jrt_ents)
-            ok1 = (len(c1) == 2
-                   and abs(c1[0][0] - 4615.7) < 1.5 and abs(c1[0][1] - 1366.3) < 1.5
-                   and abs(c1[1][0] - 4616.2) < 1.5 and abs(c1[1][1] - 1391.3) < 1.5)
-            ok2 = (len(c2) == 2
-                   and abs(min(c2[0][0], c2[1][0]) - 4342.1) < 1.5
-                   and abs(max(c2[0][0], c2[1][0]) - 4348.4) < 1.5)
-            check("3Dtest 链1 连接线≈(4615.7,1366.3)/(4616.2,1391.3)", ok1, str(c1))
-            check("3Dtest 链2 连接线≈(4342.1,1387.9)/(4348.4,1412.1)", ok2, str(c2))
-    profs_dpx, opens_dp, _ = organize_loops(layers["DP"])
-    check("DP 垫片嵌套", len(profs_dpx) == 1 and len(profs_dpx[0]["holes"]) == 1)
-    profs_flb, _o, _c = organize_loops(layers["FLB"])
-    check("FLB 双通道=2 轮廓", len(profs_flb) == 2)
-
-    # 9. dlx 生成 + XML 良构
-    xml = build_dlx(default_params())
-    try:
-        ET.fromstring(xml)
-        check("dlx XML 良构", True)
-    except ET.ParseError as ex:
-        check("dlx XML 良构", False, str(ex))
-    dbl = xml.count('<item Expanded="1" class="UICOMP_double"')
-    check("dlx double 块数=19(图层14+JRT5)", dbl == 19, "got %d" % dbl)
-
-    # 10. 标准件规则与锚点(纯逻辑)
-    r = sanitize_std_rule({"layer": "rz", "r_min": "abc", "r_max": 5, "bool_mode": "XX"})
-    check("规则规范化", r["layer"] == "RZ" and r["r_min"] == 0.0
-          and r["bool_mode"] == "PLACE")
-    r2 = sanitize_std_rule({"r_min": 10, "r_max": 2})
-    check("半径区间自动交换", r2["r_min"] == 2.0 and r2["r_max"] == 10.0)
-    check("文件名猜规则", guess_std_rule("热咀big.prt")["layer"] == "RZ"
-          and guess_std_rule("screw_M8.prt")["layer"] == "LS")
-
-    lay_c = {"RZ": [DXCircle((100, 20), 11.35), DXCircle((100, 100), 11.35),
-                    DXArc((100, 20), 11.35, 0, math.pi)],
-             "LS": [DXCircle((10, 10), 4.25)]}
-    a1 = collect_circle_anchors(lay_c, sanitize_std_rule(
-        {"layer": "RZ", "r_min": 10, "r_max": 12}))
-    check("圆心锚点筛选+同心去重", len(a1) == 2, str(a1))
-    a2 = collect_circle_anchors(lay_c, sanitize_std_rule({"layer": ""}))
-    check("全图层锚点", len(a2) == 3, "got %d" % len(a2))
-    check("_std_z 负区间", _std_z({"FLB": (-40, -85)},
-                                  sanitize_std_rule({"z_mode": "FLB_TOP",
-                                                     "off_z": -5})) == -45.0
-          and _std_z({"FLB": (-40, -85)},
-                     sanitize_std_rule({"z_mode": "FLB_BOTTOM"})) == -85.0)
-
-    # 11. 窗口② dlx: 标准件组已在 v1.35 删除(参数页只在窗口③ build_std_dlx)
-    xml2 = build_dlx(default_params(), dict(DEFAULT_JRT))
-    check("窗口②无标准件组(v1.35 休眠段删除)",
-          'id="grp_std"' not in xml2 and "SP0_" not in xml2
-          and 'id="jrt_start"' in xml2)
-    # 三段式: 窗口②无标准件组; 窗口③每件一个可收起组
-    gi = _group_item("g1", "标题", _blk_label("l1", "x"), columns=2, collapsed=True)
-    check("组可收起(collapsed)", 'id="Expanded" mask="0" name="Expanded" sname="Expanded" '
-          'source="2" type="logical" value="False"' in gi)
-    fake_rules = {"a.prt": sanitize_std_rule({"layer": "DK"}),
-                  "b.prt": sanitize_std_rule({"layer": "LS"})}
-    sxml = build_std_dlx(fake_rules, default_params())
-    try:
-        ET.fromstring(sxml)
-        check("标准件参数窗口 dlx 良构", True)
-    except ET.ParseError as ex:
-        check("标准件参数窗口 dlx 良构", False, str(ex))
-    _sxml_cxk = build_std_dlx(
-        {"接线盒-24针.prt": sanitize_std_rule({"layer": "CXK",
-                                               "z_mode": "CX_TOP"}),
-         "垫片.prt": sanitize_std_rule({"layer": "DK"})},
-        default_params())
-    check("CXK件无半径框/圆心件有(v1.31)",
-          "接线盒" in _sxml_cxk
-          and 'value="SP0_rmin"' in _sxml_cxk
-          and 'value="SP0_rmax"' in _sxml_cxk
-          and 'value="SP1_rmin"' not in _sxml_cxk
-          and 'value="SP1_rmax"' not in _sxml_cxk)
-    check("标准件参数窗口 2 组+Z标签",
-          sxml.count('id="grp_SP') == 2 and 'id="SP0_zval"' in sxml)
-    check("标准件参数窗口组默认展开(v1.16)",
-          'name="Expanded" sname="Expanded" '
-          'source="2" type="logical" value="False"' not in sxml)
-    check("全件含重置按钮(v1.19, 含无默认件)",
-          'id="SP0_reset"' in sxml and 'id="SP1_reset"' in sxml)
-    sxml_w = build_std_dlx({"垫片.prt": sanitize_std_rule({})}, default_params())
-    check("有默认件含重置按钮(垫片)", 'id="SP0_reset"' in sxml_w
-          and 'id="SP0_zval"' in sxml_w)
-    g6 = guess_std_rule("点胶口-25.prt")
-    check("猜测: 点胶口→RZ/FLB底(与大水口同逻辑)",
-          g6["layer"] == "RZ" and g6["z_mode"] == "FLB_BOTTOM")
-
-    # 11b. v1.35 审计修复回归断言(边界/异常/压力)
-    import tempfile as _tf
-    import shutil as _sh
-    _td = _tf.mkdtemp(prefix="cad3d_selftest_")
-    try:
-        # 边界: 空 DXF / 不支持实体统计(LWPOLYLINE 不静默丢)
-        _empty = os.path.join(_td, "empty.dxf")
-        with io.open(_empty, "w", encoding="ascii", newline="\n") as _f:
-            _f.write("0\nEOF\n")
-        _el, _es = parse_dxf(_empty)
-        check("空 DXF 不崩(无 ENTITIES 段)", _el == {} and _es["total"] == 0)
-        _uns_dxf = os.path.join(_td, "uns.dxf")
-        with io.open(_uns_dxf, "w", encoding="ascii", newline="\n") as _f:
-            _f.write("\n".join(
-                ["0", "SECTION", "2", "ENTITIES",
-                 "0", "LWPOLYLINE", "8", "FLB", "90", "3", "70", "0",
-                 "10", "0", "20", "0", "10", "10", "20", "0",
-                 "10", "10", "20", "10",
-                 "0", "LINE", "8", "FLB",
-                 "10", "0", "20", "0", "11", "10", "21", "0",
-                 "0", "LWPOLYLINE", "8", "JRT", "90", "2", "70", "1",
-                 "10", "0", "20", "200", "10", "5", "20", "200",
-                 "0", "ENDSEC", "0", "EOF"]))
-        _ul, _us = parse_dxf(_uns_dxf)
-        check("不支持实体计数(LWPOLYLINE 不静默丢)",
-              _us["unsupported"].get("LWPOLYLINE") == 2
-              and _us["unsupported_model"] == 1
-              and _us["total"] == 1 and len(_ul.get("FLB") or []) == 1,
-              str(_us))
-        # 边界: 断口 0.006(<容差) 但跨量化格边界 → 邻桶搜索仍连链
-        _gl = [DXLine((0, 0), (10.0, 0.0)), DXLine((9.994, 0.0), (20.0, 0.0))]
-        _gc, _go = find_chains(_gl)
-        check("格点边界断口仍能连链(邻桶)",
-              not _gc and len(_go) == 1 and len(_go[0]) == 2)
-        # 边界: T 形三叉 → 直线延续优先, 不串进垂线
-        _tj = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (20, 0)),
-               DXLine((10, 0), (10, 10))]
-        _tc, _to = find_chains(_tj)
-        check("T形三叉: 直线延续优先(不串错链)",
-              not _tc and len(_to) == 2 and {i for i, _r in _to[0]} == {0, 1})
-        # 边界: 双重描线的重复环 → 去重, 不被误判为孔
-        _dp, _do, _ = organize_loops(_sq(0, 0, 100, 100) + _sq(0, 0, 100, 100))
-        check("重复描线环去重(不被误判为孔)",
-              len(_dp) == 1 and not _dp[0]["holes"], "profiles=%d" % len(_dp))
-        # 正确性: -Z 翻转件放置位移(ref 的 y/z 随姿态反号)
-        check("-Z 放置位移(ref 随姿态旋转)",
-              _place_delta((10.0, 2.0, 3.0), False, (1.0, 1.0, 1.0))
-              == (-9.0, -1.0, -2.0)
-              and _place_delta((10.0, 2.0, 3.0), True, (1.0, 1.0, 1.0))
-              == (-9.0, 3.0, 4.0))
-        # 异常: merge_params 坏类型不崩 + schema 门控 params(文档口径)
-        check("merge_params 坏类型不崩",
-              merge_params({"schema": SCHEMA_VERSION, "params": [1, 2]})
-              == default_params()
-              and merge_params({"schema": SCHEMA_VERSION, "params": "x"})
-              == default_params()
-              and merge_params(None) == default_params())
-        _mp = merge_params({"schema": SCHEMA_VERSION,
-                            "params": {"FLB": ["1.5", 2], "CX": (3, 4),
-                                       "BAD": (1, 2)}})
-        check("merge_params 合法值照收",
-              _mp["FLB"] == (1.5, 2.0) and _mp["CX"] == (3.0, 4.0))
-        check("schema 不符→params 一并回默认(文档口径)",
-              merge_params({"schema": SCHEMA_VERSION - 1,
-                            "params": {"FLB": (1.0, 2.0)}}) == default_params())
-        check("selected 坏类型容错",
-              _name_list(None) == [] and _name_list(5) == []
-              and _name_list("ab") == []
-              and _name_list(["a", 2]) == ["a", "2"])
-        check("config 标量非法回默认不崩",
-              _cfg_num("abc", 7.5) == 7.5 and _cfg_num(float("nan"), 3.0) == 3.0
-              and _cfg_num("3.5", 1.0) == 3.5
-              and _cfg_int(object(), 70) == 70
-              and _cfg_int(float("inf"), 70) == 70)
-        # 异常: 坏 JSON 记忆隔离留证 + save_state 原子写(临时目录, 猴补路径)
-        _bad = os.path.join(_td, "nx_extrude_params.json")
-        with io.open(_bad, "w", encoding="utf-8") as _f:
-            _f.write("{oops not json")
-        _saved_jp = globals()["_json_path"]
-        _ok_iso = _ok_atomic = False
-        globals()["_json_path"] = lambda: _bad
-        try:
-            _st = load_state()
-            _ok_iso = (isinstance(_st, dict) and not _st and
-                       [n for n in os.listdir(_td)
-                        if n.startswith("nx_extrude_params.json.bad-")] != [])
-        finally:
-            globals()["_json_path"] = _saved_jp
-        check("坏 JSON 记忆隔离留证(.bad-*)", _ok_iso)
-        globals()["_json_path"] = lambda: _bad
-        try:
-            save_state("X:/a.dxf", {"FLB": (1.0, 2.0)},
-                       selected=["a.prt"], jrt_se=(1, 2))
-            _st2 = load_state()
-            _ok_atomic = (_st2.get("dxf_path") == "X:/a.dxf"
-                          and _st2.get("selected") == ["a.prt"]
-                          and not [n for n in os.listdir(_td)
-                                   if n.endswith(".tmp")])
-        finally:
-            globals()["_json_path"] = _saved_jp
-        check("save_state 原子写+类型容错", _ok_atomic)
-        # jt_link_mode 传 None → 保留旧记忆里的模式(v1.38 修复)
-        _jp3 = os.path.join(_td, "jt_mem_test.json")
-        if os.path.isfile(_jp3):
-            os.remove(_jp3)
-        globals()["_json_path"] = lambda: _jp3
-        try:
-            save_state("X:/a.dxf", {"FLB": (1.0, 2.0)},
-                       selected=["a.prt"], jrt_se=(1, 2),
-                       jt_link_mode="针阀模式")
-            save_state("X:/b.dxf", {"FLB": (1.0, 2.0)},
-                       selected=["a.prt"], jrt_se=(1, 2))
-            _st3 = load_state()
-        finally:
-            globals()["_json_path"] = _saved_jp
-        check("jt_link_mode 传 None 保留旧值(v1.38)",
-              _st3.get("jt_link_mode") == "针阀模式"
-              and _st3.get("dxf_path") == "X:/b.dxf")
-        try:
-            os.remove(_jp3)
-        except OSError:
-            pass
-        # 异常: _find 对 None 不缓存(可重试)
-        class _FakeTop(object):
-            def __init__(self):
-                self.calls = 0
-
-            def FindBlock(self, _bid):
-                self.calls += 1
-                return None
-
-        class _FakeDialog(object):
-            def __init__(self):
-                self.TopBlock = _FakeTop()
-
-        class _FakeBase(_BlockDialogBase):
-            def __init__(self):
-                self.blocks = {}
-                self.theDialog = _FakeDialog()
-
-        _fb = _FakeBase()
-        _fb._find("x")
-        _fb._find("x")
-        check("_find None 不缓存(可重试)", _fb.theDialog.TopBlock.calls == 2)
-        # 压力: 锚点收集 4000 实体(2000 重复) <2s 且去重正确
-        _big = {"RZ": [DXCircle((float(i % 100) * 10.0, float(i // 100) * 10.0), 5.0)
-                       for i in range(2000)]
-                + [DXCircle((float(i % 100) * 10.0, float(i // 100) * 10.0), 5.0)
-                   for i in range(2000)]}
-        _t0 = time.time()
-        _ab = collect_circle_anchors(_big, sanitize_std_rule({"layer": "RZ"}))
-        _dt = time.time() - _t0
-        check("锚点去重 4000 实体 <2s 且去重正确",
-              len(_ab) == 2000 and _dt < 2.0, "%.3fs" % _dt)
-        # 压力: 200 个互不嵌套矩形组织 <3s
-        _many = []
-        for _r in range(200):
-            _mx = float((_r % 20) * 30)
-            _my = float((_r // 20) * 30)
-            _many += _sq(_mx, _my, 20, 20)
-        _t0 = time.time()
-        _mp2, _mo2, _ = organize_loops(_many)
-        _dt2 = time.time() - _t0
-        check("organize_loops 200 环冒烟 <3s",
-              len(_mp2) == 200 and _dt2 < 3.0, "%.3fs" % _dt2)
-    finally:
-        _sh.rmtree(_td, ignore_errors=True)
-
-    # 12. 真实图纸(可选)
-    real = dxf_path
-    if not real:
-        cand = os.path.join(script_dir(), "Drawing5.dxf")
-        real = cand if os.path.isfile(cand) else None
-    if real:
-        layers_r, stats_r = parse_dxf(real)
-        print("[INFO] %s: 实体 %d, 图层 %s, 参考(不建模) %s" % (
-            os.path.basename(real), stats_r["total"],
-            {k: len(v) for k, v in layers_r.items()}, stats_r["ref_layers"]))
-    print("SELFTEST %s" % ("OK" if ok else "FAILED"))
-    return ok
-
+make_sample_dxf = _nx_selftest.make_sample_dxf
+_undefined_name_check = _nx_selftest._undefined_name_check
+selftest = _nx_selftest.selftest
 
 def _refresh_display(session, work_part, log=None):
     """末帧强制刷新图形显示: 复刻用户手工"图层全开 + 全部隐藏再显示 + 重建"。
@@ -5774,8 +3717,9 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
     dxf = dxf_arg or resolve_dxf_path(state)
     log = Log(session)
     log("【批量】dxf=%s" % dxf)
-    for _note in _CFG_NOTES:
-        log("【配置提示】%s" % _note)
+    # (P0) 经 notes() 取快照; 循环变量不用 _note——它会遮蔽入队函数 _note(msg)
+    for _n in notes():
+        log("【配置提示】%s" % _n)
     ok1, stats1 = run_pipeline(dxf, params, session=session, work_part=work_part,
                                log=log, std_rules=std_rules, jrt=jrt)
     ok2, stats2 = run_pipeline(dxf, params, session=session, work_part=work_part,
@@ -5834,10 +3778,11 @@ def main():
             "请先新建或打开一个部件(需要工作部件)。")
         return
 
-    if _CFG_NOTES:                 # 配置/记忆加载异常: 醒目提示, 不静默回退
+    _startup_notes = notes()       # (P0) 经访问器取快照, 不直接依赖全局列表
+    if _startup_notes:             # 配置/记忆加载异常: 醒目提示, 不静默回退
         NXOpen.UI.GetUI().NXMessageBox.Show(
             "CAD3D 配置提示", NXOpen.NXMessageBox.DialogType.Warning,
-            "\n".join(_CFG_NOTES))
+            "\n".join(_startup_notes))
 
     state = load_state()
     params = merge_params(state)
