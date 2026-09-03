@@ -27,3 +27,7 @@ NX12/
 tools/NX向下兼容工具/xt/
 tools/NX向下兼容工具/x_t转prt/
 tools/NX向下兼容工具/*_log.txt
+
+# macOS 系统元数据
+.DS_Store
+*/.DS_Store
