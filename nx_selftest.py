@@ -150,7 +150,9 @@ def selftest(dxf_path=None):
     #    以主脚本公开名全集 INJECTED_NAMES 豁免(见 _undefined_name_check)。
     _inj = globals().get("INJECTED_NAMES") or set()
     for _f in ("nx_extrude_runner.py", "nx_geom.py", "nx_rules.py",
-               "nx_dlx.py", "nx_selftest.py"):
+               "nx_dlx.py", "nx_selftest.py",
+               "nx_jrt_geom.py", "nx_jrt.py",
+               "nx_nxcore.py", "nx_stdparts.py"):
         _p = os.path.join(script_dir(), _f)
         if not os.path.isfile(_p):
             continue
