@@ -362,8 +362,8 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
             % (fname, ref_xy[0], ref_xy[1], ref_z, off[0], off[1], off[2]))
         auto_rot = (rule["layer"] == "YXB")   # YXB: 贴合边中点锚点+逐板轮廓判向
         if auto_rot:
-            log("【标准件】%s: YXB 自动定向已启用(放置点=贴合边中点, 角度"
-                "逐板取自 2D 轮廓, 偏移按局部系随件旋转)。" % fname)
+            log("【标准件】%s: YXB 自动定向已启用(横跨槽: 长边垂直于槽, "
+                "放置点=贴合边中点, 角度逐板取自 2D 轮廓)。" % fname)
         n_ok = n_bool = n_body = 0
         for i, anch in enumerate(anchors):
             cx, cy = anch[0], anch[1]

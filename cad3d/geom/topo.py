@@ -4,7 +4,7 @@
 import math
 from collections import defaultdict
 from cad3d.core.constants import (
-    LOOP_TOL, LAYER_CODES, YXB_COINCIDE_TOL, YXB_TEMPLATE_FACE_DEG
+    LOOP_TOL, LAYER_CODES, YXB_COINCIDE_TOL, YXB_TEMPLATE_LONGAXIS_DEG
 )
 
 
@@ -396,15 +396,17 @@ def _yxb_groups(ents, tol=LOOP_TOL):
 
 
 def collect_yxb_anchors(yxb_ents, cx_ents, tol=YXB_COINCIDE_TOL,
-                        face_deg=YXB_TEMPLATE_FACE_DEG):
+                        longaxis_deg=YXB_TEMPLATE_LONGAXIS_DEG):
     """(纯逻辑, 可离线测) YXB 压线板锚点 = 贴合边中点 + 逐板轮廓自动判向。
 
-    定案(26079 前跑板实图 + 3D 实物): 每块压线板轮廓(YXB 连通组)与 CX
-    出线槽线恰有一条共线重合的"贴合边", 模板原点即贴合边中点——
-      放置点 = 贴合边中点(同组多条共线重合线段取投影并集中点, 防拆段);
-      旋转角 = 贴合边方向 + 组内图元对贴合边的叉积侧别投票(板体所在侧
-               即凸台朝向) → θ = atan2(朝向角) − face_deg(模板凸台局部
-               方向角); 同图多板朝向各异时逐板独立求解, 不量化角度。
+    定案(26079 前跑板实图 + 3D 实物 + 用户拍板"横跨槽"): 每块压线板轮廓
+    (YXB 连通组)与 CX 出线槽线恰有一条共线重合的"贴合边", 模板原点即
+    贴合边中点——
+      放置点 = 贴合边中点(同组多条共线重合段取投影并集中点, 防拆段);
+      旋转角 = 朝向 f(垂直贴合边、指向轮廓所在侧=背离槽)减 longaxis_deg
+               (模板贴合长边局部方向角): longaxis_deg=0 时模板 16.6 长边
+               指向 f, 即长边垂直于槽=横跨安装; 同图多板朝向各异时逐板
+               独立求解, 不量化角度。
     判定条件: 两线方向夹角 ≈0(正弦<0.01)且偏距≤tol, 重叠≥YXB 边长一半
     (贴合边必须基本落在 CX 线上, 压线板边缘擦过 CX 线端头不算)。
     返回 (anchors, warns): anchors=[(cx, cy, 角度deg)] 同中点去重;
@@ -496,10 +498,11 @@ def collect_yxb_anchors(yxb_ents, cx_ents, tol=YXB_COINCIDE_TOL,
             elif s < -tol:
                 neg += 1
         side = 1 if pos >= neg else -1
-        fx, fy = -u[1] * side, u[0] * side          # 凸台朝向(垂直贴合边指向板体侧)
-        theta = math.degrees(math.atan2(fy, fx) - math.radians(face_deg))
+        fx, fy = -u[1] * side, u[0] * side          # 朝向(垂直贴合边指向轮廓侧=背离槽)
+        theta = math.degrees(math.atan2(fy, fx) - math.radians(longaxis_deg))
         if theta <= -180.0:
             theta += 360.0                          # 归一到 (-180, 180]
+        theta += 0.0                                # 消除 atan2 负零(-0.0)
         anchors.append((ax, ay, theta))
     seen, dedup = {}, []
     for (ax, ay, th) in anchors:

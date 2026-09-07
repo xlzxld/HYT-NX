@@ -16,10 +16,14 @@ COMP_PREFIX    = str(_cfg("COMP_PREFIX", FEATURE_PREFIX + "C_"))
 # 几何算法容差配置 (mm)
 LOOP_TOL  = _cfg_num(_cfg("LOOP_TOL", 0.01), 0.01)     # 2D 轮廓链闭合端点容差
 CHAIN_TOL = _cfg_num(_cfg("CHAIN_TOL", 0.01), 0.01)   # NX 截面链接曲线容差
-# YXB 压线板: 贴合边(与 CX 线共线重合)判定容差; 模板凸台朝向基准角(局部坐标
-# 方向角, +90=凸台朝 +Y。若 NX 实机首件整体反向 180°, 改此值即可)
-YXB_COINCIDE_TOL    = _cfg_num(_cfg("YXB_COINCIDE_TOL", 0.05), 0.05)
-YXB_TEMPLATE_FACE_DEG = _cfg_num(_cfg("YXB_TEMPLATE_FACE_DEG", 90.0), 90.0)
+# YXB 压线板: 贴合边(与 CX 线共线重合)判定容差; 模板贴合长边(16.6)在
+# 局部坐标的方向角——放置时长轴指向该角旋转后的"背离槽"方向(横跨槽安装):
+#   0   = 横跨槽, 板体沿槽的逆时针一侧(右侧槽的板缺口朝北)
+#   180 = 横跨槽, 板体沿槽的顺时针一侧(右侧槽的板缺口朝南)
+#   90  = 顺槽旧画法(长边平行于槽, 缺口背离槽)——v2.3 首版实测方向全错, 勿改回
+# 若实机缺口朝向相反, 在 0/180 之间翻转即可
+YXB_COINCIDE_TOL      = _cfg_num(_cfg("YXB_COINCIDE_TOL", 0.05), 0.05)
+YXB_TEMPLATE_LONGAXIS_DEG = _cfg_num(_cfg("YXB_TEMPLATE_LONGAXIS_DEG", 0.0), 0.0)
 
 # 核心建模图层定义与属性映射
 _DEFAULT_LAYER_DEFS = [
