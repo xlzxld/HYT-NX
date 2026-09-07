@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """cad3d.modeling.stdparts —— 标准件实例化装配、提升体与布尔切槽。"""
 
+import math
 import os
 from cad3d.core.paths import stdparts_dir
 from cad3d.core.config import _cfg_num
@@ -36,6 +37,17 @@ def _place_delta(ref, flip, off):
     if flip:
         ry, rz = -ry, -rz
     return (-rx + ox, -ry + oy, -rz + oz)
+
+
+def _rot_xy(dx, dy, ang_deg):
+    """(纯逻辑) 位移向量绕 Z 旋转 ang_deg 度(YXB 逐板自动判向专用)。
+
+    off 在旋转件上按局部系语义随件旋转; ang_deg=0 时恒等(其余件零回归)。"""
+    if not ang_deg:
+        return dx, dy
+    a = math.radians(ang_deg)
+    c, s = math.cos(a), math.sin(a)
+    return (dx * c - dy * s, dx * s + dy * c)
 
 
 def _pick_target(flb_regions, cx, cy, log=None):
@@ -320,7 +332,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                 "检查/恢复默认。"
                 % (fname, rule["layer"] or "全部", rule["r_min"], rule["r_max"]))
             continue
-        anchors = collect_circle_anchors(layers, rule)
+        anchors = collect_circle_anchors(layers, rule, log=log)
         if not anchors:
             log("【标准件】%s: 无匹配锚点(图层=%s 半径%.4g~%.4g), 跳过。"
                 % (fname, rule["layer"] or "全部", rule["r_min"], rule["r_max"]))
@@ -348,14 +360,20 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                float(rule.get("off_z", 0.0)))
         log("【标准件】%s: 参考点=配置值 XY=(%.3f,%.3f) Z=%.3f 偏移=(%.3f,%.3f,%.3f)"
             % (fname, ref_xy[0], ref_xy[1], ref_z, off[0], off[1], off[2]))
+        auto_rot = (rule["layer"] == "YXB")   # YXB: 贴合边中点锚点+逐板轮廓判向
+        if auto_rot:
+            log("【标准件】%s: YXB 自动定向已启用(放置点=贴合边中点, 角度"
+                "逐板取自 2D 轮廓, 偏移按局部系随件旋转)。" % fname)
         n_ok = n_bool = n_body = 0
         for i, anch in enumerate(anchors):
             cx, cy = anch[0], anch[1]
-            m3 = _matrix3x3(nx, flip)
+            ang = float(anch[2]) if auto_rot else 0.0
+            m3 = _matrix3x3(nx, flip, ang)
             name = "%s%s_%d" % (COMP_PREFIX, stem, i + 1)
             try:
                 dx, dy, dz = _place_delta((ref_xy[0], ref_xy[1], ref_z),
                                           flip, off)
+                dx, dy = _rot_xy(dx, dy, ang)
                 pos = nx.Point3d(cx + dx, cy + dy, z + dz)
                 try:
                     comp, _ls = ca.AddComponent(path, "MODEL", name, pos, m3, -1)

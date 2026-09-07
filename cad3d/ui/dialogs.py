@@ -10,7 +10,7 @@ from cad3d.core.config import _note
 from cad3d.core.constants import (
     LAYER_TABLE, LAYER_CODES, DIALOG_GROUPS, JT_LINK_OPTS, JT_LINK_MODES,
     DEFAULT_JRT, JRT_FIELDS, DEFAULT_STD_RULE, LAYER_SEL_OPTS, ZMODE_OPTS,
-    BOOL_OPTS, DIR_OPTS
+    BOOL_OPTS, DIR_OPTS, LINE_ANCHOR_LAYERS
 )
 from cad3d.core.state import (
     load_state, merge_params, jrt_with_memory, jt_mode_with_memory,
@@ -332,12 +332,12 @@ class _BlockDialogBase(object):
             r["off_y"] = self._get_double(pfx + "offy", r["off_y"])
             r["off_z"] = self._get_double(pfx + "offz", r["off_z"])
             _old_rule = self.std_rules.get(fname) or {}
-            if (str(_old_rule.get("layer") or "").upper() == "CXK"
-                    and r["layer"] != "CXK"):
+            _old_lay = str(_old_rule.get("layer") or "").upper()
+            if _old_lay in LINE_ANCHOR_LAYERS and r["layer"] not in LINE_ANCHOR_LAYERS:
                 r["r_min"], r["r_max"] = 0.0, 15.0
-                _note("【%s】定位图层由 CXK 改为 %s: 半径筛选此前未在"
+                _note("【%s】定位图层由 %s 改为 %s: 半径筛选此前未在"
                       "界面显示, 已重置为 0~15, 请在窗口③核对。"
-                      % (fname, r["layer"]))
+                      % (fname, _old_lay or "空", r["layer"]))
             rules[fname] = sanitize_std_rule(r)
         return rules
 

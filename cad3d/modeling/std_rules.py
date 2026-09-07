@@ -5,8 +5,8 @@ import os
 from cad3d.core.paths import stdparts_dir
 from cad3d.core.config import _USER_CFG, SCHEMA_VERSION
 from cad3d.core.constants import (
-    DEFAULT_STD_RULE, LAYER_CODES, _ZMODE_DEFS, BOOL_OPTS, DIR_OPTS,
-    TARGET_CODE, STD_MAX_ANCHORS
+    DEFAULT_STD_RULE, LAYER_CODES, LINE_ANCHOR_LAYERS, _ZMODE_DEFS,
+    BOOL_OPTS, DIR_OPTS, TARGET_CODE, STD_MAX_ANCHORS
 )
 
 
@@ -100,7 +100,8 @@ def sanitize_std_rule(rule):
     if not isinstance(rule, dict):
         return out
     lay = str(rule.get("layer", "") or "").upper()
-    out["layer"] = lay if lay in LAYER_CODES + ["CXK"] else ""
+    out["layer"] = (lay if lay in LAYER_CODES + list(LINE_ANCHOR_LAYERS)
+                    else "")
     for k in ("r_min", "r_max", "off_x", "off_y", "off_z"):
         try:
             out[k] = float(rule.get(k, out[k]))

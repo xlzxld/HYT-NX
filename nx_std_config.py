@@ -30,7 +30,9 @@ nx_std_config.py —— CAD3D 全局工程参数与标准件规则配置文件
 # 作用：记忆文件中存有相同的版本标记。当本数字被调大时，系统判定历史记忆已过期，
 #       自动忽略旧记忆中的所有参数，彻底重置并恢复为本配置文件的出厂默认值。
 # 应用场景：当用户在界面中将参数调乱希望一键重置出厂状态时，将此值加 1 即可。
-CONFIG_SCHEMA_VERSION = 4
+# v2.3 调大说明：压线板定位图层默认值 CXK → YXB，旧记忆中的压线板规则
+#       (layer=CXK, off_y=-30) 已不适用，升级时整体重置一次。
+CONFIG_SCHEMA_VERSION = 5
 
 
 # =============================================================================
@@ -69,7 +71,7 @@ ZMODE_DEFS = [
 #   - z_mode: 装配高度基准面（需在 ZMODE_DEFS 中定义）
 #   - bool_mode: "PLACE"(仅放置) / "PLACE_SUBTRACT"(放置并减去型腔) / "SUBTRACT"(仅切槽) / "UNITE"(合并)
 #   - dir: "+Z"(正向插入) / "-Z"(翻转180度插入)
-#   - off_x, off_y, off_z: 相对锚点的三维位移量 (mm)
+#   - off_x, off_y, off_z: 相对锚点的三维位移量 (mm)；YXB 自动定向件随件旋转(局部系)
 #   - ref: 标准件几何插入参考原点，已归零零件恒为 [0.0, 0.0, 0.0]
 STD_PART_DEFAULTS = [
     # ─── 精确零件行（已全部通过 nx_zero_ref.py 归零） ──────────────────────
@@ -86,7 +88,7 @@ STD_PART_DEFAULTS = [
     ("接线盒-16针.prt", {"layer": "CXK", "z_mode": "CX_TOP", "ref": [0.0, 0.0, 0.0]}),
     ("接线盒-24针.prt", {"layer": "CXK", "z_mode": "CX_TOP", "ref": [0.0, 0.0, 0.0]}),
     ("接线盒-48针.prt", {"layer": "CXK", "z_mode": "CX_TOP", "ref": [0.0, 0.0, 0.0]}),
-    ("压线板.prt",     {"layer": "CXK", "z_mode": "CX_TOP", "ref": [0.0, 0.0, 0.0]}),
+    ("压线板.prt",     {"layer": "YXB", "z_mode": "CX_TOP", "ref": [0.0, 0.0, 0.0]}),
 
     # ─── 零件族关键词通用规则行 ──────────────────────────────────────────
     ("主进胶", {"layer": "DP", "r_min": 0.0, "r_max": 8.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT"}),
@@ -100,7 +102,7 @@ STD_PART_DEFAULTS = [
     ("接线盒", {"layer": "CXK", "z_mode": "CX_TOP"}),
     ("垫片",   {"layer": "DK", "r_min": 0.0, "r_max": 5.0, "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
     ("washer", {"layer": "DK", "r_min": 0.0, "r_max": 5.0, "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
-    ("压线板", {"layer": "CXK", "z_mode": "CX_TOP"}),
+    ("压线板", {"layer": "YXB", "z_mode": "CX_TOP"}),
 ]
 
 
@@ -216,6 +218,9 @@ DIALOG_GROUPS = [
 # 算法容差
 LOOP_TOL  = 0.01              # 2D 轮廓端点连接闭合容差 (mm)
 CHAIN_TOL = 0.01              # NX Section 链接曲线容差 (mm)
+YXB_COINCIDE_TOL      = 0.05  # YXB 压线板贴合边(与 CX 线共线重合)判定容差 (mm)
+YXB_TEMPLATE_FACE_DEG = 90.0  # 压线板模板凸台朝向基准角：局部 +Y=90；若实机
+                              # 首件整体反向 180°，改为此值 ±180 即可
 
 # 防卡死安全护栏：单件最大允许放置的锚点数上限。
 # 保护机制：若某标准件图层误配为全部图层且半径全开，图元过多时直接阻断跳过，防止卡死 NX。

@@ -25,7 +25,7 @@ from cad3d.core.constants import (
     _LINK_OFFSETS, JRT_FROM_TOP, DEFAULT_JRT, MANAGED_MAX, STDPARTS_DIRNAME,
     JT_LINK_DEFAULT, JRT_FIELDS, LAYER_SEL_OPTS, BOOL_OPTS, ZMODE_OPTS,
     _ZMODE_FALLBACK, _ZMODE_DEFS, STD_MAX_ANCHORS, LAYER_CODES, DIR_OPTS,
-    assign_layers
+    LINE_ANCHOR_LAYERS, assign_layers
 )
 from cad3d.core.state import (
     _jt_link_values, jt_mode_with_memory, _cx_link_values, derive_linked,
@@ -39,7 +39,7 @@ from cad3d.geom.topo import (
     find_chains, loop_polygon, poly_area, _bbox, point_in_poly,
     _loop_in_loop, organize_loops, _chain_tips, _cluster_tips,
     _merge_open_chains, _center_seen, collect_circle_anchors,
-    _chain_outlet_mids, _chain_connectors
+    collect_yxb_anchors, _chain_outlet_mids, _chain_connectors
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
@@ -49,7 +49,8 @@ from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
     _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow
 )
-from cad3d.modeling.stdparts import _bool_feature, _place_delta
+from cad3d.modeling.stdparts import _bool_feature, _place_delta, _rot_xy
+from cad3d.modeling.nx_compat import _matrix3x3
 from cad3d.modeling.mold_cut import (
     _any_point_inside, _bbox_overlap, _body_matches_bbox, _broken_holes,
     _extents, _grow, _hole_rows, _is_sliver, _kw_hits, _merge_face_bboxes,
@@ -374,6 +375,130 @@ def selftest(dxf_path=None):
           len(ak) == 1 and abs(ak[0][0] - 4526.3106) < 0.01
           and abs(ak[0][1] - 1790.2716) < 0.01, str(ak))
 
+    # 7e. YXB 压线板: 贴合边中点锚点 + 逐板轮廓自动判向(26079 前跑板实图定案)
+    _yxb_cases = [
+        ("板体-Y", [DXLine((-5, 0), (30, 0))],
+         [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5))],
+         (5.0, 0.0, 180.0)),
+        ("板体+Y", [DXLine((-5, 0), (30, 0))],
+         [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5))],
+         (5.0, 0.0, 0.0)),
+        ("板体+X", [DXLine((0, -5), (0, 30))],
+         [DXLine((0, 0), (0, 10)), DXLine((0, 10), (5, 10))],
+         (0.0, 5.0, -90.0)),
+        ("板体-X", [DXLine((0, -5), (0, 30))],
+         [DXLine((0, 0), (0, 10)), DXLine((-5, 10), (0, 10))],
+         (0.0, 5.0, 90.0)),
+    ]
+    for _nm, _cxl, _yxl, _exp in _yxb_cases:
+        _a, _w = collect_yxb_anchors(_yxl, _cxl)
+        check("YXB 判向: %s→θ=%.0f" % (_nm, _exp[2]),
+              len(_a) == 1 and not _w
+              and abs(_a[0][0] - _exp[0]) < 1e-6
+              and abs(_a[0][1] - _exp[1]) < 1e-6
+              and abs(_a[0][2] - _exp[2]) < 1e-6, str(_a))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5)),
+         DXLine((15, 0), (25, 0)), DXLine((25, 0), (25, 5))],
+        [DXLine((-5, 0), (30, 0))])
+    check("YXB 同线双板对向→各自朝向(180/0)",
+          len(_a) == 2 and not _w
+          and sorted((round(x, 3), round(y, 3), round(t, 3))
+                     for x, y, t in _a) == [(5.0, 0.0, 180.0),
+                                            (20.0, 0.0, 0.0)], str(_a))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((0, 0), (4, 0)), DXLine((6, 0), (10, 0)),
+         DXLine((0, 0), (0, -5)), DXLine((0, -5), (10, -5)),
+         DXLine((10, -5), (10, 0))],
+        [DXLine((-5, 0), (30, 0))])
+    check("YXB 贴合边拆两段→并集中点(5,0)+判向180",
+          len(_a) == 1 and not _w and abs(_a[0][0] - 5.0) < 1e-6
+          and abs(_a[0][1]) < 1e-6 and abs(_a[0][2] - 180.0) < 1e-6, str(_a))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5))],
+        [DXLine((0, 3), (30, 3))])
+    check("YXB CX 平行但不重合(偏距3)→跳过+警告", not _a and len(_w) == 1,
+          str(_w))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((14, 0), (20, 0)), DXLine((14, 0), (14, -5))],
+        [DXLine((-5, 0), (15, 0))])
+    check("YXB 重叠不足半长→不算贴合边", not _a and len(_w) == 1, str(_a))
+    _logs = []
+    _a = collect_circle_anchors(
+        {"YXB": [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5))],
+         "CX": [DXLine((-5, 0), (30, 0))]},
+        sanitize_std_rule({"layer": "YXB"}), log=_logs.append)
+    check("YXB 分支接入: 锚点第三元=角度180",
+          len(_a) == 1 and abs(_a[0][2] - 180.0) < 1e-6, str(_a))
+    _a = collect_circle_anchors(
+        {"YXB": [DXLine((0, 0), (10, 0))], "CX": []},
+        sanitize_std_rule({"layer": "YXB"}), log=_logs.append)
+    check("YXB 空 CX→无锚点+警告入日志",
+          not _a and any("贴合边" in _s for _s in _logs), str(_logs))
+    check("LINE_ANCHOR_LAYERS=CXK+YXB", LINE_ANCHOR_LAYERS == ("CXK", "YXB"))
+    check("YXB 在图层选项且规则合法",
+          "YXB" in [v for v, _t in LAYER_SEL_OPTS]
+          and sanitize_std_rule({"layer": "yxb"})["layer"] == "YXB")
+    if _USER_CFG is not None:
+        _d = std_part_defaults("压线板.prt")
+        check("默认规则: 压线板→YXB/CX顶值", _d is not None
+              and _d.get("layer") == "YXB" and _d.get("z_mode") == "CX_TOP",
+              str(_d))
+    _xml_y = build_std_dlx(
+        {"压线板.prt": sanitize_std_rule({"layer": "YXB", "z_mode": "CX_TOP"})},
+        default_params())
+    check("YXB 件参数页无半径框(与 CXK 同款)",
+          "rmin" not in _xml_y and "rmax" not in _xml_y)
+
+    class _FakeNx:
+        class Matrix3x3:
+            def __init__(self, *vals):
+                self.vals = vals
+
+    def _mvals(flip, ang):
+        return _matrix3x3(_FakeNx, flip, ang).vals
+
+    check("姿态: θ=0 与旧版逐位一致(+Z/-Z)",
+          _mvals(False, 0.0) == (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+          and _mvals(True, 0.0) == (1.0, 0.0, 0.0, 0.0, -1.0, 0.0,
+                                    0.0, 0.0, -1.0))
+    check("姿态: θ=90 为 Rz·(flip 时 Rx180) 组合",
+          all(abs(a - b) < 1e-12 for a, b in zip(
+              _mvals(False, 90.0),
+              (0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)))
+          and all(abs(a - b) < 1e-12 for a, b in zip(
+              _mvals(True, 90.0),
+              (0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0))))
+    check("位移旋转: _rot_xy 90°(1,0)→(0,1) / 0°恒等",
+          abs(_rot_xy(1, 0, 90.0)[0]) < 1e-12
+          and abs(_rot_xy(1, 0, 90.0)[1] - 1.0) < 1e-12
+          and _rot_xy(3, 4, 0.0) == (3, 4))
+    _fx = os.path.join(script_dir(), "test", "fixtures", "26079_YXB.dxf")
+    if os.path.isfile(_fx):
+        _lay, _st = parse_dxf(_fx)
+        _ya, _yw = collect_yxb_anchors(_lay.get("YXB") or [],
+                                       _lay.get("CX") or [])
+        _exp11 = [
+            (3582.5, -295.268, 90.0),
+            (3582.5, 341.252, 90.0),
+            (3661.948, -342.768, 180.0),
+            (3661.948, 388.752, 0.0),
+            (3811.948, -342.768, 180.0),
+            (3811.948, 388.752, 0.0),
+            (3891.396, -233.884, -90.0),
+            (3891.396, -83.884, -90.0),
+            (3891.396, 66.116, -90.0),
+            (3891.396, 216.116, -90.0),
+            (3891.396, 366.116, -90.0),
+        ]
+        _got = sorted((round(x, 3), round(y, 3), round(t, 3))
+                      for x, y, t in _ya)
+        check("真图回归: 26079_YXB 11 板 4 朝向(贴合边中点+自动判向)",
+              len(_got) == 11 and not _yw and _got == sorted(_exp11),
+              str(_got[:3]))
+    else:
+        check("真图回归: fixture 缺失跳过(26079_YXB.dxf)", True)
+
     cx_open = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5)),
                DXLine((10, 5), (0, 5))]
     lay_m = {"CX": cx_open, "CXK": [DXLine((0, 5), (0, 0))]}
@@ -584,7 +709,7 @@ def selftest(dxf_path=None):
     for k, v in (cfg.STD_PART_DEFAULTS if cfg is not None else []):
         rr = sanitize_std_rule(v)
         check("配置表条目合法: %s" % k,
-              rr["layer"] in LAYER_CODES + ["CXK", ""]
+              rr["layer"] in LAYER_CODES + list(LINE_ANCHOR_LAYERS) + [""]
               and rr["z_mode"] in [z for z, _t in ZMODE_OPTS]
               and rr["bool_mode"] in [b for b, _t in BOOL_OPTS]
               and rr["dir"] in [dd for dd, _t in DIR_OPTS])

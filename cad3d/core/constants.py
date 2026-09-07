@@ -16,6 +16,10 @@ COMP_PREFIX    = str(_cfg("COMP_PREFIX", FEATURE_PREFIX + "C_"))
 # 几何算法容差配置 (mm)
 LOOP_TOL  = _cfg_num(_cfg("LOOP_TOL", 0.01), 0.01)     # 2D 轮廓链闭合端点容差
 CHAIN_TOL = _cfg_num(_cfg("CHAIN_TOL", 0.01), 0.01)   # NX 截面链接曲线容差
+# YXB 压线板: 贴合边(与 CX 线共线重合)判定容差; 模板凸台朝向基准角(局部坐标
+# 方向角, +90=凸台朝 +Y。若 NX 实机首件整体反向 180°, 改此值即可)
+YXB_COINCIDE_TOL    = _cfg_num(_cfg("YXB_COINCIDE_TOL", 0.05), 0.05)
+YXB_TEMPLATE_FACE_DEG = _cfg_num(_cfg("YXB_TEMPLATE_FACE_DEG", 90.0), 90.0)
 
 # 核心建模图层定义与属性映射
 _DEFAULT_LAYER_DEFS = [
@@ -263,9 +267,13 @@ ZMODE_OPTS     = [(k, lbl + "+偏移") for k, lbl, _ly, _sd in _ZMODE_DEFS]
 BOOL_OPTS      = [("PLACE", "仅放置"), ("PLACE_SUBTRACT", "放置+减去"),
                   ("SUBTRACT", "仅减去(隐藏件)"), ("UNITE", "合并进FLB")]
 DIR_OPTS       = [("+Z", "+Z插入"), ("-Z", "-Z翻转")]
+# 线中点定位图层: 只定位不建模、无半径概念(CXK=接线盒线取中点;
+# YXB=压线板线取"与 CX 重合的贴合边中点"+逐板轮廓自动判向)
+LINE_ANCHOR_LAYERS = ("CXK", "YXB")
+_LINE_ANCHOR_LABELS = {"CXK": "CXK(接线盒线)", "YXB": "YXB(压线板线)"}
 LAYER_SEL_OPTS = ([("", "全部图层")]
                   + [(c, c) for c in LAYER_CODES]
-                  + [("CXK", "CXK(接线盒线)")])
+                  + [(c, _LINE_ANCHOR_LABELS[c]) for c in LINE_ANCHOR_LAYERS])
 
 # JRT 参数对话框字段单一数据源
 JRT_FIELDS = [

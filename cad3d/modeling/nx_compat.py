@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """cad3d.modeling.nx_compat —— NXOpen 跨版本调用与对象属性封装。"""
 
+import math
+
 from cad3d.core.constants import SCRIPT_VERSION
 
 MARK_ATTR = "CAD3D"
@@ -71,10 +73,22 @@ def _bodies_of(feat):
     return []
 
 
-def _matrix3x3(nx, flip):
-    """放置姿态: 单位阵(+Z 插入) 或绕 X 180°(-Z 插入)。"""
-    vals = ((1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0) if flip
-            else (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+def _matrix3x3(nx, flip, ang_deg=0.0):
+    """放置姿态: Rz(ang_deg)·(flip 时绕 X 180°), 行主序 9 元素。
+
+    ang_deg=0 时与旧版逐位一致: 单位阵(+Z 插入) / diag(1,-1,-1)(-Z 插入);
+    ang_deg≠0 叠加绕世界 Z 面内旋转(YXB 压线板逐板自动判向, 零件先按
+    dir 翻转再旋转)。"""
+    a = math.radians(ang_deg)
+    ca, sa = math.cos(a), math.sin(a)
+    if flip:
+        vals = (ca, sa, 0.0,
+                sa, -ca, 0.0,
+                0.0, 0.0, -1.0)
+    else:
+        vals = (ca, -sa, 0.0,
+                sa, ca, 0.0,
+                0.0, 0.0, 1.0)
     try:
         return nx.Matrix3x3(*vals)
     except TypeError:

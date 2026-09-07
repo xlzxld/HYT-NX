@@ -6,7 +6,7 @@ from cad3d.core.paths import _fresh_dlx_path, _temp_dlx_path
 from cad3d.core.constants import (
     LAYER_TABLE, MANAGED_MIN, MANAGED_MAX, DIALOG_GROUPS,
     JT_LINK_OPTS, DEFAULT_JRT, JRT_FIELDS, LAYER_SEL_OPTS,
-    ZMODE_OPTS, BOOL_OPTS, DIR_OPTS
+    ZMODE_OPTS, BOOL_OPTS, DIR_OPTS, LINE_ANCHOR_LAYERS
 )
 from cad3d.core.state import default_params
 from cad3d.modeling.std_rules import _std_z
@@ -486,7 +486,7 @@ def build_std_dlx(std_rules, params):
                       [t for _v, t in LAYER_SEL_OPTS],
                       _opt_index(LAYER_SEL_OPTS, lay)),
         ] + ([]
-             if lay == "CXK" else
+             if lay in LINE_ANCHOR_LAYERS else
              [_blk_double(p + "rmin", "半径min", r.get("r_min", 0.0)),
               _blk_double(p + "rmax", "半径max", r.get("r_max", 0.0))]) + [
             _blk_enum(p + "zmode", "Z基准",
