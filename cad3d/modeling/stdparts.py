@@ -8,7 +8,7 @@ from cad3d.core.constants import (
     COMP_PREFIX, FEATURE_PREFIX, SCRIPT_VERSION, STD_MAX_ANCHORS
 )
 from cad3d.modeling.nx_compat import (
-    _iter, _bodies_of, _matrix3x3, MARK_ATTR
+    _iter, _bodies_of, _matrix3x3, _mark_type, MARK_ATTR
 )
 from cad3d.modeling.purge import _CREATED_FEATURES
 from cad3d.geom.topo import collect_circle_anchors
@@ -133,21 +133,64 @@ def _bool_one(work_part, fn, target, tool, retain_tools):
         return [r]
 
 
-def _bool_feature(work_part, op, target, tools, name, log, retain_tools=False):
+def _bool_tag(t):
+    """体的日志标识: Name 常为空串, 回退 Tag 保证可定位。"""
+    return str(getattr(t, "Name", "") or ("Tag=%s" % getattr(t, "Tag", "?")))
+
+
+def _merge_undo_mark(session):
+    """合并减前挂不可见 undo 标记(防 NX 多工具减部分提交); 不可用→None。"""
+    if session is None:
+        return None
+    try:
+        import NXOpen
+        return session.SetUndoMark(NXOpen.Session.MarkVisibility.Invisible,
+                                   "CAD3D 布尔合并减")
+    except ImportError:
+        return None            # 非NX环境(离线自测 mock), 无 undo 栈可挂
+    except Exception:
+        return None            # 建标记失败不阻断减法(与旧版行为一致)
+
+
+def _merge_undo_rollback(session, mark, log):
+    """合并减失败后回滚: NX 多工具减可能已把前面成员减入目标才抛异常,
+    不回滚会出现"图上已减、日志报失败"的账实不符(2026-09-08 用户实测)。"""
+    if session is None or mark is None:
+        return
+    try:
+        session.UndoToMark(mark, None)
+        log("  已回滚合并减的部分效果, 以下逐个减重新对账。")
+    except Exception as ex:
+        log("  合并减回滚失败(以实际模型为准): %s" % ex)
+
+
+def _bool_feature(work_part, op, target, tools, name, log, retain_tools=False,
+                  with_failed=False, session=None):
     """布尔特征(CreateSubtractFeature/CreateUniteFeature)。
 
     retain_tools=True 保留工具体(切槽保件, 同期刊 CopyTools)。
     v1.9 逐工具容错: 多工具合并调用失败时逐个重试, 零相交的坏工具记日志
     跳过, 不再毁掉整次布尔(垫片第1实体零相交一案)。
+    with_failed=True 返回 (特征列表, 失败工具体列表) 供调用方精确对账
+    (模具批量减按失败名单计数); 默认 False 只返回特征列表, 与旧版一致。
+    失败工具体在函数内只做一次减法尝试, 不重复调用。
+    session 非 None 时(仅 NX 环境): 合并减前挂不可见 undo 标记, 调用失败
+    回滚 NX 可能已减入的部分成员后再逐个重减, 保证模型与日志一致。
     """
     fn = "CreateUniteFeature" if op == "unite" else "CreateSubtractFeature"
     tools = [t for t in tools if t is not None]
     if not tools:
-        return []
+        return ([], []) if with_failed else []
+    failed = []
     feats = None
     if len(tools) == 1:
         feats = _bool_one(work_part, fn, target, tools[0], retain_tools)
+        if not feats:
+            failed.append(tools[0])
+            log("  布尔工具跳过(与目标无交集或失败): %s"
+                % _bool_tag(tools[0]))
     else:
+        mk = _merge_undo_mark(session)
         try:
             r = getattr(work_part.Features, fn)(target, False, list(tools),
                                                 retain_tools, False)
@@ -161,28 +204,38 @@ def _bool_feature(work_part, op, target, tools, name, log, retain_tools=False):
                 if isinstance(r, tuple):
                     r = r[0]
                 feats = list(r)
-            except Exception:
+            except Exception as ex:
+                log("  布尔合并调用签名不可用(%s: %s), 逐个减(老版本NX兼容)。"
+                    % (type(ex).__name__, ex))
                 feats = None
-        except Exception:
+        except Exception as ex:
+            log("  布尔合并调用失败(%s: %s), 降级逐个减。"
+                % (type(ex).__name__, ex))
             feats = None
-    if not feats:
-        feats = []
-        for t in tools:
-            fs = _bool_one(work_part, fn, target, t, retain_tools)
-            if fs:
-                feats.extend(fs)
-            else:
-                log("  布尔工具跳过(与目标无交集或失败): %s"
-                    % str(getattr(t, "Name", t)))
         if not feats:
-            return []
+            _merge_undo_rollback(session, mk, log)
+            feats = None          # 合并空返回同视作失败, 走逐个定位
+        if feats is None:
+            for t in tools:
+                fs = _bool_one(work_part, fn, target, t, retain_tools)
+                if fs:
+                    feats = feats or []
+                    feats.extend(fs)
+                else:
+                    failed.append(t)
+                    log("  布尔工具跳过(与目标无交集或失败): %s"
+                        % _bool_tag(t))
+    if feats is None:
+        feats = []
+    if not feats:
+        return ([], failed) if with_failed else []
     for i, f in enumerate(feats):
         try:
             f.SetName(name or ("%sBOOL_%d" % (FEATURE_PREFIX, i)))
         except Exception:
             pass
         _CREATED_FEATURES.append(f)
-    return feats
+    return (feats, failed) if with_failed else feats
 
 
 def _remove_parameters(session, work_part, bodies, log):
@@ -317,6 +370,8 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                                       "%sBODY_%s_%d" % (FEATURE_PREFIX, stem, i + 1),
                                       log, body_index=None)
             tools_all = [t for t in (tools_all or []) if t is not None]
+            for _tb in tools_all:                   # 体类型标记(模具开框规则用)
+                _mark_type(_tb, "STD:" + fname)
             n_body += len(tools_all)
             try:
                 session.UpdateManager.AddToDeleteList([comp])

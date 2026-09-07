@@ -102,6 +102,22 @@ def _cfg_int(key, default):
         return int(default)
 
 
+def _cfg_bool(key, default):
+    """读配置项并转 bool; bool/0,1/常见真假词以外回 default(不崩)。"""
+    v = _cfg(key, default)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("1", "true", "yes", "on"):
+            return True
+        if s in ("0", "false", "no", "off"):
+            return False
+    return bool(default)
+
+
 # JRT 三参默认(配置文件可改; 永不进记忆; 类型非法回默认不崩)
 _JRT_BLEND_R = _cfg_num(getattr(_USER_CFG, "JRT_BLEND_R_DEFAULT", 3.9)
                         if _USER_CFG else 3.9, 3.9)

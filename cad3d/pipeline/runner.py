@@ -29,6 +29,8 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
     import NXOpen.Features
     import NXOpen.GeometricUtilities
 
+    from cad3d.modeling.nx_compat import _mark_type
+
     if session is None:
         session = _nx.Session.GetSession()
     if work_part is None:
@@ -113,6 +115,8 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
             _bodies, regions = build_layer(session, work_part, code, zh, role,
                                            layers, nx_curves, params, flb_regions,
                                            log, stats)
+            for _tb in _bodies:                     # 体类型标记(模具开框规则用)
+                _mark_type(_tb, code)
             if code == TARGET_CODE:
                 flb_regions = regions
         if not flb_regions:

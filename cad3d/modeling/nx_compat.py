@@ -4,6 +4,7 @@
 from cad3d.core.constants import SCRIPT_VERSION
 
 MARK_ATTR = "CAD3D"
+TYPE_ATTR = "CAD3D_TYPE"
 
 
 def _set_expr(expr, value_str):
@@ -16,6 +17,22 @@ def _set_expr(expr, value_str):
         expr.SetFormula(value_str)
     except Exception:
         expr.RightHandSide = value_str
+
+
+def _mark_type(obj, type_str):
+    """体类型标记(模具开框按类型套规则用); 失败静默跳过不影响建模。"""
+    try:
+        obj.SetAttribute(TYPE_ATTR, str(type_str))
+    except Exception:
+        pass
+
+
+def _type_of(obj):
+    """读体类型标记; 无标记返回空串(旧版流水线产物)。"""
+    try:
+        return str(obj.GetStringAttribute(TYPE_ATTR) or "")
+    except Exception:
+        return ""
 
 
 def _mark_curve(obj):

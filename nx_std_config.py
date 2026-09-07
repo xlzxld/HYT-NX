@@ -19,6 +19,7 @@ nx_std_config.py —— CAD3D 全局工程参数与标准件规则配置文件
   5. JRT 加热条工艺与配色 (JRT_*)
   6. NX 运行环境与命名空间 (NX_LAYER_*, FEATURE_PREFIX, COMP_PREFIX, DIALOG_GROUPS)
   7. 几何算法容差与系统路径 (LOOP_TOL, CHAIN_TOL, STD_MAX_ANCHORS, 目录路径)
+  8. 模具自动开框 (MOLD_BBOX_TOL)
 =============================================================================
 """
 
@@ -230,3 +231,46 @@ PARAMS_FILENAME  = "nx_extrude_params.json"   # 运行时记忆持久化文件�
 # 若您的电脑将 AutoCAD 安装在自定义特殊目录，可在此直接指定路径，例如：
 # ACAD_CONSOLE_PATH = r"C:\Program Files\Autodesk\AutoCAD 2024\accoreconsole.exe"
 ACAD_CONSOLE_PATH = None
+
+
+# =============================================================================
+# 8. 模具自动开框 (MOLD CUT)
+# =============================================================================
+# 配合 nx_mold_cut_runner.py 使用：先用 nx_extrude_runner.py 跑完分层拉伸流水
+# 线，再把模具手动放置到工作部件中，然后播放该日记。脚本将部件内带 CAD3D 标
+# 记的产物体与模具接触处自动布尔减去(工具体保留)。
+
+# 试切冲突检查总开关 (2026-09-07 需求)：
+#   True  = 开启试切——对 conflict_check 启用的类型，减去前先试切对比孔壁，
+#           会破坏模具已有孔(如孔边螺丝)则撤销并跳过该件
+#   False = 关闭试切——全部类型直接减去，不做任何冲突检查
+MOLD_TRIAL_CUT = False
+
+# 接触预筛包围盒容差 (mm)：工具体与模具体包围盒重叠(含贴合)才尝试布尔减去。
+MOLD_BBOX_TOL = 0.05
+
+# 每类件的模具开框规则表：[(类型键, 规则dict), ...]
+# 类型键：图层代码("CX"/"FLB"/"JT"/"JRT") 或 "STD:文件名关键词"(如 "STD:主进胶")。
+# 优先级：精确匹配 > STD:关键词匹配；未列出的标准件默认 conflict_check=True，
+# 未列出的其余类型(大腔体)默认 False。
+# 规则字段：
+#   conflict_check : True=减去前试切对比孔壁，会破坏模具已有孔则撤销并跳过该件
+#                    (仅在 MOLD_TRIAL_CUT=True 时生效；总开关 False 时一律不试切)
+#
+# ── 以下后处理字段【已搁置】：代码保留但默认不配置即不执行，需要时按注释
+#    填回对应字段即可重新启用(边倒圆/偏置面/删除面在部分 NX 版本不可用) ──
+#   blend_step_r   : 出线槽(CX)与分流板/假体连接处台阶边倒圆 R，0=不做
+#   blend_flush_r  : 出线槽(CX)与模具天侧齐平处开口边倒圆 R，0=不做
+#   clearance      : 减去后扩孔(放大间隙)，用于中心定位片等圆柱孔：
+#                      bbox       匹配体尺寸 [X, Y, Z]（如圆柱 [15, 15, 41.7023]）
+#                      bbox_tol   匹配容差 (mm)
+#                      sliver_max 删面阈值：先删孔内薄片碎面（最薄维与次薄维判定）
+#                      offset     孔壁向外偏置量 (mm)
+MOLD_CUT_RULES = [
+    ("CX", {"conflict_check": False}),
+    ("STD:主进胶", {"conflict_check": True}),
+]
+
+# 体积对账开关 (2026-09-07 提速需求)：True=跑完对每块模具再算一次体积并打
+# "体积变化模具 N 块"日志(每模具 2 次质量属性积分, 较慢)；False=跳过该对账。
+MOLD_AUDIT_VOLUME = False

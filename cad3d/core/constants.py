@@ -2,7 +2,7 @@
 """cad3d.core.constants —— 工程参数表、常量与全局规则加载。"""
 
 from cad3d.core.config import (
-    _cfg, _cfg_int, _cfg_num, _note, _USER_CFG,
+    _cfg, _cfg_bool, _cfg_int, _cfg_num, _note, _USER_CFG,
     _JRT_BLEND_R, _JRT_R_STEP, _JRT_R_MIN, SCHEMA_VERSION
 )
 
@@ -221,6 +221,26 @@ DEFAULT_JRT = {
     "color_model": _cfg_int("JRT_COLOR_MODEL", 78),
     "translucency": _cfg_int("JRT_TRANSLUCENCY", 50),
 }
+
+# 模具开框每类件规则(用户在 nx_std_config.py 的 MOLD_CUT_RULES 配置)
+# 行格式: (类型键, 规则dict); 类型键="CX"/"FLB"/"JT"/"JRT" 或 "STD:文件名关键词"
+_RAW_MOLD_RULES = _cfg("MOLD_CUT_RULES", [])
+MOLD_CUT_RULES = []
+if isinstance(_RAW_MOLD_RULES, (list, tuple)):
+    for _r in _RAW_MOLD_RULES:
+        if isinstance(_r, (list, tuple)) and len(_r) == 2 \
+                and isinstance(_r[0], str) and isinstance(_r[1], dict):
+            MOLD_CUT_RULES.append((str(_r[0]), dict(_r[1])))
+
+# 模具自动开框 (MOLD CUT) 接触预筛容差 (mm)
+MOLD_BBOX_TOL = _cfg_num(_cfg("MOLD_BBOX_TOL", 0.05), 0.05)
+
+# 模具自动开框试切总开关: False=全部类型直接减去不做试切;
+# True=按 MOLD_CUT_RULES 里各类型 conflict_check 决定是否试切
+MOLD_TRIAL_CUT = _cfg_bool("MOLD_TRIAL_CUT", True)
+
+# 模具开框体积对账(每模具前后 2 次质量属性积分, 只为一条日志): 默认关以提速
+MOLD_AUDIT_VOLUME = _cfg_bool("MOLD_AUDIT_VOLUME", False)
 
 # Z 基准高度选项表
 _ZMODE_FALLBACK = [("FLB_TOP", "FLB顶面", "FLB", "TOP"),

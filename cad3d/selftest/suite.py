@@ -49,7 +49,14 @@ from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
     _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow
 )
-from cad3d.modeling.stdparts import _place_delta
+from cad3d.modeling.stdparts import _bool_feature, _place_delta
+from cad3d.modeling.mold_cut import (
+    _any_point_inside, _bbox_overlap, _body_matches_bbox, _broken_holes,
+    _extents, _grow, _hole_rows, _is_sliver, _kw_hits, _merge_face_bboxes,
+    _pair_hits, _pick_points, _rule_for
+)
+from cad3d.core.constants import (MOLD_AUDIT_VOLUME, MOLD_BBOX_TOL,
+                                  MOLD_CUT_RULES, MOLD_TRIAL_CUT)
 from cad3d.modeling.extrude import modeling_ents, build_layer
 from cad3d.ui.dlx_builder import (
     _blk_enum, build_dlx, build_selection_dlx, build_std_dlx, _group_item,
@@ -942,6 +949,221 @@ def selftest(dxf_path=None):
             check("DWG 文件不存在时抛出 DwgConversionError 防御异常", _bad_dwg_caught)
     finally:
         _sh.rmtree(_td, ignore_errors=True)
+
+    # 13. 模具自动开框(MOLD CUT)纯逻辑
+    check("MOLD_BBOX_TOL 容差配置合法",
+          isinstance(MOLD_BBOX_TOL, float) and MOLD_BBOX_TOL >= 0.0,
+          str(MOLD_BBOX_TOL))
+    check("MOLD_TRIAL_CUT 试切总开关为布尔(开=试切/关=直接减)",
+          isinstance(MOLD_TRIAL_CUT, bool), str(MOLD_TRIAL_CUT))
+    check("MOLD_AUDIT_VOLUME 体积对账开关为布尔(默认关以提速)",
+          isinstance(MOLD_AUDIT_VOLUME, bool), str(MOLD_AUDIT_VOLUME))
+    check("pair_hits 工具×模具配对预筛(命中/容差/残缺)",
+          _pair_hits((0, 0, 0, 10, 10, 10),
+                     [(5, 5, 5, 15, 15, 15), (20, 20, 20, 30, 30, 30), None])
+          == [0]
+          and _pair_hits(None, [(0, 0, 0, 1, 1, 1)]) == []
+          and _pair_hits((0, 0, 0, 10, 10, 10), []) == []
+          and _pair_hits((0, 0, 0), [(0, 0, 0, 1, 1, 1)]) == []
+          and _pair_hits((0, 0, 0, 10, 10, 10), [(10.03, 0, 0, 20, 10, 10)],
+                         0.05) == [0]
+          and _pair_hits((0, 0, 0, 10, 10, 10), [(10.03, 0, 0, 20, 10, 10)],
+                         0.0) == [])
+
+    def _point_fail(_b, _p):
+        raise RuntimeError("query failed")
+
+    check("pick_points 采样点去重/region 优先/截断/残缺",
+          _pick_points([(0, 0, 0), (0, 0, 0), (1, 1, 1)], 16)
+          == [(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)]
+          and _pick_points([(11, 11, 11), (0, 0, 0), (2, 2, 2)], 2,
+                           (0, 0, 0, 10, 10, 10))
+          == [(0.0, 0.0, 0.0), (2.0, 2.0, 2.0)]
+          and _pick_points([(0, 0, 0), (0, 0, 0), (1, 1, 1)], 1)
+          == [(0.0, 0.0, 0.0)]
+          and _pick_points([], 16) == []
+          and _pick_points([(0, 0, "x")], 16) == [])
+    check("any_point_inside 命中/全外/全失败保守不剔除",
+          _any_point_inside(lambda b, p: p[0] > 5, "B", [(0, 0, 0), (6, 0, 0)])
+          is True
+          and _any_point_inside(lambda b, p: False, "B", [(0, 0, 0)]) is False
+          and _any_point_inside(_point_fail, "B", [(0, 0, 0)]) is True
+          and _any_point_inside(lambda b, p: False, "B", []) is True)
+    check("bbox_overlap 重叠/贴合/分离",
+          _bbox_overlap((0, 0, 0, 10, 10, 10), (5, 5, 5, 15, 15, 15))
+          and _bbox_overlap((0, 0, 0, 10, 10, 10), (10, 10, 10, 20, 20, 20))
+          and not _bbox_overlap((0, 0, 0, 10, 10, 10),
+                                (20, 20, 20, 30, 30, 30)))
+    check("bbox_overlap 容差与残缺输入",
+          _bbox_overlap((0, 0, 0, 10, 10, 10), (10.03, 0, 0, 20, 10, 10), 0.05)
+          and not _bbox_overlap((0, 0, 0, 10, 10, 10),
+                                (10.03, 0, 0, 20, 10, 10), 0.0)
+          and not _bbox_overlap(None, (0, 0, 0, 1, 1, 1))
+          and not _bbox_overlap((0, 0, 0), (0, 0, 0, 1, 1, 1))
+          and not _bbox_overlap((0, 0, 0, "x", 1, 1), (0, 0, 0, 1, 1, 1)))
+    check("merge_face_bboxes 合并与空残缺表",
+          _merge_face_bboxes([(0, 0, 0, 4, 4, 4), (2, 2, 2, 9, 9, 9), None])
+          == (0.0, 0.0, 0.0, 9.0, 9.0, 9.0)
+          and _merge_face_bboxes([]) is None
+          and _merge_face_bboxes([(0, 0, 0)]) is None
+          and _merge_face_bboxes([(0, 0, 0, "x", 4, 4), (1, 1, 1, 2, 2, 2)])
+          == (1.0, 1.0, 1.0, 2.0, 2.0, 2.0))
+    _hole_ok = (None, 16, 7.5, 10.0, 0.0, -50.0,
+                (2.5, -7.5, -70.0, 17.5, 7.5, -30.0))
+    _hole_eaten = (None, 16, 7.5, 10.0, 0.0, -50.0,
+                   (2.5, -7.5, -70.0, 17.5, 7.5, -45.0))
+    check("broken_holes: 完好不误报/吃掉/缩边判冲突",
+          _broken_holes([_hole_ok], [_hole_ok]) == []
+          and len(_broken_holes([_hole_ok], [])) == 1
+          and len(_broken_holes([_hole_ok], [_hole_eaten])) == 1
+          and len(_broken_holes([_hole_ok], [_hole_ok, _hole_eaten])) == 0
+          and _broken_holes([], [_hole_ok]) == []
+          and _broken_holes(None, None) == [])
+    check("hole_rows 只留曲面并容错残缺行",
+          len(_hole_rows([(1, 20, 0.0, 0, 0, 0, (0, 0, 0, 1, 1, 1)),
+                          (2, 16, 7.5, 1, 2, 3, (0, 0, 0, 9, 9, 9)),
+                          None, (3, 16, "x")])) == 1
+          and _hole_rows([]) == [] and _hole_rows(None) == [])
+    check("mold rule 解析: 精确>关键词>类型默认",
+          _rule_for("CX", [("CX", {"conflict_check": False, "blend_step_r": 5.0})])
+          == {"conflict_check": False, "blend_step_r": 5.0}
+          and _rule_for("STD:螺丝-45.prt",
+                        [("STD:螺丝", {"conflict_check": True, "w": 1})])
+          == {"conflict_check": True, "w": 1}
+          and _rule_for("STD:其他.prt", []) == {"conflict_check": True}
+          and _rule_for("FLB", []) == {"conflict_check": False}
+          and _rule_for("", []) == {"conflict_check": False}
+          and _kw_hits("STD:螺丝", "STD:螺丝-45.prt")
+          and not _kw_hits("CX", "CX"))
+    check("MOLD_CUT_RULES 配置行格式合法",
+          all(isinstance(k, str) and isinstance(r, dict)
+              for k, r in MOLD_CUT_RULES))
+    check("is_sliver/grow/extents 薄片与包围盒工具",
+          _is_sliver((0, 0, 0, 0.2, 3.0, 8.0), 5.0)
+          and _is_sliver((0, 0, 0, 1.0, 1.0, 3.0), 5.0)
+          and not _is_sliver((0, 0, 0, 15.0, 15.0, 0.0), 5.0)
+          and not _is_sliver((0, 0, 0, 15.0, 15.0, 41.7), 5.0)
+          and _grow((0, 0, 0, 10, 10, 10), 2.0) == (-2.0, -2.0, -2.0, 12.0, 12.0, 12.0)
+          and _grow(None, 2.0) is None
+          and _extents((0, 0, 0, 10, 20, 30)) == (10.0, 20.0, 30.0)
+          and _extents(None) == (0.0, 0.0, 0.0))
+    check("body_matches_bbox 按尺寸找体(中心定位片)",
+          _body_matches_bbox((0, 0, 0, 15.0, 15.0, 41.7023),
+                             [15.0, 15.0, 41.7023], 0.8)
+          and _body_matches_bbox((0, 0, 0, 15.4, 14.8, 41.5),
+                                 [15.0, 15.0, 41.7023], 0.8)
+          and not _body_matches_bbox((0, 0, 0, 15.0, 15.0, 46.7),
+                                     [15.0, 15.0, 41.7023], 0.8)
+          and not _body_matches_bbox(None, [15, 15, 41.7], 0.8)
+          and not _body_matches_bbox((0, 0, 0, 1, 1, 1), None, 0.8))
+
+    # 13.x 布尔特征 with_failed 回归: 失败名单对账 + 失败工具体只减一次
+    # (修复前: 单工具失败会在内部降级循环里被重复减第二次)
+    class _MFeat:
+        def __init__(self, tag):
+            self.Tag = tag
+
+        def SetName(self, _n):
+            pass
+
+    class _MBody:
+        def __init__(self, tag):
+            self.Tag = tag
+            self.Name = ""
+
+    class _MFeatures:
+        def CreateSubtractFeature(self, _target, _a, tools, _retain, _b):
+            self.calls.append(len(tools))
+            if len(tools) > 1:
+                raise RuntimeError("模拟本机 NX: 合并签名不符")
+            if id(tools[0]) in self.ok_ids:
+                return _MFeat(tools[0].Tag)
+            raise RuntimeError("no intersection")
+
+    class _MWorkPart:
+        def __init__(self, ok_ids):
+            f = _MFeatures()
+            f.ok_ids = ok_ids
+            f.calls = []
+            self.Features = f
+
+    _t_ok1, _t_ok2, _t_bad = _MBody(11), _MBody(12), _MBody(13)
+    _wp = _MWorkPart({id(_t_ok1), id(_t_ok2)})
+    _fs, _fd = _bool_feature(_wp, "subtract", None,
+                             [_t_ok1, _t_bad, _t_ok2], "T",
+                             lambda m: None, with_failed=True)
+    _n0 = len(_wp.Features.calls)
+    _fs1, _fd1 = _bool_feature(_wp, "subtract", None, [_t_bad], "T",
+                               lambda m: None, with_failed=True)
+    check("bool_feature with_failed: 失败名单对账+失败工具只减一次",
+          len(_fs) == 2 and _fd == [_t_bad]
+          and _fs1 == [] and _fd1 == [_t_bad]
+          and len(_wp.Features.calls) - _n0 == 1
+          and _wp.Features.calls[0] == 3,
+          "calls=%s" % _wp.Features.calls)
+    _fs2 = _bool_feature(_MWorkPart({id(_t_ok1)}), "subtract", None,
+                         [_t_ok1], "T", lambda m: None)
+    check("bool_feature 兼容: 默认(不带 with_failed)返回特征列表",
+          isinstance(_fs2, list) and len(_fs2) == 1)
+
+    # 13.x 合并减回滚保护回归: NX 多工具减可能已减入部分成员才抛异常,
+    # session 在场时失败必须回滚(防"图上已减、日志报失败"账实不符)
+    import types as _types_mod
+    _nx = _types_mod.ModuleType("NXOpen")
+
+    class _MarkVis:
+        Invisible = 1
+
+    class _NXSession:
+        MarkVisibility = _MarkVis
+
+    _nx.Session = _NXSession
+    sys.modules["NXOpen"] = _nx
+    try:
+        class _MSession:
+            def __init__(self):
+                self.calls = []
+
+            def SetUndoMark(self, _vis, _s):
+                self.calls.append("mark")
+                return 77
+
+            def UndoToMark(self, _mk, _s):
+                self.calls.append("undo")
+                return True
+
+        _sess_bad = _MSession()
+        _fs3, _fd3 = _bool_feature(_wp, "subtract", None,
+                                   [_t_ok1, _t_bad], "T",
+                                   lambda m: None, with_failed=True,
+                                   session=_sess_bad)
+        check("bool_feature 合并减失败: 回滚部分效果后逐个对账",
+              _sess_bad.calls == ["mark", "undo"]
+              and len(_fs3) == 1 and _fd3 == [_t_bad],
+              "calls=%s" % _sess_bad.calls)
+
+        class _MFeaturesOk:
+            def __init__(self):
+                self.calls = []
+
+            def CreateSubtractFeature(self, _target, _a, tools, _r, _b):
+                self.calls.append(len(tools))
+                return [_MFeat(99)]
+
+        class _MWorkPartOk:
+            def __init__(self):
+                self.Features = _MFeaturesOk()
+
+        _sess_ok = _MSession()
+        _fs4, _fd4 = _bool_feature(_MWorkPartOk(), "subtract", None,
+                                   [_t_ok1, _t_ok2], "T",
+                                   lambda m: None, with_failed=True,
+                                   session=_sess_ok)
+        check("bool_feature 合并减成功: 只挂标记不回滚",
+              _fd4 == [] and len(_fs4) == 1
+              and _sess_ok.calls == ["mark"], str(_sess_ok.calls))
+    finally:
+        sys.modules.pop("NXOpen", None)
 
     # 12. 真实图纸(可选)
     real = dxf_path
