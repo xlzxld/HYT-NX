@@ -54,11 +54,14 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
 
     actual_dxf = dxf_path
     is_temp_dxf = False
+    is_cache_dxf_file = False
     if dxf_path.lower().endswith(".dwg"):
-        from cad3d.geom.dwg_converter import convert_dwg_to_dxf
+        from cad3d.geom.dwg_converter import convert_dwg_to_dxf, is_cache_dxf
         try:
             actual_dxf = convert_dwg_to_dxf(dxf_path, log=log)
-            is_temp_dxf = True
+            # 缓存产物保留供下次复用; 仅真正的一次性临时文件随流水线销毁
+            is_cache_dxf_file = is_cache_dxf(actual_dxf)
+            is_temp_dxf = not is_cache_dxf_file
         except Exception as ex:
             log("【错误】DWG 转 DXF 失败: %s" % ex)
             try:
@@ -175,6 +178,8 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
                 log("【DWG 转换】临时 DXF 文件已安全移除清理。")
             except Exception as ex_del:
                 log("【DWG 转换】清理临时文件提示: %s" % ex_del)
+        elif is_cache_dxf_file:
+            log("【DWG 转换】缓存 DXF 已保留(logs/ 下, 下次同图免转换)。")
 
 
 def execute_pipeline(dxf, params, jrt, std_rules, session,

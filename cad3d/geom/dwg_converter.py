@@ -14,13 +14,74 @@ import glob
 import time
 import uuid
 import shutil
+import hashlib
 import subprocess
 from cad3d.core.paths import script_dir, _logs_dir, _get_cfg
+from cad3d.core.config import _cfg_bool, _cfg_int
+
+# DWG 转换缓存文件名前缀(供 runner 判"缓存文件不随流水线销毁")
+_CACHE_PREFIX = "_dwg_cache_"
 
 
 class DwgConversionError(Exception):
     """DWG 转换失败异常类。"""
     pass
+
+
+def _cache_enabled():
+    """DWG→DXF 转换结果缓存开关(nx_std_config.py 的 DWG_CACHE_ENABLE, 默认开)。"""
+    return _cfg_bool("DWG_CACHE_ENABLE", True)
+
+
+def _dwg_cache_key(dwg_path):
+    """(纯逻辑, 可离线测) DWG 指纹 → 缓存键。
+
+    键 = sha1(绝对路径小写 | 字节数 | mtime 整秒) 前 16 位: 同一图纸未改动时
+    键稳定; 内容/路径/修改时间任一变化即失配自动重转。
+    """
+    st = os.stat(dwg_path)
+    raw = "%s|%d|%d" % (os.path.abspath(dwg_path).lower(),
+                        st.st_size, int(st.st_mtime))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_path_for(dwg_path):
+    """DWG → 对应缓存 DXF 文件路径(logs/ 下, 文件名内嵌指纹键)。"""
+    return os.path.join(_logs_dir(), "%s%s.dxf"
+                        % (_CACHE_PREFIX, _dwg_cache_key(dwg_path)))
+
+
+def is_cache_dxf(path):
+    """(纯逻辑, 可离线测) 路径是否为本模块生成的 DWG 转换缓存文件。"""
+    return bool(path) and os.path.basename(str(path)).startswith(_CACHE_PREFIX)
+
+
+def lookup_dwg_cache(dwg_path, log=None):
+    """查询 DWG 转换缓存: 命中返回缓存 DXF 路径, 否则 None。
+
+    命中条件: 缓存开关开 + 缓存文件存在且非空 + 头部含 DXF SECTION 段标记
+    (防半截损坏文件混进流水线)。DWG 指纹变化时键自然失配, 无需显式失效。
+    """
+    if not _cache_enabled():
+        return None
+    if not dwg_path or not os.path.isfile(dwg_path):
+        return None
+    try:
+        cpath = _cache_path_for(dwg_path)
+    except OSError:
+        return None
+    try:
+        if not os.path.isfile(cpath) or os.path.getsize(cpath) == 0:
+            return None
+        with open(cpath, "rb") as f:
+            head = f.read(1024)
+        if b"SECTION" not in head:
+            if log:
+                log("【DWG 转换】缓存文件损坏(非 DXF 头), 忽略并重新转换。")
+            return None
+    except OSError:
+        return None
+    return cpath
 
 
 def find_acad_executable():
@@ -125,19 +186,30 @@ def find_acad_executable():
     return None, False
 
 
-def _clean_stale_temp_files(max_age_seconds=3600):
-    """清理 logs 目录下超时的历史残留临时转换文件。"""
+def _clean_stale_temp_files(max_age_seconds=3600, cache_max_age_seconds=None):
+    """清理 logs 目录下超时的历史残留临时转换文件与过期缓存。
+
+    临时脚本/半截 DXF 按 max_age_seconds(1 小时)清理; DWG 转换缓存按
+    cache_max_age_seconds(DWG_CACHE_MAX_AGE, 默认 7 天)过期清理。
+    """
+    if cache_max_age_seconds is None:
+        cache_max_age_seconds = _cfg_int("DWG_CACHE_MAX_AGE", 7 * 86400)
     try:
         ld = _logs_dir()
         now = time.time()
         for f in os.listdir(ld):
             if f.startswith(("_temp_dwg_", "_dwg_scr_")):
-                full = os.path.join(ld, f)
-                try:
-                    if now - os.path.getmtime(full) > max_age_seconds:
-                        os.remove(full)
-                except Exception:
-                    pass
+                limit = max_age_seconds
+            elif f.startswith(_CACHE_PREFIX):
+                limit = cache_max_age_seconds
+            else:
+                continue
+            full = os.path.join(ld, f)
+            try:
+                if now - os.path.getmtime(full) > limit:
+                    os.remove(full)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -159,6 +231,17 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
     """
     if not dwg_path or not os.path.isfile(dwg_path):
         raise DwgConversionError("指定的 DWG 图纸文件不存在:\n%s" % (dwg_path or "(空)"))
+
+    # 转换结果缓存命中: 图纸未变更时免起 AutoCAD 直接复用上次产物
+    # (显式指定 out_dxf 的调用方以其指定路径为准, 不查也不写缓存)
+    use_cache = _cache_enabled() and out_dxf is None
+    if use_cache:
+        cached = lookup_dwg_cache(dwg_path, log=log)
+        if cached is not None:
+            if log:
+                log("【DWG 转换】命中本地缓存(图纸未变更), 免转换直接复用: %s"
+                    % os.path.basename(cached))
+            return cached
 
     _clean_stale_temp_files()
 
@@ -250,5 +333,20 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
     if log:
         log("【DWG 转换】转换成功: 大小 %.1f KB, 耗时 %.2f 秒"
             % (os.path.getsize(out_dxf) / 1024.0, elapsed))
+
+    # 转换成功后经完整性校验再入缓存(先落临时文件、os.replace 原子转正,
+    # 超时/失败残留的半截文件永远不会污染缓存); 关闭缓存或显式指定
+    # out_dxf 时保持旧版即用即销/按指定路径返回, 不写缓存。
+    if use_cache:
+        try:
+            cache_dst = _cache_path_for(dwg_path)
+            os.replace(out_dxf, cache_dst)
+            if log:
+                log("【DWG 转换】产物已入缓存(下次同图免转换): %s"
+                    % os.path.basename(cache_dst))
+            return os.path.abspath(cache_dst)
+        except OSError as ex:
+            if log:
+                log("【DWG 转换】缓存落盘失败(本次仍可用, 下次重转): %s" % ex)
 
     return os.path.abspath(out_dxf)
