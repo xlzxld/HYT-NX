@@ -49,7 +49,9 @@ from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
     _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow
 )
-from cad3d.modeling.stdparts import _bool_feature, _place_delta, _rot_xy
+from cad3d.modeling.stdparts import (
+    _bool_feature, _place_delta, _rot_xy, _batch_delete, _group_bool_plan
+)
 from cad3d.modeling.nx_compat import _matrix3x3
 from cad3d.modeling.mold_cut import (
     _any_point_inside, _bbox_overlap, _body_matches_bbox, _broken_holes,
@@ -58,7 +60,10 @@ from cad3d.modeling.mold_cut import (
 )
 from cad3d.core.constants import (MOLD_AUDIT_VOLUME, MOLD_BBOX_TOL,
                                   MOLD_CUT_RULES, MOLD_TRIAL_CUT)
-from cad3d.modeling.extrude import modeling_ents, build_layer
+from cad3d.modeling.extrude import (
+    modeling_ents, build_layer, _merge_groups, _merge_note,
+    _merge_extrude_enabled
+)
 from cad3d.ui.dlx_builder import (
     _blk_enum, build_dlx, build_selection_dlx, build_std_dlx, _group_item,
     _blk_label
@@ -1054,17 +1059,27 @@ def selftest(dxf_path=None):
 
         _fixture_dwg = os.path.join(script_dir(), "test", "fixtures", "3Dtest.dwg")
         if _acad_exe and os.path.isfile(_fixture_dwg):
-            _conv_dxf = convert_dwg_to_dxf(_fixture_dwg)
+            _conv_logs = []
+            _conv_dxf = convert_dwg_to_dxf(_fixture_dwg, log=_conv_logs.append)
             check("DWG 后台自动转 DXF 生成有效文件",
                   os.path.isfile(_conv_dxf) and os.path.getsize(_conv_dxf) > 1000)
             _dwg_layers, _dwg_stats = parse_dxf(_conv_dxf)
             check("DWG 转换产物 DXF 可被核心解析器完整解析",
                   "FLB" in _dwg_layers and _dwg_stats["total"] > 50)
+            # v2.4 提速: 同图二次转换应命中缓存(不再起 AutoCAD, 秒回同一路径)
+            _hit_logs = []
+            _hit_t0 = time.time()
+            _conv_hit = convert_dwg_to_dxf(_fixture_dwg, log=_hit_logs.append)
+            _hit_dt = time.time() - _hit_t0
+            check("DWG 转换缓存二次命中(免起 AutoCAD 复用)",
+                  _conv_hit == _conv_dxf
+                  and any("命中本地缓存" in m for m in _hit_logs),
+                  "耗时 %.3fs" % _hit_dt)
             try:
                 os.remove(_conv_dxf)
             except Exception:
                 pass
-            check("DWG 临时 DXF 缓存安全即用即销", not os.path.isfile(_conv_dxf))
+            check("DWG 缓存文件清理后即删", not os.path.isfile(_conv_dxf))
         else:
             # 异常防御分支验证
             _bad_dwg_caught = False
@@ -1288,8 +1303,164 @@ def selftest(dxf_path=None):
         check("bool_feature 合并减成功: 只挂标记不回滚",
               _fd4 == [] and len(_fs4) == 1
               and _sess_ok.calls == ["mark"], str(_sess_ok.calls))
+
+        # 13.x 批量删除回归(v2.4 提速): N 个对象一次全树更新, 失败降级逐个
+        class _MUpdOk:
+            def __init__(self):
+                self.batches = []
+                self.updates = 0
+
+            def AddToDeleteList(self, objs):
+                self.batches.append(len(objs))
+
+            def DoUpdate(self, _mk):
+                self.updates += 1
+
+        class _MSessUpd:
+            def __init__(self, upd):
+                self.UpdateManager = upd
+
+            def SetUndoMark(self, _v, _s):
+                return 1
+
+        _upd = _MUpdOk()
+        _n3 = _batch_delete(_MSessUpd(_upd), ["a", "b", "c"],
+                            lambda m: None, "测试")
+        check("batch_delete 批量路径: N 对象合并一次更新",
+              _n3 == 3 and _upd.batches == [3] and _upd.updates == 1,
+              "batches=%s updates=%d" % (_upd.batches, _upd.updates))
+
+        class _MUpdBad:
+            def __init__(self):
+                self.singles = 0
+
+            def AddToDeleteList(self, objs):
+                if len(objs) > 1:
+                    raise RuntimeError("模拟批量删除被 NX 拒绝")
+                self.singles += 1
+
+            def DoUpdate(self, _mk):
+                return 0
+
+        class _MSessUpd2:
+            def __init__(self):
+                self.UpdateManager = _MUpdBad()
+
+            def SetUndoMark(self, _v, _s):
+                return 1
+
+        _bd_msgs = []
+        _sess_bd = _MSessUpd2()
+        _n4 = _batch_delete(_sess_bd, ["a", "b"], _bd_msgs.append, "测试")
+        check("batch_delete 降级路径: 批量失败自动转逐个删",
+              _n4 == 2 and _sess_bd.UpdateManager.singles == 2
+              and any("降级" in m for m in _bd_msgs))
+
+        _n5 = _batch_delete(None, ["a"], lambda m: None, "空会话")
+        check("batch_delete 空对象/空会话安全返回 0",
+              _n5 == 0 and _batch_delete(_MSessUpd(_MUpdOk()), [],
+                                         lambda m: None, "空") == 0)
     finally:
         sys.modules.pop("NXOpen", None)
+
+    # 13.y v2.4 提速回归: 布尔计划分组 / 合并拉伸分组 / DWG 转换缓存
+    _tg1, _tg2 = object(), object()
+    _tools_a, _tools_b = [1], [2, 3]
+    _grp = _group_bool_plan([
+        (_tg1, "subtract", "甲.prt", 1, "SUBTRACT", _tools_a),
+        (_tg2, "subtract", "乙.prt", 1, "SUBTRACT", _tools_b),
+        (_tg1, "subtract", "甲.prt", 2, "PLACE_SUBTRACT", _tools_b),
+        (_tg1, "unite", "丙.prt", 1, "UNITE", _tools_a),
+    ])
+    check("bool 计划按(目标,操作)保序分组(合并提交前提)",
+          len(_grp) == 3
+          and _grp[0][0] is _tg1 and _grp[0][1] == "subtract"
+          and [(f, i) for f, i, _b, _t in _grp[0][2]]
+          == [("甲.prt", 1), ("甲.prt", 2)]
+          and _grp[1][0] is _tg2 and _grp[1][1] == "subtract"
+          and _grp[2][0] is _tg1 and _grp[2][1] == "unite",
+          "组数=%d" % len(_grp))
+
+    _e1, _e2, _e3 = {"pick": _tg1}, {"pick": _tg1}, {"pick": None}
+    check("merge_groups: subtract 按目标分组+无目标独立组",
+          _merge_groups("subtract", [_e1, _e2, _e3])
+          == [(_tg1, [_e1, _e2]), (None, [_e3])])
+    check("merge_groups: 非 subtract 全并一组",
+          _merge_groups("none", [_e1, _e2]) == [(None, [_e1, _e2])])
+    check("merge_groups: 空表安全", _merge_groups("subtract", []) == []
+          and _merge_groups("none", []) == [(None, [])])
+    check("合并拉伸开关默认开 + 日志后缀",
+          _merge_extrude_enabled() is True
+          and _merge_note(True) == ", 合并拉伸生效"
+          and _merge_note(False) == "")
+
+    from cad3d.geom import dwg_converter as _dwc
+    _td2 = _tf.mkdtemp(prefix="cad3d_dwgcache_")
+    _src_dwg = os.path.join(_td2, "样图.dwg")
+    _cache_probe = None
+    try:
+        with io.open(_src_dwg, "wb") as f:
+            f.write(b"FAKE-DWG-1")
+        os.utime(_src_dwg, (1000000000, 1000000000))
+        _ka = _dwc._dwg_cache_key(_src_dwg)
+        check("DWG 缓存键: 同路径同大小同时间稳定",
+              _ka == _dwc._dwg_cache_key(_src_dwg) and len(_ka) == 16)
+        with io.open(_src_dwg, "wb") as f:
+            f.write(b"FAKE-DWG-2")      # 同长度不同内容
+        os.utime(_src_dwg, (1000000000, 1000000000))
+        _same = _dwc._dwg_cache_key(_src_dwg)
+        with io.open(_src_dwg, "ab") as f:
+            f.write(b"X")               # 大小变化
+        _kb = _dwc._dwg_cache_key(_src_dwg)
+        os.utime(_src_dwg, (1000000900, 1000000900))
+        _kc = _dwc._dwg_cache_key(_src_dwg)
+        check("DWG 缓存键: 大小/mtime 变化即失配(改图自动重转)",
+              _same == _ka and _kb != _ka and _kc != _kb)
+        check("is_cache_dxf 前缀判定",
+              _dwc.is_cache_dxf(os.path.join("logs", "_dwg_cache_ab12.dxf"))
+              and not _dwc.is_cache_dxf(os.path.join("logs", "_temp_dwg_x.dxf"))
+              and not _dwc.is_cache_dxf("")
+              and not _dwc.is_cache_dxf(None))
+
+        _cache_probe = _dwc._cache_path_for(_src_dwg)
+        with io.open(_cache_probe, "wb") as f:
+            f.write(b"  0\nSECTION\n  2\nENTITIES\n")
+        check("DWG 缓存命中: 同图直接复用缓存文件",
+              _dwc.lookup_dwg_cache(_src_dwg) == _cache_probe)
+        with io.open(_cache_probe, "wb") as f:
+            f.write(b"")
+        check("DWG 缓存未命中: 空文件忽略", _dwc.lookup_dwg_cache(_src_dwg) is None)
+        with io.open(_cache_probe, "wb") as f:
+            f.write(b"garbage-not-dxf")
+        check("DWG 缓存未命中: 损坏文件不进流水线",
+              _dwc.lookup_dwg_cache(_src_dwg) is None)
+        with io.open(_cache_probe, "wb") as f:
+            f.write(b"  0\nSECTION\n")
+        _orig_ce = _dwc._cache_enabled
+        _dwc._cache_enabled = lambda: False
+        try:
+            check("DWG 缓存未命中: 开关关闭(DWG_CACHE_ENABLE=False)",
+                  _dwc.lookup_dwg_cache(_src_dwg) is None)
+        finally:
+            _dwc._cache_enabled = _orig_ce
+        check("DWG 缓存未命中: 图纸文件不存在",
+              _dwc.lookup_dwg_cache(os.path.join(_td2, "无此图.dwg")) is None)
+
+        _stale = os.path.join(_logs_dir(), "_dwg_cache_stale_selftest.dxf")
+        with io.open(_stale, "wb") as f:
+            f.write(b"  0\nSECTION\n")
+        _old_t = time.time() - 8 * 86400
+        os.utime(_stale, (_old_t, _old_t))
+        _dwc._clean_stale_temp_files()
+        check("DWG 缓存过期自动清理(默认 7 天)", not os.path.isfile(_stale))
+    finally:
+        for _pf in (_cache_probe,):
+            if _pf and os.path.isfile(_pf):
+                try:
+                    os.remove(_pf)
+                except OSError:
+                    pass
+        _sh.rmtree(_td2, ignore_errors=True)
 
     # 12. 真实图纸(可选)
     real = dxf_path
