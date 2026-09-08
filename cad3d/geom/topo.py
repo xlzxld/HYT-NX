@@ -399,14 +399,17 @@ def collect_yxb_anchors(yxb_ents, cx_ents, tol=YXB_COINCIDE_TOL,
                         longaxis_deg=YXB_TEMPLATE_LONGAXIS_DEG):
     """(纯逻辑, 可离线测) YXB 压线板锚点 = 贴合边中点 + 逐板轮廓自动判向。
 
-    定案(26079 前跑板实图 + 3D 实物 + 用户拍板"横跨槽"): 每块压线板轮廓
-    (YXB 连通组)与 CX 出线槽线恰有一条共线重合的"贴合边", 模板原点即
-    贴合边中点——
+    定案(26079 前跑板实图 + 3D 实物 + 实机 7/11 板实证 + 用户拍板): 每块
+    压线板轮廓(YXB 连通组)与 CX 出线槽线恰有一条共线重合的"贴合边", 模板
+    原点即贴合边中点——
       放置点 = 贴合边中点(同组多条共线重合段取投影并集中点, 防拆段);
       旋转角 = 朝向 f(垂直贴合边、指向轮廓所在侧=背离槽)减 longaxis_deg
                (模板贴合长边局部方向角): longaxis_deg=0 时模板 16.6 长边
                指向 f, 即长边垂直于槽=横跨安装; 同图多板朝向各异时逐板
-               独立求解, 不量化角度。
+               独立求解, 不量化角度;
+      水平槽壁补偿(实机定案): 贴合边沿 X 向(f=±Y, 板在南北槽壁)的板在
+               横跨基础上原地加 180°——短端(凸耳)朝槽外、长端(板体)朝槽
+               里; 竖直槽壁(f=±X)不翻转。
     判定条件: 两线方向夹角 ≈0(正弦<0.01)且偏距≤tol, 重叠≥YXB 边长一半
     (贴合边必须基本落在 CX 线上, 压线板边缘擦过 CX 线端头不算)。
     返回 (anchors, warns): anchors=[(cx, cy, 角度deg)] 同中点去重;
@@ -500,8 +503,14 @@ def collect_yxb_anchors(yxb_ents, cx_ents, tol=YXB_COINCIDE_TOL,
         side = 1 if pos >= neg else -1
         fx, fy = -u[1] * side, u[0] * side          # 朝向(垂直贴合边指向轮廓侧=背离槽)
         theta = math.degrees(math.atan2(fy, fx) - math.radians(longaxis_deg))
+        if abs(fy) > abs(fx):
+            # 水平槽壁补偿(实机 7/11 板实证): 南北槽壁的板原地加 180°,
+            # 短端(凸耳)朝槽外、长端(板体)朝槽里; 竖直槽壁(f=±X)不翻
+            theta += 180.0
         if theta <= -180.0:
             theta += 360.0                          # 归一到 (-180, 180]
+        if theta > 180.0:
+            theta -= 360.0
         theta += 0.0                                # 消除 atan2 负零(-0.0)
         anchors.append((ax, ay, theta))
     seen, dedup = {}, []
