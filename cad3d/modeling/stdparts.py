@@ -300,9 +300,70 @@ def _usable_parts(rules, log):
     return usable, unusable
 
 
+def _batch_delete(session, objs, log, label):
+    """(提速) N 个对象合并为一次全树更新删除, 失败降级逐个删。
+
+    旧版逐锚点删除 = 每锚点一次 DoUpdate(全模型更新, 随特征树增大线性变慢);
+    合并后一次更新删完, 删除失败时逐个重试(语义与旧版一致, 仅日志合并)。
+    返回实际提交删除的对象数(仅供诊断)。"""
+    import NXOpen as nx
+
+    objs = [o for o in objs if o is not None]
+    if not objs or session is None:
+        return 0
+    try:
+        session.UpdateManager.AddToDeleteList(list(objs))
+        session.UpdateManager.DoUpdate(
+            session.SetUndoMark(nx.Session.MarkVisibility.Invisible,
+                                "CAD3D 批量删除" + label))
+        return len(objs)
+    except Exception as ex:
+        log("  批量删除%s失败(%s), 降级逐个删除。" % (label, ex))
+    n = 0
+    for o in objs:
+        try:
+            session.UpdateManager.AddToDeleteList([o])
+            session.UpdateManager.DoUpdate(
+                session.SetUndoMark(nx.Session.MarkVisibility.Invisible,
+                                    "CAD3D 删除" + label))
+            n += 1
+        except Exception as ex:
+            log("  单个删除%s失败(跳过): %s" % (label, ex))
+    return n
+
+
+def _group_bool_plan(plan):
+    """(纯逻辑, 可离线测) 布尔计划按 (目标体, 操作) 保序分组 → 合并执行。
+
+    plan = [(target, op, fname, 序号, bool_mode, tools), ...];
+    返回 [(target, op, [(fname, 序号, bool_mode, tools), ...]), ...]。
+    同目标的同类操作合并成一次多工具布尔(NX 一次提交一次更新),
+    失败仍由 _bool_feature 内部逐工具重试兜底, 几何结果与逐锚点调用等价
+    (减法/并法对不相交工具体均满足结合律, 相交工具由 parasolid 内部处理)。
+    """
+    groups, keys = {}, []
+    for target, op, fname, idx, bm, tools in plan:
+        k = (id(target), op)
+        if k not in groups:
+            groups[k] = (target, op, [])
+            keys.append(k)
+        groups[k][2].append((fname, idx, bm, tools))
+    return [groups[k] for k in keys]
+
+
 def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, log,
                     stats=None):
-    """阶段 6: 按规则放置 stdparts 标准件(独立体)并按需布尔。"""
+    """阶段 6: 按规则放置 stdparts 标准件(独立体)并按需布尔。
+
+    (v2.4 提速) 放置与布尔解耦为两段执行, 几何结果与旧版逐锚点完全一致:
+      段1 逐锚点: 装配组件 → 提升体(组件不即时删, 只登记待删清单);
+      段2 收尾:   ①全部组件一次批量删(1 次全树更新)
+                  ②同 (目标体, 操作) 的布尔合并成一次多工具提交
+                  ③SUBTRACT 生效工具一次批量删。
+    旧版每锚点 2 次显式 DoUpdate + 1 次独立布尔提交, N 锚点 ≈ 3N 次全树
+    更新; 现固定 2 次 + 每目标每操作 1 次(提升体为非关联特征, 删除组件
+    时机后移不影响其有效性——旧版本就是先删组件再用提升体布尔的)。
+    """
     import NXOpen
     import NXOpen as nx
     import NXOpen.Features
@@ -317,6 +378,9 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
     no_ref = []
     log("【标准件】开始: %d 个件规则。" % len(std_rules))
     ca = work_part.ComponentAssembly
+    pending_comps = []          # 段2 统一批量删除的临时组件
+    bool_plan = []              # 段2 合并执行的布尔计划
+    bool_counts = {}            # fname -> 布尔生效锚点数(段2 结算后补日志)
     for fname in sorted(std_rules):
         rule = std_rules[fname]
         if not _rule_usable(rule):
@@ -364,7 +428,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
         if auto_rot:
             log("【标准件】%s: YXB 自动定向已启用(横跨槽: 长边垂直于槽, "
                 "放置点=贴合边中点, 角度逐板取自 2D 轮廓)。" % fname)
-        n_ok = n_bool = n_body = 0
+        n_ok = n_body = 0
         for i, anch in enumerate(anchors):
             cx, cy = anch[0], anch[1]
             ang = float(anch[2]) if auto_rot else 0.0
@@ -391,14 +455,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
             for _tb in tools_all:                   # 体类型标记(模具开框规则用)
                 _mark_type(_tb, "STD:" + fname)
             n_body += len(tools_all)
-            try:
-                session.UpdateManager.AddToDeleteList([comp])
-                session.UpdateManager.DoUpdate(
-                    session.SetUndoMark(nx.Session.MarkVisibility.Invisible,
-                                        "CAD3D 删组件"))
-            except Exception as ex:
-                log("  %s 位置 %d 组件删除失败(提升体不受影响): %s"
-                    % (fname, i + 1, ex))
+            pending_comps.append(comp)              # (提速)延到段2 一次删
 
             bm = rule["bool_mode"]
             if bm in ("SUBTRACT", "PLACE_SUBTRACT", "UNITE") and tools_all:
@@ -409,35 +466,45 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                     std_stats["bodies"].extend(tools_all)
                 else:
                     op = "unite" if bm == "UNITE" else "subtract"
-                    fs = _bool_feature(work_part, op, target, tools_all,
-                                       "%s%s_%s_%d" % (FEATURE_PREFIX,
-                                                       "UNI" if op == "unite" else "SUB",
-                                                       stem, i + 1), log,
-                                       retain_tools=True)
-                    if fs:
-                        n_bool += 1
-                    if bm == "SUBTRACT":
-                        if fs:
-                            try:
-                                session.UpdateManager.AddToDeleteList(tools_all)
-                                session.UpdateManager.DoUpdate(
-                                    session.SetUndoMark(
-                                        nx.Session.MarkVisibility.Invisible,
-                                        "CAD3D 删多余体"))
-                            except Exception:
-                                pass
-                        else:
-                            log("  %s 位置 %d: 布尔未生效, 独立体保留。"
-                                % (fname, i + 1))
-                            std_stats["bodies"].extend(tools_all)
-                    else:
-                        std_stats["bodies"].extend(tools_all)
+                    bool_plan.append((target, op, fname, i + 1, bm, tools_all))
             elif tools_all:
                 std_stats["bodies"].extend(tools_all)
-        log("【标准件】%s: 放置 %d 处, 独立体 %d 个%s (Z=%.4g, %s)。"
-            % (fname, n_ok, n_body,
-               (", 布尔 %d 处" % n_bool) if n_bool else "",
-               z, rule["bool_mode"]))
+        log("【标准件】%s: 放置 %d 处, 独立体 %d 个 (Z=%.4g, %s)。"
+            % (fname, n_ok, n_body, z, rule["bool_mode"]))
+
+    # ── 段2: 统一清理与合并布尔 ────────────────────────────────────────────
+    _batch_delete(session, pending_comps, log, "临时组件")
+    tools_to_delete = []
+    for gi, (target, op, items) in enumerate(_group_bool_plan(bool_plan), 1):
+        group_tools = []
+        for fname, _idx, _bm, tools in items:
+            group_tools.extend(tools)
+        _stem = os.path.splitext(items[0][0])[0]
+        fs, failed = _bool_feature(work_part, op, target, group_tools,
+                                   "%s%s_%s_G%d" % (FEATURE_PREFIX,
+                                                    "UNI" if op == "unite" else "SUB",
+                                                    _stem, gi),
+                                   log, retain_tools=True, with_failed=True,
+                                   session=session)
+        std_stats["features"] += len(fs or [])
+        failed_ids = {id(t) for t in (failed or [])}
+        for fname, idx, bm, tools in items:
+            ok_any = any(id(t) not in failed_ids for t in tools)
+            if ok_any:
+                bool_counts[fname] = bool_counts.get(fname, 0) + 1
+            if bm == "SUBTRACT":
+                if ok_any:
+                    # 与旧版一致: 布尔生效即整组工具删除(零相交工具同为废料)
+                    tools_to_delete.extend(tools)
+                else:
+                    log("  %s 位置 %d: 布尔未生效, 独立体保留。" % (fname, idx))
+                    std_stats["bodies"].extend(tools)
+            else:
+                # PLACE_SUBTRACT / UNITE: 工具体保留为独立体(旧版同款)
+                std_stats["bodies"].extend(tools)
+    _batch_delete(session, tools_to_delete, log, "布尔多余体")
+    for fname in sorted(bool_counts):
+        log("【标准件】%s: 布尔生效 %d 处。" % (fname, bool_counts[fname]))
     std_stats["profiles"] = len(std_stats["bodies"])
     if no_ref:
         log("【标准件】提示: %d 件未配置参考点已跳过: %s"
