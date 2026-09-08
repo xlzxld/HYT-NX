@@ -108,9 +108,6 @@ def nx_purge(session, work_part, log, dxf_layers=None):
     return len(feats) + len(curves) + len(comps) + len(mbodies)
 
 
-clean_previous = nx_purge
-
-
 def ensure_categories(work_part, layer_map, log):
     """为各导入图层建同名图层类别(便于用户在图层设置里按名开关)。"""
     cats = getattr(work_part, "LayerCategories", None)

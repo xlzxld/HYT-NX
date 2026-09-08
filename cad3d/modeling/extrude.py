@@ -74,9 +74,6 @@ def create_curves(work_part, layers, layer_map, log):
     return out
 
 
-_create_curves = create_curves
-
-
 def work_part_rules(work_part, curves):
     """曲线列表 → 选择意图规则(BaseCurveDumb: 不做额外链接推断)。"""
     return work_part.ScRuleFactory.CreateRuleBaseCurveDumb(list(curves))
