@@ -134,7 +134,8 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
                 "tips": "如遇参数错乱，可直接删除本文件，系统下次运行会自动以 nx_std_config.py 出厂配置重建",
                 "fields": {
                     "schema": "记忆数据结构版本号，需与 nx_std_config.py 的 CONFIG_SCHEMA_VERSION 保持一致",
-                    "dxf_path": "上次成功读取的 AutoCAD 2D 图纸 (.dxf) 绝对路径",
+                    "dxf_path": "上次执行使用的图纸 (.dwg/.dxf) 绝对路径"
+                                "(最终执行前落盘, 与成败无关)",
                     "params": "各图层的拉伸起始与结束绝对坐标 [起始, 结束] (mm)",
                     "std_parts": "各标准件的独立参数微调字典（图层、搜索半径、Z基准、布尔方式、姿态偏移）",
                     "selected": "上次在【标准件选择窗口】中勾选激活的标准件零件文件名清单",
