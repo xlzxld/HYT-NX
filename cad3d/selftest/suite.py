@@ -430,6 +430,14 @@ def selftest(dxf_path=None):
         [DXLine((14, 0), (20, 0)), DXLine((14, 0), (14, -5))],
         [DXLine((-5, 0), (15, 0))])
     check("YXB 重叠不足半长→不算贴合边", not _a and len(_w) == 1, str(_a))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5)),
+         DXCircle((30.0, 30.0), 2.0)],
+        [DXLine((-5, 0), (30, 0))])
+    check("YXB 含圆不崩(圆无端点独立成组仅告警, 板锚点不受影响)",
+          len(_a) == 1 and len(_w) == 1
+          and abs(_a[0][0] - 5.0) < 1e-6 and abs(_a[0][1]) < 1e-6
+          and abs(_a[0][2] - 90.0) < 1e-6, str((_a, _w)))
     _logs = []
     _a = collect_circle_anchors(
         {"YXB": [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5))],

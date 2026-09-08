@@ -381,6 +381,8 @@ def _yxb_groups(ents, tol=LOOP_TOL):
 
     grid = {}
     for i, e in enumerate(ents):
+        if e.kind == "circle":    # 圆无端点不参与连通(同 find_chains), 独立成组
+            continue
         for p in (e.p1, e.p2):
             for nk in _near_keys(p, tol):
                 for j, q in grid.get(nk, ()):
