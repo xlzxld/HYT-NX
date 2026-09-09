@@ -1,0 +1,13 @@
+# ruff 增量门禁配置 —— 对应 AGENTS.md §2 静态检查行
+# 运行环境约束：NX10/12 日记解释器为旧版 Python(3.3+)，以下为全库既有惯例的规则豁免；
+# 全仓历史存量问题按 §2 已知豁免清单登记，门禁按"仅本次改动文件"增量执行，只登记不放宽。
+[lint]
+ignore = [
+    "UP031",   # printf 字符串格式化：NX 旧版 Python 兼容，全库惯例
+    "UP009",   # utf-8 编码声明：NX 旧版解释器需要
+    "UP032",   # .format 迁移 f-string：NX 旧版 Python 不支持 f-string
+    "UP020",   # io.open 别名 open：保持 io.open 与旧版解释器一致
+    "BLE001",  # 盲捕获：NX API 跨版本探测惯例（探测失败即回退）
+    "S110",    # try-except-pass：同上，跨版本探测
+    "S112",    # try-except-continue：同上，跨版本探测
+]
