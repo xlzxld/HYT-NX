@@ -4,6 +4,8 @@
 v2.10: 新增 JRTFBX(加热条封闭线)标记图层——用户画线优先定位出线口
 (沿唇线描短线取中点 / 横跨槽口画长线取端点), 就近分配到条、离条超限
 告警忽略; 无标记的条自动走轮廓推断, 不因缺标记而不删面(v2.7 CXK 教训)。
+封闭线还并入条轮廓参与闭链——实际画法(3.dxf)中槽口在 JRT 层张开,
+全靠 JRTFBX 线封口, 不并入则开链无法建模。
 v2.8/v2.9: 删面锚点按条自身封闭轮廓辨认出线口唇线(_contour_outlet_mids
 开放性判别)——旧"最短两条线"规则会选中槽底封口线(2.dxf 实证), 删面
 因此一直定错端。
@@ -381,11 +383,43 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         stats["JRT"]["note"] = "起始=结束, 停用"
         log("【JRT】起始=结束(零宽度), 停用。")
         return []
-    ents = layers.get("JRT") or []
+    ents = list(layers.get("JRT") or [])
     if not ents:
         stats["JRT"]["note"] = "图层无曲线"
         log("【JRT】图层无曲线, 跳过。")
         return []
+    # v2.10: JRTFBX(加热条封闭线)并入条轮廓——实际画法(3.dxf)中槽口在
+    # JRT 层张开, 封口线画在 JRTFBX 层; 并入后 find_chains 按端点自然
+    # 闭合成环。与 JRT 已有线段重合的标记不并入(防双重描线坏链)。
+    _fbx_lines = [e for e in (layers.get("JRTFBX") or []) if e.kind == "line"]
+    _fbx_curves = list(nx_curves.get("JRTFBX") or [])
+    _added = 0
+    for _k, _fe in enumerate(_fbx_lines):
+        _dup = False
+        for _u in ents:
+            if _u.kind != "line":
+                continue
+            if ((math.hypot(_fe.p1[0] - _u.p1[0], _fe.p1[1] - _u.p1[1]) < 0.2
+                 and math.hypot(_fe.p2[0] - _u.p2[0],
+                                _fe.p2[1] - _u.p2[1]) < 0.2)
+                or (math.hypot(_fe.p1[0] - _u.p2[0],
+                               _fe.p1[1] - _u.p2[1]) < 0.2
+                    and math.hypot(_fe.p2[0] - _u.p1[0],
+                                   _fe.p2[1] - _u.p1[1]) < 0.2)):
+                _dup = True
+                break
+        if _dup:
+            continue
+        _cv = _fbx_curves[_k] if _k < len(_fbx_curves) else None
+        if _cv is None:
+            log("【JRT】警告: JRTFBX 封闭线 %d 未建成 NX 曲线, 无法并入轮廓。"
+                % (_k + 1))
+            continue
+        ents.append(_fe)
+        nx_curves.setdefault("JRT", []).append(_cv)
+        _added += 1
+    if _added:
+        log("【JRT】已并入 %d 条 JRTFBX 封闭线到条轮廓(闭合槽口)。" % _added)
     closed, opens = find_chains(ents)
     bridge_map = {}
     if opens:

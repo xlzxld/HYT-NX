@@ -706,6 +706,9 @@ def selftest(dxf_path=None):
     check("jrt JRTFBX 标记优先已接线(缺标记自动走推断)",
           'layers.get("JRTFBX")' in _jrt_src
           and "_marker_mids_for_chains(" in _jrt_src)
+    check("jrt JRTFBX 封闭线并入轮廓闭链(3.dxf 实际画法)",
+          "nx_curves.setdefault(\"JRT\", []).append" in _jrt_src
+          and 'layers.get("JRTFBX")' in _jrt_src)
     check("jrt 方案二已接线(_flush_blend_allowed+skip_flush)",
           "_flush_blend_allowed(" in _jrt_src and "skip_flush" in _jrt_src)
     check("护栏: 全图层但半径收窄→放行(压线板式需求)",
