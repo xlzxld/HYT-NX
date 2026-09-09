@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """cad3d.modeling.jrt —— 加热条 (JRT) 双侧建模、G1 相切边倒圆与删面愈合。
 
-v2.8: 删面锚点按条自身封闭轮廓辨认出线口唇线(_contour_outlet_mids,
-用户定案"根据加热条的封闭线定坐标")——旧"最短两条线"规则会选中槽底
-封口线(2.dxf 实证), 删面因此一直定错端; v2.7 的 CXK 图层定位一并移除
-(2.dxf 的 CXK 实为接线盒线, 距条 400mm, 前提不成立)。
+v2.10: 新增 JRTFBX(加热条封闭线)标记图层——用户画线优先定位出线口
+(沿唇线描短线取中点 / 横跨槽口画长线取端点), 就近分配到条、离条超限
+告警忽略; 无标记的条自动走轮廓推断, 不因缺标记而不删面(v2.7 CXK 教训)。
+v2.8/v2.9: 删面锚点按条自身封闭轮廓辨认出线口唇线(_contour_outlet_mids
+开放性判别)——旧"最短两条线"规则会选中槽底封口线(2.dxf 实证), 删面
+因此一直定错端。
 """
 
 import math
@@ -18,7 +20,7 @@ from cad3d.modeling.extrude import _sc_rule_options, extrude_curves
 from cad3d.modeling.stdparts import _pick_target, _bool_feature
 from cad3d.geom.topo import (
     find_chains, _merge_open_chains, _chain_connectors, _chain_outlet_mids,
-    _contour_outlet_mids
+    _contour_outlet_mids, _bbox, _fbx_anchor_points, _marker_mids_for_chains
 )
 from cad3d.geom.eval import (
     _faces_healthy, _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides,
@@ -417,6 +419,30 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
     if draft <= 1e-9:
         draft = None
 
+    # v2.10 JRTFBX(加热条封闭线)标记: 用户画线优先定位出线口。标记就近
+    # 分配到条(离条超 10mm 视为画错, 忽略+告警); 无标记的条自动走轮廓
+    # 推断——标记只是优先锚点, 不复刻 v2.7 CXK"缺标记即不删面"的错。
+    fbx_pts = _fbx_anchor_points(layers.get("JRTFBX"))
+    fbx_per, fbx_ignore = [], []
+    if fbx_pts:
+        _boxes = []
+        for ch in closed:
+            ps = []
+            for i, _r in ch:
+                e = ents[i]
+                if e.kind == "circle":
+                    ps += [(e.c[0] - e.r, e.c[1] - e.r),
+                           (e.c[0] + e.r, e.c[1] + e.r)]
+                else:
+                    ps += [e.p1, e.p2]
+            for p1, p2, _g in (bridge_map.get(id(ch)) or []):
+                ps += [p1, p2]
+            _boxes.append(_bbox(ps))
+        fbx_per, fbx_ignore = _marker_mids_for_chains(_boxes, fbx_pts, 10.0)
+        for w in fbx_ignore:
+            log("【JRT】%s。" % w)
+    _gate = 2.5 * max(float(jp["blend_r"]), 1.0) + 2.0
+
     strips = []
     for ci, chain in enumerate(closed):
         idxs = [i for i, _r in chain]
@@ -448,12 +474,28 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         hp = NXOpen.Point3d(first.p1[0] if first.kind != "circle" else first.c[0],
                             first.p1[1] if first.kind != "circle" else first.c[1], 0.0)
         conns = _chain_connectors(chain, ents)
-        # 出线口锚点(v2.8): 条封闭轮廓的出线口唇线; 期刊口线(线/线邻接)
-        # 与收口连接线依序兜底, 兼容历史图纸。
-        _dm = (_chain_outlet_mids(chain, ents)
-               or _contour_outlet_mids(chain, ents) or conns)
-        if _dm:
-            log("【JRT】链 %d 出线口锚点: %d 处 %s。"
+        # 出线口锚点(v2.10): JRTFBX 标记优先(用户画线定位置), 无标记自动
+        # 走轮廓推断(v2.9 唇线开放性判别), 再依次回退 期刊口线→收口连接
+        # 线——任何情况都不会因缺标记而不删面(v2.7 CXK 教训)。
+        _infer = (_chain_outlet_mids(chain, ents)
+                  or _contour_outlet_mids(chain, ents) or conns)
+        _fbx = fbx_per[ci] if fbx_per else []
+        if _fbx:
+            _dm = _fbx
+            log("【JRT】链 %d 出线口锚点(JRTFBX 标记): %d 处 %s。"
+                % (ci + 1, len(_dm),
+                   [(round(m[0], 1), round(m[1], 1)) for m in _dm]))
+            if _infer:
+                for _m in _dm:
+                    if all(math.hypot(_m[0] - _v[0], _m[1] - _v[1]) > _gate
+                           for _v in _infer):
+                        log("【JRT】警告: 链 %d JRTFBX 标记 (%.1f,%.1f) 距"
+                            "轮廓推断唇线超 %.1f, 请核对图纸标记位置。"
+                            % (ci + 1, _m[0], _m[1], _gate))
+                        break
+        else:
+            _dm = _infer
+            log("【JRT】链 %d 出线口锚点(轮廓推断): %d 处 %s。"
                 % (ci + 1, len(_dm),
                    [(round(m[0], 1), round(m[1], 1)) for m in _dm]))
 

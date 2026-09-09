@@ -640,6 +640,49 @@ def _contour_outlet_mids(chain, ents, short_max=15.0):
     return picked
 
 
+def _fbx_anchor_points(fbx_ents, short_max=15.0):
+    """(纯逻辑, 可离线测) JRTFBX(加热条封闭线)标记 → 删面锚点候选点。
+
+    v2.10 用户定案新增标记图层: 沿唇线描的短线(≤short_max)取线中点;
+    横跨槽口画的长线取两端点(端点天然落在唇线附近)——两种画法都兼容。
+    非直线忽略。返回 [(x, y), ...]。"""
+    pts = []
+    for e in (fbx_ents or []):
+        if e.kind != "line":
+            continue
+        L = math.hypot(e.p2[0] - e.p1[0], e.p2[1] - e.p1[1])
+        if L <= short_max:
+            pts.append(((e.p1[0] + e.p2[0]) / 2.0,
+                        (e.p1[1] + e.p2[1]) / 2.0))
+        else:
+            pts.append((e.p1[0], e.p1[1]))
+            pts.append((e.p2[0], e.p2[1]))
+    return pts
+
+
+def _marker_mids_for_chains(chain_boxes, marker_pts, margin):
+    """(纯逻辑, 可离线测) 标记点 → 就近分配到链包围盒(v2.10 JRTFBX 优先
+    锚点用)。每个标记只归最近的 1 条链; 距全部链包围盒超 margin 的标记
+    忽略并告警(标记画到条外=画错, 不盲信)。chain_boxes=[(x0,y0,x1,y1),..]。
+    返回 (每链标记点列表, 忽略告警列表)。"""
+    per = [[] for _ in chain_boxes]
+    warns = []
+    for (mx, my) in (marker_pts or []):
+        bi, bd = None, None
+        for i, (x0, y0, x1, y1) in enumerate(chain_boxes):
+            dx = max(x0 - mx, 0.0, mx - x1)
+            dy = max(y0 - my, 0.0, my - y1)
+            d = math.hypot(dx, dy)
+            if bi is None or d < bd:
+                bi, bd = i, d
+        if bi is None or bd > margin:
+            warns.append("JRTFBX 标记(%.2f,%.2f)距任何加热条轮廓超 %.2f, "
+                         "忽略" % (mx, my, margin))
+            continue
+        per[bi].append((mx, my))
+    return per, warns
+
+
 def _chain_connectors(chain, ents, ratio=0.3):
     """链中的收口连接线(内外轮廓环之间的短直线) → [(中点X, 中点Y), ...]。
 

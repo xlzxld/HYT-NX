@@ -40,7 +40,7 @@ from cad3d.geom.topo import (
     _loop_in_loop, organize_loops, _chain_tips, _cluster_tips,
     _merge_open_chains, _center_seen, collect_circle_anchors,
     collect_yxb_anchors, _chain_outlet_mids, _chain_connectors,
-    _contour_outlet_mids
+    _contour_outlet_mids, _fbx_anchor_points, _marker_mids_for_chains
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
@@ -675,6 +675,22 @@ def selftest(dxf_path=None):
               [DXLine((0.0, 0.0), (10.0, 0.0)),
                DXLine((10.0, 0.0), (5.0, 8.0)),
                DXLine((5.0, 8.0), (0.0, 0.0))]) == [])
+    # JRTFBX 标记图层(v2.10): 标记优先定位出线口, 两种画法兼容
+    _fa = _fbx_anchor_points([DXLine((0.0, 0.0), (8.0, 0.0)),
+                              DXLine((100.0, 0.0), (100.0, 30.0)),
+                              DXArc((0.0, 0.0), 5.0, 0.0, 1.0)])
+    check("JRTFBX: 短线取中点/长线取两端点/非线忽略",
+          _fa == [(4.0, 0.0), (100.0, 0.0), (100.0, 30.0)], str(_fa))
+    _fbx_boxes = [(0.0, 0.0, 20.0, 10.0), (100.0, 0.0, 120.0, 10.0)]
+    _fp, _fw = _marker_mids_for_chains(_fbx_boxes,
+                                       [(10.0, 5.0), (110.0, 5.0)], 10.0)
+    check("JRTFBX: 标记就近分配两条链",
+          _fp == [[(10.0, 5.0)], [(110.0, 5.0)]] and not _fw,
+          str((_fp, _fw)))
+    _fp2, _fw2 = _marker_mids_for_chains(_fbx_boxes, [(60.0, 60.0)], 10.0)
+    check("JRTFBX: 离条超限的标记忽略并告警",
+          _fp2 == [[], []] and len(_fw2) == 1 and "忽略" in _fw2[0],
+          str((_fp2, _fw2)))
     check("方案二: 嵌入端未倒成→齐平端不倒圆",
           _flush_blend_allowed(False) is False
           and _flush_blend_allowed(None) is False)
@@ -687,6 +703,9 @@ def selftest(dxf_path=None):
     check("jrt 出线口锚点按条封闭线(_contour_outlet_mids 已接入, CXK 路径已移除)",
           "_contour_outlet_mids(" in _jrt_src
           and 'layers.get("CXK")' not in _jrt_src)
+    check("jrt JRTFBX 标记优先已接线(缺标记自动走推断)",
+          'layers.get("JRTFBX")' in _jrt_src
+          and "_marker_mids_for_chains(" in _jrt_src)
     check("jrt 方案二已接线(_flush_blend_allowed+skip_flush)",
           "_flush_blend_allowed(" in _jrt_src and "skip_flush" in _jrt_src)
     check("护栏: 全图层但半径收窄→放行(压线板式需求)",
