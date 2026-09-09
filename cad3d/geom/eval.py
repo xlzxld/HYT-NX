@@ -103,9 +103,11 @@ def _blend_ok(vol_before, vol_after):
 
 
 def _conn_face_pick(face_rows, conn_mids, r_ref):
-    """(纯逻辑, 可离线测) 从面行 (tag, cx, cy, 半径) 中为每个连接线中点
-    挑删面。只认【圆柱面且半径≈倒圆R】的倒圆面; 距离门控
-    2.5×R+2(期刊实测面中心距连接线中点≈1)——任一连接线找不到可信面
+    """(纯逻辑, 可离线测)【已退役 v2.6】JRT 删面锚点挑选, 随"整圈倒圆+
+    删面愈合"工序退役(锚点猜面/补面碎片/NX 拒绝三条失败路径, 见
+    _pick_end_edges); 保留供离线测试与回退参考。从面行 (tag, cx, cy, 半径)
+    中为每个连接线中点挑删面。只认【圆柱面且半径≈倒圆R】的倒圆面; 距离
+    门控 2.5×R+2(期刊实测面中心距连接线中点≈1)——任一连接线找不到可信面
     即整组放弃(删错面会毁掉整根条, 宁可不删)。返回 [tag,...] 或 None。"""
     r_ref = float(r_ref or 0.0)
     tol_r = max(0.3, 0.25 * r_ref) if r_ref > 1e-9 else 1e18
@@ -126,6 +128,40 @@ def _conn_face_pick(face_rows, conn_mids, r_ref):
         picks.append(best[0])
         used.add(best[0])
     return picks
+
+
+def _pick_end_edges(edge_mids, anchor_mids, gate):
+    """(纯逻辑, 可离线测) 端面选边倒圆的剔边筛选: 每个出线口/连接线中点
+    挑最近的 1 条端面边界边保留直角(不倒圆, 原删面愈合的目标状态改由
+    倒圆阶段直建)。门控同 _conn_face_pick 的 2.5×R+2; 超门控仍剔最近边
+    但告警——老删面契约"宁可不删"在此反号: 该剔不剔=出线口被倒圆堵死
+    (2026-09-10 用户实测缺陷), 误剔一条边的代价只是少一处装饰倒圆。
+    edge_mids=[(x,y),...], anchor_mids=[(x,y),...]。返回 (剔除下标, 警告)。"""
+    excl, warns, used = [], [], set()
+    for (mx, my) in (anchor_mids or []):
+        bi, bd = None, None
+        for i, (ex, ey) in enumerate(edge_mids):
+            if i in used:
+                continue
+            d = math.hypot(ex - mx, ey - my)
+            if bi is None or d < bd:
+                bi, bd = i, d
+        if bi is None:
+            warns.append("出线口(%.2f,%.2f): 端面无可用边界边" % (mx, my))
+            continue
+        if bd > gate:
+            warns.append("出线口(%.2f,%.2f): 最近边界边距 %.2f 超门控 %.2f,"
+                         " 仍剔除" % (mx, my, bd, gate))
+        excl.append(bi)
+        used.add(bi)
+    return excl, warns
+
+
+def _flush_blend_allowed(embed_blend_ok):
+    """(纯逻辑, 可离线测) 方案二规则(用户定案 2026-09-10): 嵌入端倒圆
+    未成功(含未尝试/异常) → 齐平端不倒圆保留直角, 保证"双端倒圆的条
+    必然嵌入端完好"。原"删面失败即跳过"随删面步骤退役简化为倒圆成败。"""
+    return bool(embed_blend_ok)
 
 
 def _jrt_sides(z_start, z_end, bottom):

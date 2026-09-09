@@ -43,7 +43,8 @@ from cad3d.geom.topo import (
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
-    _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides
+    _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides,
+    _pick_end_edges, _flush_blend_allowed
 )
 from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
@@ -611,6 +612,30 @@ def selftest(dxf_path=None):
           _conn_face_pick([(1, 10.0, 10.0, 300.0)], [(10.0, 10.0)], 3.9) is None)
     check("删面: 距离超门控→放弃",
           _conn_face_pick([(1, 50.0, 50.0, 3.9)], [(10.0, 10.0)], 3.9) is None)
+
+    # 选边倒圆(v2.6): 出线口剔边 + 方案二规则(替代删面愈合, 2026-09-10)
+    _em = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (50.0, 50.0)]
+    _ex, _ew = _pick_end_edges(_em, [(10.0, 0.0)], 11.75)
+    check("选边: 出线口命中最近边", _ex == [1] and not _ew, str((_ex, _ew)))
+    _ex2, _ew2 = _pick_end_edges(_em, [(10.0, 0.0), (10.0, 10.0)], 11.75)
+    check("选边: 两口各剔一条不重复", _ex2 == [1, 2] and not _ew2,
+          str((_ex2, _ew2)))
+    _ex3, _ew3 = _pick_end_edges(_em, [(60.0, 60.0)], 11.75)
+    check("选边: 超门控仍剔最近并告警",
+          _ex3 == [3] and len(_ew3) == 1 and "超门控" in _ew3[0],
+          str((_ex3, _ew3)))
+    check("选边: 无锚点不剔边", _pick_end_edges(_em, [], 11.75) == ([], []))
+    check("方案二: 嵌入端未倒成→齐平端不倒圆",
+          _flush_blend_allowed(False) is False
+          and _flush_blend_allowed(None) is False)
+    check("方案二: 嵌入端倒成→齐平端照常", _flush_blend_allowed(True) is True)
+    with io.open(os.path.join(script_dir(), "cad3d", "modeling", "jrt.py"),
+                 encoding="utf-8") as _jf:
+        _jrt_src = _jf.read()
+    check("jrt 删面愈合已退役(_delete_faces_safe 仅剩定义无调用)",
+          _jrt_src.count("_delete_faces_safe(") == 1)
+    check("jrt 方案二已接线(_flush_blend_allowed+skip_flush)",
+          "_flush_blend_allowed(" in _jrt_src and "skip_flush" in _jrt_src)
     check("护栏: 全图层但半径收窄→放行(压线板式需求)",
           not anchors_overflow(list(range(47)),
                                sanitize_std_rule({"layer": "", "r_max": 20})))
