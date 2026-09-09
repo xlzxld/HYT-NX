@@ -580,16 +580,19 @@ def _chain_outlet_mids(chain, ents):
 
 def _contour_outlet_mids(chain, ents, short_max=15.0):
     """(纯逻辑, 可离线测) 从加热条封闭轮廓的端部封口线里辨认出线口唇线
-    中点——v2.8 用户定案: 删面位置按条自身封闭线定坐标。
+    中点——v2.8 用户定案: 删面位置按条自身封闭线定坐标; v2.9 加固:
+    间距判别升级为"开放性"判别, 兼容千奇百怪的条形。
 
-    封闭条轮廓两端各有一对短线: 槽口唇线对(槽在此张开, 对内间距=槽口
-    宽)与槽底封口线对(槽在此封死, 对内间距=壁厚); 槽口宽必大于壁厚,
-    故取对内间距较大的一对。2026-09-10 2.dxf 实证: 旧"最短两条线"规则
-    (收口连接线)选中槽底封口(3.6/5.9mm)而漏掉真正的出线口唇线(8mm),
-    删面锚点定错端。候选=轮廓短线(≤short_max, 邻接不限弧/线); 恰 4 条
-    才判定(两端各一对), 配对取总距离最小的匹配, 其余情形返回 [] 兜底。"""
+    判据: 唇线对的连线穿过槽口开放区(连线 30/50/70% 三点全在条实体
+    轮廓【外】), 槽底封口对的连线穿过材料(轮廓【内】)。2.dxf 实证:
+    旧"最短两条线"规则选中槽底封口(3.6/5.9mm)而漏掉真正的出线口唇线
+    (8mm), 删面锚点定错端。候选=轮廓短线(≤short_max, 邻接不限弧/线),
+    重复描画的同位线(中点距<0.5)先去重, 多于 8 条视为噪声轮廓放弃;
+    配对连线长度上限 4×short_max(跨条长弦不参判); 通过对按对内间距
+    降序取互不重叠者(同口多搭越线时保真唇线)。返回唇线中点列表
+    (两端口全开=4 个), 无法判定返回 [] 交由下游兜底。"""
     cands = []
-    for i, _r in chain:
+    for i, _rev in chain:
         e = ents[i]
         if e.kind != "line":
             continue
@@ -597,19 +600,44 @@ def _contour_outlet_mids(chain, ents, short_max=15.0):
         if L <= short_max:
             cands.append(((e.p1[0] + e.p2[0]) / 2.0,
                           (e.p1[1] + e.p2[1]) / 2.0))
-    if len(cands) != 4:
+    uniq = []
+    for m in cands:
+        if all(math.hypot(m[0] - u[0], m[1] - u[1]) > 0.5 for u in uniq):
+            uniq.append(m)
+    cands = uniq
+    if not 2 <= len(cands) <= 8:
+        return []
+    poly = loop_polygon(chain, ents)
+    if len(poly) < 3:
         return []
 
     def _d(u, v):
         return math.hypot(u[0] - v[0], u[1] - v[1])
 
-    p, q, r, s = cands
-    matchings = [[(p, q), (r, s)],
-                 [(p, r), (q, s)],
-                 [(p, s), (q, r)]]
-    best = min(matchings, key=lambda m: _d(*m[0]) + _d(*m[1]))
-    pairs = sorted([(_d(*a), a) for a in best])
-    return [pairs[1][1][0], pairs[1][1][1]]
+    d_max = 4.0 * short_max
+    passing = []
+    for a in range(len(cands)):
+        for b in range(a + 1, len(cands)):
+            ma, mb = cands[a], cands[b]
+            d = _d(ma, mb)
+            if d > d_max:
+                continue
+            if all(not point_in_poly((ma[0] + (mb[0] - ma[0]) * t,
+                                      ma[1] + (mb[1] - ma[1]) * t), poly)
+                   for t in (0.3, 0.5, 0.7)):
+                passing.append((d, ma, mb))
+    if not passing:
+        return []
+    passing.sort(key=lambda t: -t[0])
+    picked, used = [], []
+    for _d, ma, mb in passing:
+        if ma in used or mb in used:
+            continue
+        used.append(ma)
+        used.append(mb)
+        picked.append(ma)
+        picked.append(mb)
+    return picked
 
 
 def _chain_connectors(chain, ents, ratio=0.3):
