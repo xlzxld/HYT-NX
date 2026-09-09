@@ -40,7 +40,7 @@ from cad3d.geom.topo import (
     _loop_in_loop, organize_loops, _chain_tips, _cluster_tips,
     _merge_open_chains, _center_seen, collect_circle_anchors,
     collect_yxb_anchors, _chain_outlet_mids, _chain_connectors,
-    _cxk_mids_for_chains
+    _contour_outlet_mids
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
@@ -614,15 +614,28 @@ def selftest(dxf_path=None):
     check("删面: 距离超门控→放弃",
           _conn_face_pick([(1, 50.0, 50.0, 3.9)], [(10.0, 10.0)], 3.9) is None)
 
-    # 删面锚点按 CXK 出线口图层坐标定位(v2.7 用户定案) + 方案二规则
-    _cb = [(0.0, 0.0, 20.0, 10.0), (100.0, 0.0, 120.0, 10.0)]
-    _cp, _cw = _cxk_mids_for_chains(_cb, [(10.0, 5.0), (110.0, 5.0)], 10.0)
-    check("CXK 锚点: 按坐标就近分配两条链",
-          _cp == [[(10.0, 5.0)], [(110.0, 5.0)]], str((_cp, _cw)))
-    _cp2, _cw2 = _cxk_mids_for_chains(_cb, [(60.0, 60.0)], 10.0)
-    check("CXK 锚点: 远离轮廓的标记忽略并告警",
-          _cp2 == [[], []] and len(_cw2) == 1 and "忽略" in _cw2[0],
-          str((_cp2, _cw2)))
+    # 出线口锚点按条封闭线辨认(v2.8, 2.dxf 真实坐标回归): 旧"最短两条
+    # 线"选中槽底封口 3.6mm 对, 真出线口是间距 25mm 的 8mm 唇线对
+    _lip1 = DXLine((3341.1, 1384.0), (3343.1, 1391.7))
+    _tip1 = DXLine((3454.8, 1389.5), (3454.6, 1386.0))
+    _lip2 = DXLine((3349.4, 1415.9), (3347.4, 1408.2))
+    _tip2 = DXLine((3446.8, 1389.9), (3446.6, 1386.4))
+    _wall = DXLine((3403.1, 1344.4), (3380.5, 1257.3))
+    _ents8 = [_tip1, _wall, _lip1, _wall, _tip2, _wall, _lip2]
+    _ch8 = [(0, False), (1, False), (2, False), (3, False),
+            (4, False), (5, False), (6, False)]
+    _oms = _contour_outlet_mids(_ch8, _ents8)
+    check("出线口锚点: 封闭线辨唇线弃槽底(2.dxf 实证)",
+          len(_oms) == 2
+          and abs(_oms[0][0] - 3342.1) < 0.05
+          and abs(_oms[0][1] - 1387.85) < 0.05
+          and abs(_oms[1][0] - 3348.4) < 0.05
+          and abs(_oms[1][1] - 1412.05) < 0.05, str(_oms))
+    check("出线口锚点: 候选不足4条→放弃走兜底",
+          _contour_outlet_mids([(0, False)], [_lip1]) == []
+          and _contour_outlet_mids(
+              [(0, False), (1, False), (2, False)],
+              [_tip1, _tip2, _lip1]) == [])
     check("方案二: 嵌入端未倒成→齐平端不倒圆",
           _flush_blend_allowed(False) is False
           and _flush_blend_allowed(None) is False)
@@ -632,8 +645,9 @@ def selftest(dxf_path=None):
         _jrt_src = _jf.read()
     check("jrt 删面愈合在位(_delete_faces_safe 定义+两端调用)",
           _jrt_src.count("_delete_faces_safe(") >= 3)
-    check("jrt 删面锚点按 CXK 定位(_cxk_mids_for_chains 已接入)",
-          "_cxk_mids_for_chains(" in _jrt_src and 'layers.get("CXK")' in _jrt_src)
+    check("jrt 出线口锚点按条封闭线(_contour_outlet_mids 已接入, CXK 路径已移除)",
+          "_contour_outlet_mids(" in _jrt_src
+          and 'layers.get("CXK")' not in _jrt_src)
     check("jrt 方案二已接线(_flush_blend_allowed+skip_flush)",
           "_flush_blend_allowed(" in _jrt_src and "skip_flush" in _jrt_src)
     check("护栏: 全图层但半径收窄→放行(压线板式需求)",

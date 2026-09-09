@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """cad3d.modeling.jrt —— 加热条 (JRT) 双侧建模、G1 相切边倒圆与删面愈合。
 
-v2.7: 删面锚点优先按 CXK(出线口)图层坐标定位——用户定案"哪里出线删哪里,
-不在其他位置删面"; 图纸无 CXK 标记时退回链拓扑推断。
-v2.6 的"选边倒圆替代删面"已回退: 拆散整圈相切链致异形条复发(2026-09-10
-实机回归), 恢复验证多轮的"整圈倒圆→出线口删面愈合"工序。
+v2.8: 删面锚点按条自身封闭轮廓辨认出线口唇线(_contour_outlet_mids,
+用户定案"根据加热条的封闭线定坐标")——旧"最短两条线"规则会选中槽底
+封口线(2.dxf 实证), 删面因此一直定错端; v2.7 的 CXK 图层定位一并移除
+(2.dxf 的 CXK 实为接线盒线, 距条 400mm, 前提不成立)。
 """
 
 import math
@@ -18,7 +18,7 @@ from cad3d.modeling.extrude import _sc_rule_options, extrude_curves
 from cad3d.modeling.stdparts import _pick_target, _bool_feature
 from cad3d.geom.topo import (
     find_chains, _merge_open_chains, _chain_connectors, _chain_outlet_mids,
-    _bbox, _cxk_mids_for_chains
+    _contour_outlet_mids
 )
 from cad3d.geom.eval import (
     _faces_healthy, _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides,
@@ -417,33 +417,6 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
     if draft <= 1e-9:
         draft = None
 
-    # v2.7 删面锚点: 优先按 CXK(出线口)图层坐标定位——用户定案"哪里出线
-    # 删哪里, 不在其他位置删面"; 图纸无 CXK 标记时退回链拓扑推断。
-    # 容差 10mm: CXK 线应落在轮廓上/内, 10mm 覆盖描线偏移。
-    cxk_all = [((e.p1[0] + e.p2[0]) / 2.0, (e.p1[1] + e.p2[1]) / 2.0)
-               for e in (layers.get("CXK") or []) if e.kind == "line"]
-    cxk_per, cxk_ignore = [], []
-    if cxk_all:
-        _boxes = []
-        for ch in closed:
-            ps = []
-            for i, _r in ch:
-                e = ents[i]
-                if e.kind == "circle":
-                    ps += [(e.c[0] - e.r, e.c[1] - e.r),
-                           (e.c[0] + e.r, e.c[1] + e.r)]
-                else:
-                    ps += [e.p1, e.p2]
-            for p1, p2, _g in (bridge_map.get(id(ch)) or []):
-                ps += [p1, p2]
-            _boxes.append(_bbox(ps))
-        cxk_per, cxk_ignore = _cxk_mids_for_chains(_boxes, cxk_all, 10.0)
-        for w in cxk_ignore:
-            log("【JRT】%s。" % w)
-    else:
-        log("【JRT】图纸无 CXK 出线口标记, 删面位置退回链拓扑推断"
-            "(建议图纸在出线口处补 CXK 线)。")
-
     strips = []
     for ci, chain in enumerate(closed):
         idxs = [i for i, _r in chain]
@@ -475,16 +448,14 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         hp = NXOpen.Point3d(first.p1[0] if first.kind != "circle" else first.c[0],
                             first.p1[1] if first.kind != "circle" else first.c[1], 0.0)
         conns = _chain_connectors(chain, ents)
-        if cxk_all:
-            _dm = cxk_per[ci]
-            if not _dm:
-                log("【JRT】链 %d 附近无 CXK 出线口标记, 此链不删面"
-                    "(删面位置以 CXK 坐标为准, 不猜其他位置)。" % (ci + 1))
-            else:
-                log("【JRT】链 %d 按 CXK 出线口标记定位删面: %d 处。"
-                    % (ci + 1, len(_dm)))
-        else:
-            _dm = _chain_outlet_mids(chain, ents) or conns
+        # 出线口锚点(v2.8): 条封闭轮廓的出线口唇线; 期刊口线(线/线邻接)
+        # 与收口连接线依序兜底, 兼容历史图纸。
+        _dm = (_chain_outlet_mids(chain, ents)
+               or _contour_outlet_mids(chain, ents) or conns)
+        if _dm:
+            log("【JRT】链 %d 出线口锚点: %d 处 %s。"
+                % (ci + 1, len(_dm),
+                   [(round(m[0], 1), round(m[1], 1)) for m in _dm]))
 
         for side, z_flush, z_embed in _jrt_sides(z_start, z_end, bottom):
             base = "%sJRT_%d%s" % (FEATURE_PREFIX, ci + 1, side)

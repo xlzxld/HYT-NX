@@ -578,29 +578,38 @@ def _chain_outlet_mids(chain, ents):
     return mids
 
 
-def _cxk_mids_for_chains(chain_boxes, cxk_mids, margin):
-    """(纯逻辑, 可离线测) 出线口(CXK)图层线中点 → 就近分配到链包围盒。
+def _contour_outlet_mids(chain, ents, short_max=15.0):
+    """(纯逻辑, 可离线测) 从加热条封闭轮廓的端部封口线里辨认出线口唇线
+    中点——v2.8 用户定案: 删面位置按条自身封闭线定坐标。
 
-    v2.7 用户定案: JRT 删面位置直接按 CXK 坐标定位, 不再从链拓扑猜口线
-    (猜错=在错误位置删面, 2026-09-10 实机复发)。每个标记只归最近的
-    1 条链; 距全部链包围盒超 margin 的标记忽略并告警(不许在加热条以外
-    删面)。chain_boxes=[(x0,y0,x1,y1),...]。返回 (每链 mids 列表, 告警)。"""
-    per = [[] for _ in chain_boxes]
-    warns = []
-    for (mx, my) in (cxk_mids or []):
-        bi, bd = None, None
-        for i, (x0, y0, x1, y1) in enumerate(chain_boxes):
-            dx = max(x0 - mx, 0.0, mx - x1)
-            dy = max(y0 - my, 0.0, my - y1)
-            d = math.hypot(dx, dy)
-            if bi is None or d < bd:
-                bi, bd = i, d
-        if bi is None or bd > margin:
-            warns.append("CXK 标记(%.2f,%.2f)距任何加热条轮廓超 %.2f, 忽略"
-                         % (mx, my, margin))
+    封闭条轮廓两端各有一对短线: 槽口唇线对(槽在此张开, 对内间距=槽口
+    宽)与槽底封口线对(槽在此封死, 对内间距=壁厚); 槽口宽必大于壁厚,
+    故取对内间距较大的一对。2026-09-10 2.dxf 实证: 旧"最短两条线"规则
+    (收口连接线)选中槽底封口(3.6/5.9mm)而漏掉真正的出线口唇线(8mm),
+    删面锚点定错端。候选=轮廓短线(≤short_max, 邻接不限弧/线); 恰 4 条
+    才判定(两端各一对), 配对取总距离最小的匹配, 其余情形返回 [] 兜底。"""
+    cands = []
+    for i, _r in chain:
+        e = ents[i]
+        if e.kind != "line":
             continue
-        per[bi].append((mx, my))
-    return per, warns
+        L = math.hypot(e.p2[0] - e.p1[0], e.p2[1] - e.p1[1])
+        if L <= short_max:
+            cands.append(((e.p1[0] + e.p2[0]) / 2.0,
+                          (e.p1[1] + e.p2[1]) / 2.0))
+    if len(cands) != 4:
+        return []
+
+    def _d(u, v):
+        return math.hypot(u[0] - v[0], u[1] - v[1])
+
+    p, q, r, s = cands
+    matchings = [[(p, q), (r, s)],
+                 [(p, r), (q, s)],
+                 [(p, s), (q, r)]]
+    best = min(matchings, key=lambda m: _d(*m[0]) + _d(*m[1]))
+    pairs = sorted([(_d(*a), a) for a in best])
+    return [pairs[1][1][0], pairs[1][1][1]]
 
 
 def _chain_connectors(chain, ents, ratio=0.3):
