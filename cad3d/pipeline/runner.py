@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """cad3d.pipeline.runner —— 主流水线控制、阶段编排与最终执行。"""
 
+import io
 import os
 import traceback
 
@@ -8,7 +9,7 @@ from cad3d.core.constants import (
     SCRIPT_VERSION, LAYER_TABLE, LAYER_CODES, TARGET_CODE, assign_layers
 )
 from cad3d.core.config import _CFG_NOTES
-from cad3d.core.paths import resolve_dxf_path
+from cad3d.core.paths import resolve_dxf_path, _logs_dir
 from cad3d.core.logging import Log
 from cad3d.core.state import (
     load_state, save_state, merge_jrt
@@ -182,6 +183,19 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
             log("【DWG 转换】缓存 DXF 已保留(logs/ 下, 下次同图免转换)。")
 
 
+def _save_report(name, lines):
+    """运行日志落盘 logs/<name>(与 nx_mold_cut_runner 的 mold_cut_report.txt
+    同惯例): ListingWindow 日志关会话即丢, 落盘后删面/倒圆等失败有据可查。"""
+    p = os.path.join(_logs_dir(), name)
+    try:
+        with io.open(p, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        print("report -> %s" % p)
+    except OSError as ex:
+        print("report 写入失败: %s" % ex)
+    return p
+
+
 def execute_pipeline(dxf, params, jrt, std_rules, session,
                      std_rules_all=None, selected=None, ui=None,
                      jt_link_mode=None):
@@ -206,7 +220,9 @@ def execute_pipeline(dxf, params, jrt, std_rules, session,
                selected=selected,
                jrt_se=[j_dict.get("start", 0.0), j_dict.get("end", 0.0)],
                jt_link_mode=jt_link_mode)
+    lg = Log(session)
     ok, _stats = run_pipeline(dxf, p_dict, session=session,
                               work_part=session.Parts.Work,
-                              log=Log(session), std_rules=std_rules, jrt=j_dict)
+                              log=lg, std_rules=std_rules, jrt=j_dict)
+    _save_report("pipeline_report.txt", lg.lines)
     return ok
