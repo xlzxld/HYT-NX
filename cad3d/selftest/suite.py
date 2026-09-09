@@ -39,12 +39,13 @@ from cad3d.geom.topo import (
     find_chains, loop_polygon, poly_area, _bbox, point_in_poly,
     _loop_in_loop, organize_loops, _chain_tips, _cluster_tips,
     _merge_open_chains, _center_seen, collect_circle_anchors,
-    collect_yxb_anchors, _chain_outlet_mids, _chain_connectors
+    collect_yxb_anchors, _chain_outlet_mids, _chain_connectors,
+    _cxk_mids_for_chains
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
     _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides,
-    _pick_end_edges, _flush_blend_allowed
+    _flush_blend_allowed
 )
 from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
@@ -613,18 +614,15 @@ def selftest(dxf_path=None):
     check("删面: 距离超门控→放弃",
           _conn_face_pick([(1, 50.0, 50.0, 3.9)], [(10.0, 10.0)], 3.9) is None)
 
-    # 选边倒圆(v2.6): 出线口剔边 + 方案二规则(替代删面愈合, 2026-09-10)
-    _em = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (50.0, 50.0)]
-    _ex, _ew = _pick_end_edges(_em, [(10.0, 0.0)], 11.75)
-    check("选边: 出线口命中最近边", _ex == [1] and not _ew, str((_ex, _ew)))
-    _ex2, _ew2 = _pick_end_edges(_em, [(10.0, 0.0), (10.0, 10.0)], 11.75)
-    check("选边: 两口各剔一条不重复", _ex2 == [1, 2] and not _ew2,
-          str((_ex2, _ew2)))
-    _ex3, _ew3 = _pick_end_edges(_em, [(60.0, 60.0)], 11.75)
-    check("选边: 超门控仍剔最近并告警",
-          _ex3 == [3] and len(_ew3) == 1 and "超门控" in _ew3[0],
-          str((_ex3, _ew3)))
-    check("选边: 无锚点不剔边", _pick_end_edges(_em, [], 11.75) == ([], []))
+    # 删面锚点按 CXK 出线口图层坐标定位(v2.7 用户定案) + 方案二规则
+    _cb = [(0.0, 0.0, 20.0, 10.0), (100.0, 0.0, 120.0, 10.0)]
+    _cp, _cw = _cxk_mids_for_chains(_cb, [(10.0, 5.0), (110.0, 5.0)], 10.0)
+    check("CXK 锚点: 按坐标就近分配两条链",
+          _cp == [[(10.0, 5.0)], [(110.0, 5.0)]], str((_cp, _cw)))
+    _cp2, _cw2 = _cxk_mids_for_chains(_cb, [(60.0, 60.0)], 10.0)
+    check("CXK 锚点: 远离轮廓的标记忽略并告警",
+          _cp2 == [[], []] and len(_cw2) == 1 and "忽略" in _cw2[0],
+          str((_cp2, _cw2)))
     check("方案二: 嵌入端未倒成→齐平端不倒圆",
           _flush_blend_allowed(False) is False
           and _flush_blend_allowed(None) is False)
@@ -632,8 +630,10 @@ def selftest(dxf_path=None):
     with io.open(os.path.join(script_dir(), "cad3d", "modeling", "jrt.py"),
                  encoding="utf-8") as _jf:
         _jrt_src = _jf.read()
-    check("jrt 删面愈合已退役(_delete_faces_safe 仅剩定义无调用)",
-          _jrt_src.count("_delete_faces_safe(") == 1)
+    check("jrt 删面愈合在位(_delete_faces_safe 定义+两端调用)",
+          _jrt_src.count("_delete_faces_safe(") >= 3)
+    check("jrt 删面锚点按 CXK 定位(_cxk_mids_for_chains 已接入)",
+          "_cxk_mids_for_chains(" in _jrt_src and 'layers.get("CXK")' in _jrt_src)
     check("jrt 方案二已接线(_flush_blend_allowed+skip_flush)",
           "_flush_blend_allowed(" in _jrt_src and "skip_flush" in _jrt_src)
     check("护栏: 全图层但半径收窄→放行(压线板式需求)",

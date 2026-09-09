@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""cad3d.modeling.jrt —— 加热条 (JRT) 双侧建模与 G1 相切选边倒圆。
+"""cad3d.modeling.jrt —— 加热条 (JRT) 双侧建模、G1 相切边倒圆与删面愈合。
 
-v2.6 起端面倒圆改为"剔除出线口边后直建"(出线口天然保留直角), 原工序
-"整圈倒圆→删面愈合"退役——删面愈合有三条失败路径(锚点猜面不中/愈合补面
-碎片/NX 拒绝命令, 2026-09-10 用户实机复发), 新工序不依赖删面。
+v2.7: 删面锚点优先按 CXK(出线口)图层坐标定位——用户定案"哪里出线删哪里,
+不在其他位置删面"; 图纸无 CXK 标记时退回链拓扑推断。
+v2.6 的"选边倒圆替代删面"已回退: 拆散整圈相切链致异形条复发(2026-09-10
+实机回归), 恢复验证多轮的"整圈倒圆→出线口删面愈合"工序。
 """
 
 import math
@@ -16,11 +17,12 @@ from cad3d.modeling.purge import _CREATED_FEATURES
 from cad3d.modeling.extrude import _sc_rule_options, extrude_curves
 from cad3d.modeling.stdparts import _pick_target, _bool_feature
 from cad3d.geom.topo import (
-    find_chains, _merge_open_chains, _chain_connectors, _chain_outlet_mids
+    find_chains, _merge_open_chains, _chain_connectors, _chain_outlet_mids,
+    _bbox, _cxk_mids_for_chains
 )
 from cad3d.geom.eval import (
     _faces_healthy, _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides,
-    _pick_end_edges, _flush_blend_allowed
+    _flush_blend_allowed
 )
 
 
@@ -48,39 +50,8 @@ def _find_flat_face(uf, body, z_plane, tol=0.6):
     return best
 
 
-def _edge_end_mids(uf, edges):
-    """端面边界边中点 → [(x, y), ...](与 edges 序一一对应)。
-
-    两层签名尝试: AskEdgeVerts(UF, mold_api_probe 在用户 NX 实测存在) →
-    Edge.Vertices(新版本属性); 某边两层都取不到记 None, 由调用方响亮失败
-    (出线口直角无法保证时宁可不倒, 不静默回退整圈)。"""
-    mids = []
-    for e in edges:
-        pts = None
-        try:
-            v1, v2, _n = uf.Modeling.AskEdgeVerts(e.Tag)
-            if v1 and v2 and len(v1) >= 2 and len(v2) >= 2:
-                pts = (v1, v2)
-        except Exception:
-            pass
-        if pts is None:
-            try:
-                vp = [(p.X, p.Y) for p in e.Vertices]
-                if len(vp) >= 2:
-                    pts = (vp[0], vp[1])
-            except Exception:
-                pass
-        mids.append(None if pts is None
-                    else ((pts[0][0] + pts[1][0]) / 2.0,
-                          (pts[0][1] + pts[1][1]) / 2.0))
-    return mids
-
-
-def _edge_blend_end(work_part, uf, body, z_plane, radius, log, feat_name=None,
-                    skip_mids=None):
-    """端面选边 G1 相切边倒圆: 找端面 → 边界边剔除出线口边(skip_mids,
-    每口剔最近边, _pick_end_edges) → EdgeDumb 倒剩余边(标志同期刊
-    EdgeBlendBuilder)。出线口直角由"不选它"天然保证, 不再删面愈合。"""
+def _edge_blend_end(work_part, uf, body, z_plane, radius, log, feat_name=None):
+    """端面外边 G1 相切边倒圆(期刊同款规则 OuterEdgesOfFaces+LaminarEdge 与标志)。"""
     import NXOpen
     import NXOpen.Features
 
@@ -93,37 +64,21 @@ def _edge_blend_end(work_part, uf, body, z_plane, radius, log, feat_name=None,
     except Exception:
         before = set()
 
-    edges = list(face.GetEdges())
-    if skip_mids:
-        mids = _edge_end_mids(uf, edges)
-        if not edges or any(m is None for m in mids):
-            log("  倒圆: 端面边界边端点取不到(两层签名均失败), 出线口直角"
-                "无法保证——按失败处理(方案二兜底), 不回退整圈倒圆。")
-            return None, []
-        gate = 2.5 * max(radius, 1.0) + 2.0
-        excl, warns = _pick_end_edges(mids, skip_mids, gate)
-        for w in warns:
-            log("  倒圆选边: %s" % w)
-        edges = [e for i, e in enumerate(edges) if i not in set(excl)]
-        if not edges:
-            log("  倒圆: 端面边界边全部位于出线口, 无可倒圆边——按失败处理。")
-            return None, []
-
     bldr = work_part.Features.CreateEdgeBlendBuilder(NXOpen.Features.Feature.Null)
     try:
         sc = work_part.ScCollectors.CreateCollector()
         opts = _sc_rule_options(work_part)
         if opts is not None:
             try:
-                rule = work_part.ScRuleFactory.CreateRuleEdgeDumb(edges, opts)
+                rule = work_part.ScRuleFactory.CreateRuleOuterEdgesOfFaces([face], opts)
             except TypeError:
-                rule = work_part.ScRuleFactory.CreateRuleEdgeDumb(edges)
+                rule = work_part.ScRuleFactory.CreateRuleOuterEdgesOfFaces([face])
             try:
                 opts.Dispose()
             except Exception:
                 pass
         else:
-            rule = work_part.ScRuleFactory.CreateRuleEdgeDumb(edges)
+            rule = work_part.ScRuleFactory.CreateRuleOuterEdgesOfFaces([face])
         sc.ReplaceRules([rule], False)
         try:
             sc.AddEvaluationFilter(NXOpen.ScEvaluationFiltertype.LaminarEdge)
@@ -220,7 +175,7 @@ def _body_volume(work_part, body):
 
 def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
                           r0, r_min, r_step, log, feat_name, label,
-                          dome=False, skip_mids=None):
+                          dome=False):
     """带异形检测的端面倒圆: R 从 r0 起, 异形/失败撤销降 R 重试。"""
     import NXOpen
     r = float(r0)
@@ -231,8 +186,7 @@ def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
         v0 = _body_volume(work_part, body)
         try:
             feat, nf = _edge_blend_end(work_part, uf, body, z_plane, r, log,
-                                       feat_name=feat_name,
-                                       skip_mids=skip_mids)
+                                       feat_name=feat_name)
         except Exception:
             feat, nf = None, []
         v1 = _body_volume(work_part, body) if feat is not None else None
@@ -302,10 +256,7 @@ def _delete_faces(work_part, faces, log, feat_name=None):
 
 def _delete_faces_safe(session, work_part, uf, body, faces, log,
                        feat_name, label):
-    """【已退役 v2.6】带体检的删面: 整组删→体检→撤销; 逐片删→体检→撤销;
-    都失败保留倒圆面。原 JRT 出线口"删面愈合"步骤, 端面倒圆改为选边直建
-    (出线口天然直角)后不再被 build_jrt 调用; 保留供回退与测试参考
-    (mold_cut 链路真正引用的是其内部调用的 _delete_faces)。"""
+    """带体检的删面: 整组删→体检→撤销; 逐片删→体检→撤销; 都失败保留倒圆面。"""
     import NXOpen
     faces = [f for f in faces if f is not None]
     if not faces:
@@ -368,9 +319,8 @@ def _delete_faces_safe(session, work_part, uf, body, faces, log,
 
 
 def _pick_conn_faces(uf, faces, conn_mids, r_ref=None, log=None):
-    """【已退役 v2.6】每个收口连接线中点各取最近的 1 个倒圆面(删面对象),
-    随 build_jrt 删面愈合步骤退役(锚点猜面不中即整组放弃的旧缺陷源);
-    保留供回退与测试参考。"""
+    """每个删面锚点(中点)各取最近的 1 个倒圆面(删面对象); 锚点 v2.7 起
+    优先取 CXK 出线口图层坐标。"""
     rows = []
     for f in faces:
         try:
@@ -467,6 +417,33 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
     if draft <= 1e-9:
         draft = None
 
+    # v2.7 删面锚点: 优先按 CXK(出线口)图层坐标定位——用户定案"哪里出线
+    # 删哪里, 不在其他位置删面"; 图纸无 CXK 标记时退回链拓扑推断。
+    # 容差 10mm: CXK 线应落在轮廓上/内, 10mm 覆盖描线偏移。
+    cxk_all = [((e.p1[0] + e.p2[0]) / 2.0, (e.p1[1] + e.p2[1]) / 2.0)
+               for e in (layers.get("CXK") or []) if e.kind == "line"]
+    cxk_per, cxk_ignore = [], []
+    if cxk_all:
+        _boxes = []
+        for ch in closed:
+            ps = []
+            for i, _r in ch:
+                e = ents[i]
+                if e.kind == "circle":
+                    ps += [(e.c[0] - e.r, e.c[1] - e.r),
+                           (e.c[0] + e.r, e.c[1] + e.r)]
+                else:
+                    ps += [e.p1, e.p2]
+            for p1, p2, _g in (bridge_map.get(id(ch)) or []):
+                ps += [p1, p2]
+            _boxes.append(_bbox(ps))
+        cxk_per, cxk_ignore = _cxk_mids_for_chains(_boxes, cxk_all, 10.0)
+        for w in cxk_ignore:
+            log("【JRT】%s。" % w)
+    else:
+        log("【JRT】图纸无 CXK 出线口标记, 删面位置退回链拓扑推断"
+            "(建议图纸在出线口处补 CXK 线)。")
+
     strips = []
     for ci, chain in enumerate(closed):
         idxs = [i for i, _r in chain]
@@ -498,10 +475,16 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         hp = NXOpen.Point3d(first.p1[0] if first.kind != "circle" else first.c[0],
                             first.p1[1] if first.kind != "circle" else first.c[1], 0.0)
         conns = _chain_connectors(chain, ents)
-        _dm = _chain_outlet_mids(chain, ents) or conns
-        if not _dm:
-            log("【JRT】链 %d 未识别出线口/连接线锚点, 两端整圈倒圆"
-                "(无口可保留直角)。" % (ci + 1))
+        if cxk_all:
+            _dm = cxk_per[ci]
+            if not _dm:
+                log("【JRT】链 %d 附近无 CXK 出线口标记, 此链不删面"
+                    "(删面位置以 CXK 坐标为准, 不猜其他位置)。" % (ci + 1))
+            else:
+                log("【JRT】链 %d 按 CXK 出线口标记定位删面: %d 处。"
+                    % (ci + 1, len(_dm)))
+        else:
+            _dm = _chain_outlet_mids(chain, ents) or conns
 
         for side, z_flush, z_embed in _jrt_sides(z_start, z_end, bottom):
             base = "%sJRT_%d%s" % (FEATURE_PREFIX, ci + 1, side)
@@ -524,14 +507,24 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
             r_step_all = max(float(jp.get("r_step", 0.1)), 1e-6)
             embed_ok = False
             try:
-                _f, _nf, _r_used = _edge_blend_end_retry(
+                _f, new_faces, _r_used = _edge_blend_end_retry(
                     session, work_part, uf, body, z_embed,
                     float(jp["blend_r"]), r_min_all, r_step_all, log,
-                    base + "_BLE", "链%d侧%s嵌入端" % (ci + 1, side),
-                    skip_mids=_dm)
-                embed_ok = _f is not None
-                if embed_ok:
+                    base + "_BLE", "链%d侧%s嵌入端" % (ci + 1, side))
+                if _f is not None:
                     stats["JRT"]["features"] += 1
+                    if _dm and len(new_faces) > 2:
+                        if _delete_faces_safe(session, work_part, uf, body,
+                                              _pick_conn_faces(uf, new_faces,
+                                                               _dm,
+                                                               r_ref=_r_used,
+                                                               log=log),
+                                              log, base + "_DELE",
+                                              "链%d侧%s嵌入端删面" % (ci + 1, side)):
+                            stats["JRT"]["features"] += 1
+                            embed_ok = True      # 倒圆+出线口删面双双成功
+                    else:
+                        embed_ok = True          # 无删面锚点: 仅倒圆不算失败
             except Exception as ex:
                 log("【JRT】链 %d 侧 %s 嵌入端倒圆失败: %s" % (ci + 1, side, ex))
 
@@ -546,16 +539,16 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
 
             if not _flush_blend_allowed(embed_ok):
                 stats["JRT"]["skip_flush"] += 1
-                log("【JRT】链 %d 侧 %s 嵌入端倒圆未成功, 按方案二规则跳过"
-                    "齐平端倒圆(此端保留直角)。" % (ci + 1, side))
+                log("【JRT】链 %d 侧 %s 嵌入端倒圆/删面未成功, 按方案二规则"
+                    "跳过齐平端倒圆(此端保留直角)。" % (ci + 1, side))
             else:
                 _r_start = float(jp["blend_r"])
                 try:
-                    _f2, _nf2, used = _edge_blend_end_retry(
+                    _f2, nf2, used = _edge_blend_end_retry(
                         session, work_part, uf, body, z_flush,
                         _r_start, r_min_all, r_step_all, log,
                         base + "_BLF", "链%d侧%s齐平端" % (ci + 1, side),
-                        dome=True, skip_mids=_dm)
+                        dome=True)
                     if _f2 is not None:
                         stats["JRT"]["features"] += 1
                         if abs(used - _r_start) > 1e-9:
@@ -563,10 +556,25 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                                 % (ci + 1, side, used))
                     else:
                         log("【JRT】链 %d 侧 %s 齐平端倒圆全部失败(下限 %.4g), "
-                            "此端保留直角。" % (ci + 1, side, r_min_all))
+                            "触发兜底: 此端保留直角。"
+                            % (ci + 1, side, r_min_all))
                 except Exception as ex:
                     log("【JRT】链 %d 侧 %s 齐平端倒圆异常: %s"
                         % (ci + 1, side, ex))
+                    used, nf2 = _r_start, []
+
+                if _dm and len(nf2) > 2:
+                    try:
+                        if _delete_faces_safe(session, work_part, uf, body,
+                                              _pick_conn_faces(uf, nf2, _dm,
+                                                               r_ref=used,
+                                                               log=log),
+                                              log, base + "_DELF",
+                                              "链%d侧%s圆顶删面" % (ci + 1, side)):
+                            stats["JRT"]["features"] += 1
+                    except Exception as ex:
+                        log("【JRT】链 %d 侧 %s 圆顶删面失败: %s"
+                            % (ci + 1, side, ex))
 
             _mark_type(body, "JRT")
             strips.append(body)

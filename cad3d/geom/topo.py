@@ -578,6 +578,31 @@ def _chain_outlet_mids(chain, ents):
     return mids
 
 
+def _cxk_mids_for_chains(chain_boxes, cxk_mids, margin):
+    """(纯逻辑, 可离线测) 出线口(CXK)图层线中点 → 就近分配到链包围盒。
+
+    v2.7 用户定案: JRT 删面位置直接按 CXK 坐标定位, 不再从链拓扑猜口线
+    (猜错=在错误位置删面, 2026-09-10 实机复发)。每个标记只归最近的
+    1 条链; 距全部链包围盒超 margin 的标记忽略并告警(不许在加热条以外
+    删面)。chain_boxes=[(x0,y0,x1,y1),...]。返回 (每链 mids 列表, 告警)。"""
+    per = [[] for _ in chain_boxes]
+    warns = []
+    for (mx, my) in (cxk_mids or []):
+        bi, bd = None, None
+        for i, (x0, y0, x1, y1) in enumerate(chain_boxes):
+            dx = max(x0 - mx, 0.0, mx - x1)
+            dy = max(y0 - my, 0.0, my - y1)
+            d = math.hypot(dx, dy)
+            if bi is None or d < bd:
+                bi, bd = i, d
+        if bi is None or bd > margin:
+            warns.append("CXK 标记(%.2f,%.2f)距任何加热条轮廓超 %.2f, 忽略"
+                         % (mx, my, margin))
+            continue
+        per[bi].append((mx, my))
+    return per, warns
+
+
 def _chain_connectors(chain, ents, ratio=0.3):
     """链中的收口连接线(内外轮廓环之间的短直线) → [(中点X, 中点Y), ...]。
 
