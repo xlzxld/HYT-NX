@@ -6,6 +6,7 @@ from cad3d.core.constants import (
     LAYER_TABLE, REF_LAYER_TABLE, FEATURE_PREFIX, CHAIN_TOL,
     MANAGED_MIN, MANAGED_MAX
 )
+from cad3d.core.config import _cfg_bool
 from cad3d.core.logging import _fmt_num
 from cad3d.modeling.nx_compat import _mark_curve, _bodies_of, _set_expr
 from cad3d.modeling.purge import _CREATED_FEATURES
@@ -71,9 +72,6 @@ def create_curves(work_part, layers, layer_map, log):
             log("【曲线】%s(%s): %d 条 → NX 图层 %d %s"
                 % (code, zh.get(code, "参考"), n_ok, num, extra))
     return out
-
-
-_create_curves = create_curves
 
 
 def work_part_rules(work_part, curves):
@@ -185,9 +183,50 @@ def modeling_ents(layers, code):
     return ents
 
 
+def _merge_extrude_enabled():
+    """合并拉伸提速开关(nx_std_config.py 的 MERGE_PROFILE_EXTRUDE, 默认开)。"""
+    return _cfg_bool("MERGE_PROFILE_EXTRUDE", True)
+
+
+def _merge_note(used):
+    """(纯逻辑) 图层完成日志后缀: 合并拉伸生效时标注(便于核对提速路径)。"""
+    return ", 合并拉伸生效" if used else ""
+
+
+def _merge_groups(role, entries):
+    """(纯逻辑, 可离线测) 合并拉伸分组。
+
+    entries = [{"pick": FLB 体或 None, ...}, ...](build_layer 预解析产物)。
+      role == "subtract": 按布尔目标体分组——同目标的轮廓合并为一个截面
+        一次拉伸+一次布尔; 无目标的(不落在 FLB 内)单独成组普通拉伸;
+      其余角色: 全部轮廓并成一组(target 角色不跨轮廓合并, 由调用方
+        逐轮廓走"含孔单特征"路径, 不经过本函数的组)。
+    返回 [(pick, [entry, ...]), ...](保序)。
+    """
+    if role != "subtract":
+        return [(None, list(entries))]
+    groups, keys = {}, []
+    for en in entries:
+        k = id(en["pick"])
+        if k not in groups:
+            groups[k] = (en["pick"], [])
+            keys.append(k)
+        groups[k][1].append(en)
+    return [groups[k] for k in keys]
+
+
 def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
                 params, flb_regions, log, stats):
-    """单图层建模: 环组织 → 拉伸 → 布尔。"""
+    """单图层建模: 环组织 → 拉伸 → 布尔。
+
+    (v2.4 提速) 默认开启合并拉伸(MERGE_PROFILE_EXTRUDE 可关):
+      含孔轮廓: 外环+全部孔环并入同一截面, 单特征成体——嵌套闭环截面
+        NX 自动按孔处理, 与旧版"外环拉伸+逐孔布尔"几何等价;
+      subtract 层: 同一 FLB 目标的多轮廓合并成一次拉伸+一次布尔
+        (减法对工具并集与逐个减等价);
+      target 层: 各轮廓独立成体(维持 regions 逐轮廓映射), 仅做含孔合并;
+      任一合并拉伸失败自动回退旧版逐轮廓路径, 容错语义不变。
+    """
     d = params.get(code, (0.0, 0.0)) if isinstance(params, dict) else (0.0, 0.0)
     if not isinstance(d, (list, tuple)) or len(d) != 2:
         d = (0.0, 0.0)
@@ -262,69 +301,124 @@ def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
             p = (c.c[0] + c.r, c.c[1])
         return nx.Point3d(p[0], p[1], 0.0)
 
+    # 预解析: 逐轮廓收集曲线与布尔目标(失败轮廓照旧日志后跳过)
+    entries = []
     for prof in profiles:
         fi += 1
-        base_name = "%sEXT_%s_%d" % (FEATURE_PREFIX, code, fi)
         outer_curves = chain_curves(prof["outer"])
         if outer_curves is None:
             continue
-        hp = chain_help(prof["outer"])
-        holes = prof["holes"]
-
-        op = None
+        holes = []
+        for k, hole in enumerate(prof["holes"]):
+            hc = chain_curves(hole)
+            if hc is not None:
+                holes.append((k, hole, hc))
         pick = None
         if role == "subtract":
             if flb_regions:
                 pick = pick_region(prof["outer"]["bbox"])
-                if pick is not None:
-                    op = ("subtract", pick)
-                else:
+                if pick is None:
                     log("【%s】轮廓 %d 不落在任何 FLB 体内, 按普通拉伸保留。"
                         % (code, fi))
             else:
                 log("【%s】无 FLB 基准体, 轮廓按普通拉伸保留。" % code)
+        entries.append({"fi": fi,
+                        "base": "%sEXT_%s_%d" % (FEATURE_PREFIX, code, fi),
+                        "outer": outer_curves, "hp": chain_help(prof["outer"]),
+                        "holes": holes, "pick": pick,
+                        "bbox": prof["outer"]["bbox"]})
+
+    def _classic(en):
+        """旧版逐轮廓路径(合并关闭/合并失败回退共用, 行为与 v2.3 一致)。"""
+        op = ("subtract", en["pick"]) if (role == "subtract"
+                                          and en["pick"] is not None) else None
         try:
-            feat = extrude_curves(work_part, outer_curves, start, end,
-                                  base_name + ("_OUT" if holes else ""),
-                                  bool_op=op, help_pt=hp)
+            feat = extrude_curves(work_part, en["outer"], start, end,
+                                  en["base"] + ("_OUT" if en["holes"] else ""),
+                                  bool_op=op, help_pt=en["hp"])
             stats[code]["features"] += 1
         except Exception as ex:
             stats[code]["note"] = "拉伸失败"
-            log("【%s】轮廓 %d 拉伸失败: %s" % (code, fi, ex))
-            continue
+            log("【%s】轮廓 %d 拉伸失败: %s" % (code, en["fi"], ex))
+            return
         got = _bodies_of(feat)
         if op is None:
             bodies.extend(got)
         if role == "target" and got:
-            regions.append((got[0], prof["outer"]["bbox"]))
-
-        for k, hole in enumerate(holes):
-            hc = chain_curves(hole)
-            if hc is None:
-                continue
+            regions.append((got[0], en["bbox"]))
+        for k, hole, hc in en["holes"]:
             if op is not None:
-                hop = ("unite", pick)
-                hname = base_name + "_CORE%d" % k
+                hop = ("unite", en["pick"])
+                hname = en["base"] + "_CORE%d" % k
             else:
                 host = got[0] if got else None
                 if host is None:
                     continue
                 hop = ("subtract", host)
-                hname = base_name + "_H%d" % k
+                hname = en["base"] + "_H%d" % k
             try:
                 extrude_curves(work_part, hc, start, end, hname,
                                bool_op=hop, help_pt=chain_help(hole))
                 stats[code]["features"] += 1
             except Exception as ex:
                 stats[code]["note"] = "孔处理失败"
-                log("【%s】轮廓 %d 孔 %d 处理失败: %s" % (code, fi, k, ex))
+                log("【%s】轮廓 %d 孔 %d 处理失败: %s" % (code, en["fi"], k, ex))
+
+    def _merged(ens, name, op):
+        """提速路径: 多轮廓/含孔截面并入同一 section, 单特征一次成体。"""
+        curves = []
+        for en in ens:
+            curves.extend(en["outer"])
+            for _k, _hole, hc in en["holes"]:
+                curves.extend(hc)
+        feat = extrude_curves(work_part, curves, start, end, name,
+                              bool_op=op, help_pt=ens[0]["hp"])
+        stats[code]["features"] += 1
+        got = _bodies_of(feat)
+        if op is None:
+            bodies.extend(got)
+        if role == "target" and got:
+            regions.append((got[0], ens[0]["bbox"]))
+
+    merged_used = False
+    if _merge_extrude_enabled() and entries:
+        if role == "target":
+            # 各轮廓独立成体(regions 逐轮廓映射), 仅做含孔单特征合并
+            for en in entries:
+                try:
+                    _merged([en], en["base"], None)
+                    merged_used = True
+                except Exception as ex:
+                    stats[code]["note"] = "合并拉伸回退"
+                    log("【%s】轮廓 %d 含孔合并拉伸失败(%s), 回退逐轮廓模式。"
+                        % (code, en["fi"], ex))
+                    _classic(en)
+        else:
+            for gi, (pick, gents) in enumerate(_merge_groups(role, entries), 1):
+                gop = ("subtract", pick) if pick is not None else None
+                try:
+                    _merged(gents, "%sEXT_%s_M%d" % (FEATURE_PREFIX, code, gi),
+                            gop)
+                    merged_used = True
+                except Exception as ex:
+                    stats[code]["note"] = "合并拉伸回退"
+                    log("【%s】合并拉伸组 %d(%d 个轮廓)失败(%s), 回退逐轮廓模式。"
+                        % (code, gi, len(gents), ex))
+                    for en in gents:
+                        _classic(en)
+    else:
+        for en in entries:
+            _classic(en)
 
     if role == "target":
-        log("【%s】基准体完成: %d 个轮廓(体 %d 个), %.4g→%.4g。"
-            % (code, len(profiles), len(regions), start, end))
+        log("【%s】基准体完成: %d 个轮廓(体 %d 个), %.4g→%.4g%s。"
+            % (code, len(profiles), len(regions), start, end,
+               _merge_note(merged_used)))
     elif role == "subtract":
-        log("【%s】布尔减完成: %d 个轮廓(从 FLB 减去)。" % (code, len(profiles)))
+        log("【%s】布尔减完成: %d 个轮廓(从 FLB 减去)%s。"
+            % (code, len(profiles), _merge_note(merged_used)))
     else:
-        log("【%s】拉伸完成: %d 个轮廓。" % (code, len(profiles)))
+        log("【%s】拉伸完成: %d 个轮廓%s。"
+            % (code, len(profiles), _merge_note(merged_used)))
     stats[code]["bodies"] = bodies
     return bodies, regions

@@ -6,7 +6,7 @@ from cad3d.core.constants import (
     DEFAULT_JRT, TARGET_CODE, FEATURE_PREFIX, LAYER_CODES
 )
 from cad3d.core.logging import _fmt_num
-from cad3d.modeling.nx_compat import _mark_curve, _bodies_of
+from cad3d.modeling.nx_compat import _mark_curve, _mark_type, _bodies_of
 from cad3d.modeling.purge import _CREATED_FEATURES
 from cad3d.modeling.extrude import _sc_rule_options, extrude_curves
 from cad3d.modeling.stdparts import _pick_target, _bool_feature
@@ -524,6 +524,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                 except Exception as ex:
                     log("【JRT】链 %d 侧 %s 圆顶删面失败: %s" % (ci + 1, side, ex))
 
+            _mark_type(body, "JRT")
             strips.append(body)
             stats["JRT"]["profiles"] += 1
 

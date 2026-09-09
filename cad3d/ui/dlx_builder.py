@@ -6,7 +6,7 @@ from cad3d.core.paths import _fresh_dlx_path, _temp_dlx_path
 from cad3d.core.constants import (
     LAYER_TABLE, MANAGED_MIN, MANAGED_MAX, DIALOG_GROUPS,
     JT_LINK_OPTS, DEFAULT_JRT, JRT_FIELDS, LAYER_SEL_OPTS,
-    ZMODE_OPTS, BOOL_OPTS, DIR_OPTS
+    ZMODE_OPTS, BOOL_OPTS, DIR_OPTS, LINE_ANCHOR_LAYERS
 )
 from cad3d.core.state import default_params
 from cad3d.modeling.std_rules import _std_z
@@ -412,11 +412,12 @@ def build_dlx(params=None, jrt=None, jt_mode=None):
 
     # 文件组
     g_file = _group_item(
-        "grp_file", "输入文件",
-        _blk_filebrowser("dxf_file", "DXF 文件", "*.dxf") + _blk_label(
+        "grp_file", "输入图纸文件 (DWG / DXF)",
+        _blk_filebrowser("dxf_file", "图纸文件", "*.dwg;*.dxf") + _blk_label(
             "hint_label",
-            "提示: 起始=结束=0 的图层跳过; LS/RZ/DK 拉伸后从 FLB 减去; "
-            "曲线按图层导入到 NX 图层 %d~%d, 特征名前缀 CAD3D_。"
+            "提示: 支持直接选取 .dwg 或 .dxf 图纸(DWG 自动后台无头转换并即用即销); "
+            "起始=结束=0 的图层跳过; LS/RZ/DK 拉伸后从 FLB 减去; "
+            "曲线默认导入 NX 高位图层 %d~%d (冲突自动避让)。"
             % (MANAGED_MIN, MANAGED_MAX)),
         columns=1)
 
@@ -433,6 +434,15 @@ def build_dlx(params=None, jrt=None, jt_mode=None):
             s, e = params.get(code, (0.0, 0.0))
             children.append(_blk_double(code + "_start", "%s %s 起始距离" % (code, zh[code]), s))
             children.append(_blk_double(code + "_end", "%s %s 结束距离" % (code, zh[code]), e))
+        if gid == "grp_flb":
+            children.append(_blk_button("flb_mirror", "镜像"))
+            children.append(_blk_label(
+                "flb_mirror_hint",
+                "镜像: 把 FLB 起止翻到另一侧(数值翻符号、次序不变, 如 "
+                "-40/-85 → 40/85), 其余各层与加热条按常规联动公式整体重推——"
+                "与手动输入翻转后 FLB 的联动结果完全一致, 热咀/螺丝/点孔/"
+                "加热条相对板面位置不变、不错位。镜像会覆盖各层的手工微调"
+                "(恢复联动值), 需要时镜像后再单独改。"))
         groups_xml.append(_group_item(gid, title, "".join(children), columns=1))
 
     # 加热条组(JRT)
@@ -485,7 +495,7 @@ def build_std_dlx(std_rules, params):
                       [t for _v, t in LAYER_SEL_OPTS],
                       _opt_index(LAYER_SEL_OPTS, lay)),
         ] + ([]
-             if lay == "CXK" else
+             if lay in LINE_ANCHOR_LAYERS else
              [_blk_double(p + "rmin", "半径min", r.get("r_min", 0.0)),
               _blk_double(p + "rmax", "半径max", r.get("r_max", 0.0))]) + [
             _blk_enum(p + "zmode", "Z基准",

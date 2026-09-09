@@ -7,9 +7,13 @@ from cad3d.geom.topo import (
     _pkey, _near_keys, find_chains, loop_polygon, poly_area, _bbox,
     point_in_poly, _loop_in_loop, organize_loops, _chain_tips, _cluster_tips,
     _merge_open_chains, _center_seen, collect_circle_anchors,
+    collect_yxb_anchors,  # noqa: F401 —— 纯再导出(本文件同款豁免)
     _chain_outlet_mids, _chain_connectors
 )
 from cad3d.geom.eval import (
     _q, _nx_curve_fp, _dxf_ent_fp, dxf_fingerprints, _faces_healthy,
     _flush_start_r, _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides
+)
+from cad3d.geom.dwg_converter import (
+    convert_dwg_to_dxf, find_acad_executable, DwgConversionError
 )

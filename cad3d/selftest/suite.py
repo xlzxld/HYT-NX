@@ -15,7 +15,8 @@ import time
 import xml.etree.ElementTree as ET
 
 from cad3d.core.paths import (
-    script_dir, _fresh_dlx_path, _json_path, _temp_dlx_path, resolve_dxf_path
+    script_dir, _fresh_dlx_path, _json_path, _temp_dlx_path, resolve_dxf_path,
+    _logs_dir
 )
 from cad3d.core.config import (
     _CFG_NOTES, _cfg, _cfg_num, _cfg_int, _USER_CFG, SCHEMA_VERSION
@@ -24,7 +25,7 @@ from cad3d.core.constants import (
     _LINK_OFFSETS, JRT_FROM_TOP, DEFAULT_JRT, MANAGED_MAX, STDPARTS_DIRNAME,
     JT_LINK_DEFAULT, JRT_FIELDS, LAYER_SEL_OPTS, BOOL_OPTS, ZMODE_OPTS,
     _ZMODE_FALLBACK, _ZMODE_DEFS, STD_MAX_ANCHORS, LAYER_CODES, DIR_OPTS,
-    assign_layers
+    LINE_ANCHOR_LAYERS, assign_layers
 )
 from cad3d.core.state import (
     _jt_link_values, jt_mode_with_memory, _cx_link_values, derive_linked,
@@ -38,7 +39,7 @@ from cad3d.geom.topo import (
     find_chains, loop_polygon, poly_area, _bbox, point_in_poly,
     _loop_in_loop, organize_loops, _chain_tips, _cluster_tips,
     _merge_open_chains, _center_seen, collect_circle_anchors,
-    _chain_outlet_mids, _chain_connectors
+    collect_yxb_anchors, _chain_outlet_mids, _chain_connectors
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
@@ -48,8 +49,21 @@ from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
     _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow
 )
-from cad3d.modeling.stdparts import _place_delta
-from cad3d.modeling.extrude import modeling_ents, build_layer
+from cad3d.modeling.stdparts import (
+    _bool_feature, _place_delta, _rot_xy, _batch_delete, _group_bool_plan
+)
+from cad3d.modeling.nx_compat import _matrix3x3
+from cad3d.modeling.mold_cut import (
+    _any_point_inside, _bbox_overlap, _body_matches_bbox, _broken_holes,
+    _extents, _grow, _hole_rows, _is_sliver, _kw_hits, _merge_face_bboxes,
+    _pair_hits, _pick_points, _rule_for
+)
+from cad3d.core.constants import (MOLD_AUDIT_VOLUME, MOLD_BBOX_TOL,
+                                  MOLD_CUT_RULES, MOLD_TRIAL_CUT)
+from cad3d.modeling.extrude import (
+    modeling_ents, build_layer, _merge_groups, _merge_note,
+    _merge_extrude_enabled
+)
 from cad3d.ui.dlx_builder import (
     _blk_enum, build_dlx, build_selection_dlx, build_std_dlx, _group_item,
     _blk_label
@@ -191,11 +205,7 @@ def selftest(dxf_path=None):
     check("两半弧成环 + 圆轮廓", len(profs4) == 2)
 
     # 5. 合成 DXF 解析
-    sample = os.path.join(script_dir(), ".zcode", "sample_layers.dxf")
-    try:
-        os.makedirs(os.path.dirname(sample), exist_ok=True)
-    except OSError:
-        pass
+    sample = os.path.join(_logs_dir(), "sample_layers.dxf")
     make_sample_dxf(sample)
     layers, stats = parse_dxf(sample)
     check("合成 DXF 各层曲线数",
@@ -205,11 +215,31 @@ def selftest(dxf_path=None):
     check("JRT 参考图层导入", len(layers.get("JRT", [])) == 4)
     check("LD 参考图层导入", len(layers.get("LD", [])) == 1)
     mp = assign_layers(["LD", "0", "FLB", "JRT"])
-    check("动态图层号分配", mp["FLB"] == _cfg("NX_LAYER_START", 11)
-          and mp["JRT"] == _cfg("NX_LAYER_JRT", 18)
-          and mp["0"] == _cfg("NX_LAYER_DYNAMIC_START", 19)
-          and mp["LD"] == _cfg("NX_LAYER_DYNAMIC_START", 19) + 1,
+    check("动态图层号分配", mp["FLB"] == _cfg("NX_LAYER_START", 101)
+          and mp["JRT"] == _cfg("NX_LAYER_JRT", 118)
+          and mp["0"] == _cfg("NX_LAYER_DYNAMIC_START", 119)
+          and mp["LD"] == _cfg("NX_LAYER_DYNAMIC_START", 119) + 1,
           str(mp))
+
+    # 验证图层冲突智能避让
+    class _MockCurve(object):
+        def __init__(self, layer):
+            self.Layer = layer
+
+    class _MockPart(object):
+        def __init__(self, occupied_layers):
+            self.Curves = [_MockCurve(ly) for ly in occupied_layers]
+            self.Bodies = []
+            self.Points = []
+            self.Sketches = []
+
+    _mock_part = _MockPart([101, 105])
+    _avoid_log = []
+    _mp_avoid = assign_layers(["FLB", "JT", "JRT", "0"], work_part=_mock_part, log=lambda m: _avoid_log.append(m))
+    check("图层冲突智能自动避让",
+          _mp_avoid["FLB"] > 101 and 101 not in _mp_avoid.values()
+          and 105 not in _mp_avoid.values() and len(_avoid_log) > 0)
+
     _lo_cfg = _cfg("LINK_OFFSETS", {})
     if not isinstance(_lo_cfg, dict):
         _lo_cfg = {}
@@ -221,7 +251,7 @@ def selftest(dxf_path=None):
           and DEFAULT_JRT["offset"] == _cfg_num(_cfg("JRT_OFFSET", 5.0), 5.0)
           and DEFAULT_JRT["draft"] == _cfg_num(_cfg("JRT_DRAFT", 2.0), 2.0)
           and DEFAULT_JRT["color_strip"] == _cfg_int("JRT_COLOR_STRIP", 186)
-          and MANAGED_MAX == _cfg_int("NX_LAYER_MAX", 70)
+          and MANAGED_MAX == _cfg_int("NX_LAYER_MAX", 170)
           and STDPARTS_DIRNAME == _cfg("STDPARTS_DIRNAME", "stdparts"))
 
     # 6. 几何指纹
@@ -290,6 +320,24 @@ def selftest(dxf_path=None):
           "jt_link" in build_dlx(default_params(), dict(DEFAULT_JRT),
                                  jt_mode="普通模式"))
 
+    # 7b-2. 镜像(v2.5 定案): 仅把 FLB 取负保序翻侧(-40/-85→40/85, 用户定案),
+    #       其余按常规联动公式整体重推=手输等效(同一设计搬到另一侧, 各特征
+    #       角色面不变)。不得把全部层逐个取负(初版方案, 已否): ZMODE TOP/
+    #       BOTTOM 与 JRT 齐平/嵌入端都按数值大小定向, 全取负会把热咀/压线
+    #       板/加热条翻到对面板面、B 侧压条跑出板外(2026-09-09 用户实测)。
+    _mt, _mb = 85.0, 40.0                  # 翻转后 FLB(40,85) 的 max/min
+    _mlink = derive_linked(_mt, _mb, jt_mode="普通模式")
+    check("镜像口径: FLB 翻 40/85 后常规联动(=手输等效)",
+          _mlink["LS"] == (85.0, 40.0) and _mlink["RZ"] == (53.0, 40.0)
+          and _mlink["DK"] == (85.0, 82.0) and _mlink["DP"] == (46.7023, 40.0)
+          and _mlink["JT"] == (95.0, 25.0) and _mlink["JRT"] == (85.0, 77.5)
+          and _cx_link_values(_mlink["JT"][0]) == (95.0, 60.0))
+    _sides_p = _jrt_sides(_mlink["JRT"][0], _mlink["JRT"][1], _mb)
+    check("镜像口径: 加热条两压条齐平面均贴板面(40/85 板)",
+          _sides_p == [("T", 85.0, 77.5), ("B", 40.0, 47.5)], str(_sides_p))
+    check("窗口② dlx 含镜像按钮",
+          'id="flb_mirror"' in build_dlx(default_params(), dict(DEFAULT_JRT)))
+
     # 7c. enum Value 属性写入选中序号
     en = _blk_enum("t", "测试", ["甲", "乙", "丙"], 2)
     check("enum Value=选中序号", 'sname="TEMPVALUE" source="1" type="integer" value="2"'
@@ -349,6 +397,143 @@ def selftest(dxf_path=None):
     check("CXK 线中点锚点≈(4526.31,1790.27)(3Dtest 实线)",
           len(ak) == 1 and abs(ak[0][0] - 4526.3106) < 0.01
           and abs(ak[0][1] - 1790.2716) < 0.01, str(ak))
+
+    # 7e. YXB 压线板: 贴合边中点锚点 + 逐板轮廓自动判向(26079 前跑板实图定案,
+    #     16.6 长边沿槽向落 CX 线上、板体沿背离槽方向, longaxis_deg=0;
+    #     2026-09-09 矩阵转置修复后 θ=f: 旧"水平槽壁+180°补偿"是 bug 掩盖
+    #     补丁已删——四类墙世界角统一=f, 与实机验证结果一致)
+    _yxb_cases = [
+        ("板体-Y", [DXLine((-5, 0), (30, 0))],
+         [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5))],
+         (5.0, 0.0, -90.0)),
+        ("板体+Y", [DXLine((-5, 0), (30, 0))],
+         [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5))],
+         (5.0, 0.0, 90.0)),
+        ("板体+X", [DXLine((0, -5), (0, 30))],
+         [DXLine((0, 0), (0, 10)), DXLine((0, 10), (5, 10))],
+         (0.0, 5.0, 0.0)),
+        ("板体-X", [DXLine((0, -5), (0, 30))],
+         [DXLine((0, 0), (0, 10)), DXLine((-5, 10), (0, 10))],
+         (0.0, 5.0, 180.0)),
+    ]
+    for _nm, _cxl, _yxl, _exp in _yxb_cases:
+        _a, _w = collect_yxb_anchors(_yxl, _cxl)
+        check("YXB 判向: %s→θ=%.0f" % (_nm, _exp[2]),
+              len(_a) == 1 and not _w
+              and abs(_a[0][0] - _exp[0]) < 1e-6
+              and abs(_a[0][1] - _exp[1]) < 1e-6
+              and abs(_a[0][2] - _exp[2]) < 1e-6, str(_a))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5)),
+         DXLine((15, 0), (25, 0)), DXLine((25, 0), (25, 5))],
+        [DXLine((-5, 0), (30, 0))])
+    check("YXB 同线双板对向→各自朝向(-90/90)",
+          len(_a) == 2 and not _w
+          and sorted((round(x, 3), round(y, 3), round(t, 3))
+                     for x, y, t in _a) == [(5.0, 0.0, -90.0),
+                                            (20.0, 0.0, 90.0)], str(_a))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((0, 0), (4, 0)), DXLine((6, 0), (10, 0)),
+         DXLine((0, 0), (0, -5)), DXLine((0, -5), (10, -5)),
+         DXLine((10, -5), (10, 0))],
+        [DXLine((-5, 0), (30, 0))])
+    check("YXB 贴合边拆两段→并集中点(5,0)+判向-90",
+          len(_a) == 1 and not _w and abs(_a[0][0] - 5.0) < 1e-6
+          and abs(_a[0][1]) < 1e-6 and abs(_a[0][2] + 90.0) < 1e-6, str(_a))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5))],
+        [DXLine((0, 3), (30, 3))])
+    check("YXB CX 平行但不重合(偏距3)→跳过+警告", not _a and len(_w) == 1,
+          str(_w))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((14, 0), (20, 0)), DXLine((14, 0), (14, -5))],
+        [DXLine((-5, 0), (15, 0))])
+    check("YXB 重叠不足半长→不算贴合边", not _a and len(_w) == 1, str(_a))
+    _a, _w = collect_yxb_anchors(
+        [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5)),
+         DXCircle((30.0, 30.0), 2.0)],
+        [DXLine((-5, 0), (30, 0))])
+    check("YXB 含圆不崩(圆无端点独立成组仅告警, 板锚点不受影响)",
+          len(_a) == 1 and len(_w) == 1
+          and abs(_a[0][0] - 5.0) < 1e-6 and abs(_a[0][1]) < 1e-6
+          and abs(_a[0][2] + 90.0) < 1e-6, str((_a, _w)))
+    _logs = []
+    _a = collect_circle_anchors(
+        {"YXB": [DXLine((0, 0), (10, 0)), DXLine((0, 0), (0, -5))],
+         "CX": [DXLine((-5, 0), (30, 0))]},
+        sanitize_std_rule({"layer": "YXB"}), log=_logs.append)
+    check("YXB 分支接入: 锚点第三元=角度-90",
+          len(_a) == 1 and abs(_a[0][2] + 90.0) < 1e-6, str(_a))
+    _a = collect_circle_anchors(
+        {"YXB": [DXLine((0, 0), (10, 0))], "CX": []},
+        sanitize_std_rule({"layer": "YXB"}), log=_logs.append)
+    check("YXB 空 CX→无锚点+警告入日志",
+          not _a and any("贴合边" in _s for _s in _logs), str(_logs))
+    check("LINE_ANCHOR_LAYERS=CXK+YXB", LINE_ANCHOR_LAYERS == ("CXK", "YXB"))
+    check("YXB 在图层选项且规则合法",
+          "YXB" in [v for v, _t in LAYER_SEL_OPTS]
+          and sanitize_std_rule({"layer": "yxb"})["layer"] == "YXB")
+    if _USER_CFG is not None:
+        _d = std_part_defaults("压线板.prt")
+        check("默认规则: 压线板→YXB/CX顶值", _d is not None
+              and _d.get("layer") == "YXB" and _d.get("z_mode") == "CX_TOP",
+              str(_d))
+    _xml_y = build_std_dlx(
+        {"压线板.prt": sanitize_std_rule({"layer": "YXB", "z_mode": "CX_TOP"})},
+        default_params())
+    check("YXB 件参数页无半径框(与 CXK 同款)",
+          "rmin" not in _xml_y and "rmax" not in _xml_y)
+
+    class _FakeNx:
+        class Matrix3x3:
+            def __init__(self, *vals):
+                self.vals = vals
+
+    def _mvals(flip, ang):
+        return _matrix3x3(_FakeNx, flip, ang).vals
+
+    check("姿态: θ=0 与旧版逐位一致(+Z/-Z)",
+          _mvals(False, 0.0) == (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+          and _mvals(True, 0.0) == (1.0, 0.0, 0.0, 0.0, -1.0, 0.0,
+                                    0.0, 0.0, -1.0))
+    # NX 按传入元素矩阵的转置生效(2026-09-09 实机探针定案): 非翻转分支
+    # 传 Rz(−θ) 元素使世界恰为 Rz(+θ); 翻转分支矩阵对称、原值即正确。
+    check("姿态: θ=90 非翻转传 Rz(−θ) 元素(NX 转置后世界=Rz+θ)",
+          all(abs(a - b) < 1e-12 for a, b in zip(
+              _mvals(False, 90.0),
+              (0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0)))
+          and all(abs(a - b) < 1e-12 for a, b in zip(
+              _mvals(True, 90.0),
+              (0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0))))
+    check("位移旋转: _rot_xy 90°(1,0)→(0,1) / 0°恒等",
+          abs(_rot_xy(1, 0, 90.0)[0]) < 1e-12
+          and abs(_rot_xy(1, 0, 90.0)[1] - 1.0) < 1e-12
+          and _rot_xy(3, 4, 0.0) == (3, 4))
+    _fx = os.path.join(script_dir(), "test", "fixtures", "26079_YXB.dxf")
+    if os.path.isfile(_fx):
+        _lay, _st = parse_dxf(_fx)
+        _ya, _yw = collect_yxb_anchors(_lay.get("YXB") or [],
+                                       _lay.get("CX") or [])
+        _exp11 = [
+            (3582.5, -295.268, 180.0),
+            (3582.5, 341.252, 180.0),
+            (3661.948, -342.768, -90.0),
+            (3661.948, 388.752, 90.0),
+            (3811.948, -342.768, -90.0),
+            (3811.948, 388.752, 90.0),
+            (3891.396, -233.884, 0.0),
+            (3891.396, -83.884, 0.0),
+            (3891.396, 66.116, 0.0),
+            (3891.396, 216.116, 0.0),
+            (3891.396, 366.116, 0.0),
+        ]
+        _got = sorted((round(x, 3), round(y, 3), round(t, 3))
+                      for x, y, t in _ya)
+        check("真图回归: 26079_YXB 11 板 4 朝向(贴合边中点+自动判向)",
+              len(_got) == 11 and not _yw and _got == sorted(_exp11),
+              str(_got[:3]))
+    else:
+        check("真图回归: fixture 缺失跳过(26079_YXB.dxf)", True)
 
     cx_open = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 5)),
                DXLine((10, 5), (0, 5))]
@@ -560,7 +745,7 @@ def selftest(dxf_path=None):
     for k, v in (cfg.STD_PART_DEFAULTS if cfg is not None else []):
         rr = sanitize_std_rule(v)
         check("配置表条目合法: %s" % k,
-              rr["layer"] in LAYER_CODES + ["CXK", ""]
+              rr["layer"] in LAYER_CODES + list(LINE_ANCHOR_LAYERS) + [""]
               and rr["z_mode"] in [z for z, _t in ZMODE_OPTS]
               and rr["bool_mode"] in [b for b, _t in BOOL_OPTS]
               and rr["dir"] in [dd for dd, _t in DIR_OPTS])
@@ -856,8 +1041,10 @@ def selftest(dxf_path=None):
 
         # 11. 边界条件与异常容错断言(v1.40 审计回归)
         check("_bbox 空序列返回全零不崩溃", _bbox([]) == (0.0, 0.0, 0.0, 0.0))
+        _r_none = resolve_dxf_path(None)
+        _r_bad = resolve_dxf_path(123)
         check("resolve_dxf_path 传 None/坏类型容错",
-              resolve_dxf_path(None) == "" and resolve_dxf_path(123) == "")
+              isinstance(_r_none, str) and isinstance(_r_bad, str) and _r_none == _r_bad)
         check("jt_mode_with_memory 传 None 容错",
               jt_mode_with_memory(None) == JT_LINK_DEFAULT)
         _jrt_none = jrt_with_memory(None, None)
@@ -891,8 +1078,419 @@ def selftest(dxf_path=None):
               "Dialog" in build_std_dlx({"part.prt": {}}, {}))
         _bld_b, _bld_r = build_layer(None, None, "FLB", "分流板", "target", {}, {}, None, [], Log(), {})
         check("build_layer 传 None 参数安全跳过不崩溃", _bld_b == [] and _bld_r == [])
+
+        # 12. AutoCAD DWG 后台转换与自动销毁验证
+        from cad3d.geom.dwg_converter import (
+            find_acad_executable, convert_dwg_to_dxf, DwgConversionError
+        )
+        _acad_exe, _is_core = find_acad_executable()
+        check("AutoCAD 转换程序智能探测(返回元组)",
+              (_acad_exe is None or isinstance(_acad_exe, str)) and isinstance(_is_core, bool))
+
+        _fixture_dwg = os.path.join(script_dir(), "test", "fixtures", "3Dtest.dwg")
+        if _acad_exe and os.path.isfile(_fixture_dwg):
+            _conv_logs = []
+            _conv_dxf = convert_dwg_to_dxf(_fixture_dwg, log=_conv_logs.append)
+            check("DWG 后台自动转 DXF 生成有效文件",
+                  os.path.isfile(_conv_dxf) and os.path.getsize(_conv_dxf) > 1000)
+            _dwg_layers, _dwg_stats = parse_dxf(_conv_dxf)
+            check("DWG 转换产物 DXF 可被核心解析器完整解析",
+                  "FLB" in _dwg_layers and _dwg_stats["total"] > 50)
+            # v2.4 提速: 同图二次转换应命中缓存(不再起 AutoCAD, 秒回同一路径)
+            _hit_logs = []
+            _hit_t0 = time.time()
+            _conv_hit = convert_dwg_to_dxf(_fixture_dwg, log=_hit_logs.append)
+            _hit_dt = time.time() - _hit_t0
+            check("DWG 转换缓存二次命中(免起 AutoCAD 复用)",
+                  _conv_hit == _conv_dxf
+                  and any("命中本地缓存" in m for m in _hit_logs),
+                  "耗时 %.3fs" % _hit_dt)
+            try:
+                os.remove(_conv_dxf)
+            except Exception:
+                pass
+            check("DWG 缓存文件清理后即删", not os.path.isfile(_conv_dxf))
+        else:
+            # 异常防御分支验证
+            _bad_dwg_caught = False
+            try:
+                convert_dwg_to_dxf(os.path.join(script_dir(), "non_existent.dwg"))
+            except DwgConversionError:
+                _bad_dwg_caught = True
+            check("DWG 文件不存在时抛出 DwgConversionError 防御异常", _bad_dwg_caught)
     finally:
         _sh.rmtree(_td, ignore_errors=True)
+
+    # 13. 模具自动开框(MOLD CUT)纯逻辑
+    check("MOLD_BBOX_TOL 容差配置合法",
+          isinstance(MOLD_BBOX_TOL, float) and MOLD_BBOX_TOL >= 0.0,
+          str(MOLD_BBOX_TOL))
+    check("MOLD_TRIAL_CUT 试切总开关为布尔(开=试切/关=直接减)",
+          isinstance(MOLD_TRIAL_CUT, bool), str(MOLD_TRIAL_CUT))
+    check("MOLD_AUDIT_VOLUME 体积对账开关为布尔(默认关以提速)",
+          isinstance(MOLD_AUDIT_VOLUME, bool), str(MOLD_AUDIT_VOLUME))
+    check("pair_hits 工具×模具配对预筛(命中/容差/残缺)",
+          _pair_hits((0, 0, 0, 10, 10, 10),
+                     [(5, 5, 5, 15, 15, 15), (20, 20, 20, 30, 30, 30), None])
+          == [0]
+          and _pair_hits(None, [(0, 0, 0, 1, 1, 1)]) == []
+          and _pair_hits((0, 0, 0, 10, 10, 10), []) == []
+          and _pair_hits((0, 0, 0), [(0, 0, 0, 1, 1, 1)]) == []
+          and _pair_hits((0, 0, 0, 10, 10, 10), [(10.03, 0, 0, 20, 10, 10)],
+                         0.05) == [0]
+          and _pair_hits((0, 0, 0, 10, 10, 10), [(10.03, 0, 0, 20, 10, 10)],
+                         0.0) == [])
+
+    def _point_fail(_b, _p):
+        raise RuntimeError("query failed")
+
+    check("pick_points 采样点去重/region 优先/截断/残缺",
+          _pick_points([(0, 0, 0), (0, 0, 0), (1, 1, 1)], 16)
+          == [(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)]
+          and _pick_points([(11, 11, 11), (0, 0, 0), (2, 2, 2)], 2,
+                           (0, 0, 0, 10, 10, 10))
+          == [(0.0, 0.0, 0.0), (2.0, 2.0, 2.0)]
+          and _pick_points([(0, 0, 0), (0, 0, 0), (1, 1, 1)], 1)
+          == [(0.0, 0.0, 0.0)]
+          and _pick_points([], 16) == []
+          and _pick_points([(0, 0, "x")], 16) == [])
+    check("any_point_inside 命中/全外/全失败保守不剔除",
+          _any_point_inside(lambda b, p: p[0] > 5, "B", [(0, 0, 0), (6, 0, 0)])
+          is True
+          and _any_point_inside(lambda b, p: False, "B", [(0, 0, 0)]) is False
+          and _any_point_inside(_point_fail, "B", [(0, 0, 0)]) is True
+          and _any_point_inside(lambda b, p: False, "B", []) is True)
+    check("bbox_overlap 重叠/贴合/分离",
+          _bbox_overlap((0, 0, 0, 10, 10, 10), (5, 5, 5, 15, 15, 15))
+          and _bbox_overlap((0, 0, 0, 10, 10, 10), (10, 10, 10, 20, 20, 20))
+          and not _bbox_overlap((0, 0, 0, 10, 10, 10),
+                                (20, 20, 20, 30, 30, 30)))
+    check("bbox_overlap 容差与残缺输入",
+          _bbox_overlap((0, 0, 0, 10, 10, 10), (10.03, 0, 0, 20, 10, 10), 0.05)
+          and not _bbox_overlap((0, 0, 0, 10, 10, 10),
+                                (10.03, 0, 0, 20, 10, 10), 0.0)
+          and not _bbox_overlap(None, (0, 0, 0, 1, 1, 1))
+          and not _bbox_overlap((0, 0, 0), (0, 0, 0, 1, 1, 1))
+          and not _bbox_overlap((0, 0, 0, "x", 1, 1), (0, 0, 0, 1, 1, 1)))
+    check("merge_face_bboxes 合并与空残缺表",
+          _merge_face_bboxes([(0, 0, 0, 4, 4, 4), (2, 2, 2, 9, 9, 9), None])
+          == (0.0, 0.0, 0.0, 9.0, 9.0, 9.0)
+          and _merge_face_bboxes([]) is None
+          and _merge_face_bboxes([(0, 0, 0)]) is None
+          and _merge_face_bboxes([(0, 0, 0, "x", 4, 4), (1, 1, 1, 2, 2, 2)])
+          == (1.0, 1.0, 1.0, 2.0, 2.0, 2.0))
+    _hole_ok = (None, 16, 7.5, 10.0, 0.0, -50.0,
+                (2.5, -7.5, -70.0, 17.5, 7.5, -30.0))
+    _hole_eaten = (None, 16, 7.5, 10.0, 0.0, -50.0,
+                   (2.5, -7.5, -70.0, 17.5, 7.5, -45.0))
+    check("broken_holes: 完好不误报/吃掉/缩边判冲突",
+          _broken_holes([_hole_ok], [_hole_ok]) == []
+          and len(_broken_holes([_hole_ok], [])) == 1
+          and len(_broken_holes([_hole_ok], [_hole_eaten])) == 1
+          and len(_broken_holes([_hole_ok], [_hole_ok, _hole_eaten])) == 0
+          and _broken_holes([], [_hole_ok]) == []
+          and _broken_holes(None, None) == [])
+    check("hole_rows 只留曲面并容错残缺行",
+          len(_hole_rows([(1, 20, 0.0, 0, 0, 0, (0, 0, 0, 1, 1, 1)),
+                          (2, 16, 7.5, 1, 2, 3, (0, 0, 0, 9, 9, 9)),
+                          None, (3, 16, "x")])) == 1
+          and _hole_rows([]) == [] and _hole_rows(None) == [])
+    check("mold rule 解析: 精确>关键词>类型默认",
+          _rule_for("CX", [("CX", {"conflict_check": False, "blend_step_r": 5.0})])
+          == {"conflict_check": False, "blend_step_r": 5.0}
+          and _rule_for("STD:螺丝-45.prt",
+                        [("STD:螺丝", {"conflict_check": True, "w": 1})])
+          == {"conflict_check": True, "w": 1}
+          and _rule_for("STD:其他.prt", []) == {"conflict_check": True}
+          and _rule_for("FLB", []) == {"conflict_check": False}
+          and _rule_for("", []) == {"conflict_check": False}
+          and _kw_hits("STD:螺丝", "STD:螺丝-45.prt")
+          and not _kw_hits("CX", "CX"))
+    check("MOLD_CUT_RULES 配置行格式合法",
+          all(isinstance(k, str) and isinstance(r, dict)
+              for k, r in MOLD_CUT_RULES))
+    check("is_sliver/grow/extents 薄片与包围盒工具",
+          _is_sliver((0, 0, 0, 0.2, 3.0, 8.0), 5.0)
+          and _is_sliver((0, 0, 0, 1.0, 1.0, 3.0), 5.0)
+          and not _is_sliver((0, 0, 0, 15.0, 15.0, 0.0), 5.0)
+          and not _is_sliver((0, 0, 0, 15.0, 15.0, 41.7), 5.0)
+          and _grow((0, 0, 0, 10, 10, 10), 2.0) == (-2.0, -2.0, -2.0, 12.0, 12.0, 12.0)
+          and _grow(None, 2.0) is None
+          and _extents((0, 0, 0, 10, 20, 30)) == (10.0, 20.0, 30.0)
+          and _extents(None) == (0.0, 0.0, 0.0))
+    check("body_matches_bbox 按尺寸找体(中心定位片)",
+          _body_matches_bbox((0, 0, 0, 15.0, 15.0, 41.7023),
+                             [15.0, 15.0, 41.7023], 0.8)
+          and _body_matches_bbox((0, 0, 0, 15.4, 14.8, 41.5),
+                                 [15.0, 15.0, 41.7023], 0.8)
+          and not _body_matches_bbox((0, 0, 0, 15.0, 15.0, 46.7),
+                                     [15.0, 15.0, 41.7023], 0.8)
+          and not _body_matches_bbox(None, [15, 15, 41.7], 0.8)
+          and not _body_matches_bbox((0, 0, 0, 1, 1, 1), None, 0.8))
+
+    # 13.x 布尔特征 with_failed 回归: 失败名单对账 + 失败工具体只减一次
+    # (修复前: 单工具失败会在内部降级循环里被重复减第二次)
+    class _MFeat:
+        def __init__(self, tag):
+            self.Tag = tag
+
+        def SetName(self, _n):
+            pass
+
+    class _MBody:
+        def __init__(self, tag):
+            self.Tag = tag
+            self.Name = ""
+
+    class _MFeatures:
+        def CreateSubtractFeature(self, _target, _a, tools, _retain, _b):
+            self.calls.append(len(tools))
+            if len(tools) > 1:
+                raise RuntimeError("模拟本机 NX: 合并签名不符")
+            if id(tools[0]) in self.ok_ids:
+                return _MFeat(tools[0].Tag)
+            raise RuntimeError("no intersection")
+
+    class _MWorkPart:
+        def __init__(self, ok_ids):
+            f = _MFeatures()
+            f.ok_ids = ok_ids
+            f.calls = []
+            self.Features = f
+
+    _t_ok1, _t_ok2, _t_bad = _MBody(11), _MBody(12), _MBody(13)
+    _wp = _MWorkPart({id(_t_ok1), id(_t_ok2)})
+    _fs, _fd = _bool_feature(_wp, "subtract", None,
+                             [_t_ok1, _t_bad, _t_ok2], "T",
+                             lambda m: None, with_failed=True)
+    _n0 = len(_wp.Features.calls)
+    _fs1, _fd1 = _bool_feature(_wp, "subtract", None, [_t_bad], "T",
+                               lambda m: None, with_failed=True)
+    check("bool_feature with_failed: 失败名单对账+失败工具只减一次",
+          len(_fs) == 2 and _fd == [_t_bad]
+          and _fs1 == [] and _fd1 == [_t_bad]
+          and len(_wp.Features.calls) - _n0 == 1
+          and _wp.Features.calls[0] == 3,
+          "calls=%s" % _wp.Features.calls)
+    _fs2 = _bool_feature(_MWorkPart({id(_t_ok1)}), "subtract", None,
+                         [_t_ok1], "T", lambda m: None)
+    check("bool_feature 兼容: 默认(不带 with_failed)返回特征列表",
+          isinstance(_fs2, list) and len(_fs2) == 1)
+
+    # 13.x 合并减回滚保护回归: NX 多工具减可能已减入部分成员才抛异常,
+    # session 在场时失败必须回滚(防"图上已减、日志报失败"账实不符)
+    import types as _types_mod
+    _nx = _types_mod.ModuleType("NXOpen")
+
+    class _MarkVis:
+        Invisible = 1
+
+    class _NXSession:
+        MarkVisibility = _MarkVis
+
+    _nx.Session = _NXSession
+    sys.modules["NXOpen"] = _nx
+    try:
+        class _MSession:
+            def __init__(self):
+                self.calls = []
+
+            def SetUndoMark(self, _vis, _s):
+                self.calls.append("mark")
+                return 77
+
+            def UndoToMark(self, _mk, _s):
+                self.calls.append("undo")
+                return True
+
+        _sess_bad = _MSession()
+        _fs3, _fd3 = _bool_feature(_wp, "subtract", None,
+                                   [_t_ok1, _t_bad], "T",
+                                   lambda m: None, with_failed=True,
+                                   session=_sess_bad)
+        check("bool_feature 合并减失败: 回滚部分效果后逐个对账",
+              _sess_bad.calls == ["mark", "undo"]
+              and len(_fs3) == 1 and _fd3 == [_t_bad],
+              "calls=%s" % _sess_bad.calls)
+
+        class _MFeaturesOk:
+            def __init__(self):
+                self.calls = []
+
+            def CreateSubtractFeature(self, _target, _a, tools, _r, _b):
+                self.calls.append(len(tools))
+                return [_MFeat(99)]
+
+        class _MWorkPartOk:
+            def __init__(self):
+                self.Features = _MFeaturesOk()
+
+        _sess_ok = _MSession()
+        _fs4, _fd4 = _bool_feature(_MWorkPartOk(), "subtract", None,
+                                   [_t_ok1, _t_ok2], "T",
+                                   lambda m: None, with_failed=True,
+                                   session=_sess_ok)
+        check("bool_feature 合并减成功: 只挂标记不回滚",
+              _fd4 == [] and len(_fs4) == 1
+              and _sess_ok.calls == ["mark"], str(_sess_ok.calls))
+
+        # 13.x 批量删除回归(v2.4 提速): N 个对象一次全树更新, 失败降级逐个
+        class _MUpdOk:
+            def __init__(self):
+                self.batches = []
+                self.updates = 0
+
+            def AddToDeleteList(self, objs):
+                self.batches.append(len(objs))
+
+            def DoUpdate(self, _mk):
+                self.updates += 1
+
+        class _MSessUpd:
+            def __init__(self, upd):
+                self.UpdateManager = upd
+
+            def SetUndoMark(self, _v, _s):
+                return 1
+
+        _upd = _MUpdOk()
+        _n3 = _batch_delete(_MSessUpd(_upd), ["a", "b", "c"],
+                            lambda m: None, "测试")
+        check("batch_delete 批量路径: N 对象合并一次更新",
+              _n3 == 3 and _upd.batches == [3] and _upd.updates == 1,
+              "batches=%s updates=%d" % (_upd.batches, _upd.updates))
+
+        class _MUpdBad:
+            def __init__(self):
+                self.singles = 0
+
+            def AddToDeleteList(self, objs):
+                if len(objs) > 1:
+                    raise RuntimeError("模拟批量删除被 NX 拒绝")
+                self.singles += 1
+
+            def DoUpdate(self, _mk):
+                return 0
+
+        class _MSessUpd2:
+            def __init__(self):
+                self.UpdateManager = _MUpdBad()
+
+            def SetUndoMark(self, _v, _s):
+                return 1
+
+        _bd_msgs = []
+        _sess_bd = _MSessUpd2()
+        _n4 = _batch_delete(_sess_bd, ["a", "b"], _bd_msgs.append, "测试")
+        check("batch_delete 降级路径: 批量失败自动转逐个删",
+              _n4 == 2 and _sess_bd.UpdateManager.singles == 2
+              and any("降级" in m for m in _bd_msgs))
+
+        _n5 = _batch_delete(None, ["a"], lambda m: None, "空会话")
+        check("batch_delete 空对象/空会话安全返回 0",
+              _n5 == 0 and _batch_delete(_MSessUpd(_MUpdOk()), [],
+                                         lambda m: None, "空") == 0)
+    finally:
+        sys.modules.pop("NXOpen", None)
+
+    # 13.y v2.4 提速回归: 布尔计划分组 / 合并拉伸分组 / DWG 转换缓存
+    _tg1, _tg2 = object(), object()
+    _tools_a, _tools_b = [1], [2, 3]
+    _grp = _group_bool_plan([
+        (_tg1, "subtract", "甲.prt", 1, "SUBTRACT", _tools_a),
+        (_tg2, "subtract", "乙.prt", 1, "SUBTRACT", _tools_b),
+        (_tg1, "subtract", "甲.prt", 2, "PLACE_SUBTRACT", _tools_b),
+        (_tg1, "unite", "丙.prt", 1, "UNITE", _tools_a),
+    ])
+    check("bool 计划按(目标,操作)保序分组(合并提交前提)",
+          len(_grp) == 3
+          and _grp[0][0] is _tg1 and _grp[0][1] == "subtract"
+          and [(f, i) for f, i, _b, _t in _grp[0][2]]
+          == [("甲.prt", 1), ("甲.prt", 2)]
+          and _grp[1][0] is _tg2 and _grp[1][1] == "subtract"
+          and _grp[2][0] is _tg1 and _grp[2][1] == "unite",
+          "组数=%d" % len(_grp))
+
+    _e1, _e2, _e3 = {"pick": _tg1}, {"pick": _tg1}, {"pick": None}
+    check("merge_groups: subtract 按目标分组+无目标独立组",
+          _merge_groups("subtract", [_e1, _e2, _e3])
+          == [(_tg1, [_e1, _e2]), (None, [_e3])])
+    check("merge_groups: 非 subtract 全并一组",
+          _merge_groups("none", [_e1, _e2]) == [(None, [_e1, _e2])])
+    check("merge_groups: 空表安全", _merge_groups("subtract", []) == []
+          and _merge_groups("none", []) == [(None, [])])
+    check("合并拉伸开关默认开 + 日志后缀",
+          _merge_extrude_enabled() is True
+          and _merge_note(True) == ", 合并拉伸生效"
+          and _merge_note(False) == "")
+
+    from cad3d.geom import dwg_converter as _dwc
+    _td2 = _tf.mkdtemp(prefix="cad3d_dwgcache_")
+    _src_dwg = os.path.join(_td2, "样图.dwg")
+    _cache_probe = None
+    try:
+        with io.open(_src_dwg, "wb") as f:
+            f.write(b"FAKE-DWG-1")
+        os.utime(_src_dwg, (1000000000, 1000000000))
+        _ka = _dwc._dwg_cache_key(_src_dwg)
+        check("DWG 缓存键: 同路径同大小同时间稳定",
+              _ka == _dwc._dwg_cache_key(_src_dwg) and len(_ka) == 16)
+        with io.open(_src_dwg, "wb") as f:
+            f.write(b"FAKE-DWG-2")      # 同长度不同内容
+        os.utime(_src_dwg, (1000000000, 1000000000))
+        _same = _dwc._dwg_cache_key(_src_dwg)
+        with io.open(_src_dwg, "ab") as f:
+            f.write(b"X")               # 大小变化
+        _kb = _dwc._dwg_cache_key(_src_dwg)
+        os.utime(_src_dwg, (1000000900, 1000000900))
+        _kc = _dwc._dwg_cache_key(_src_dwg)
+        check("DWG 缓存键: 大小/mtime 变化即失配(改图自动重转)",
+              _same == _ka and _kb != _ka and _kc != _kb)
+        check("is_cache_dxf 前缀判定",
+              _dwc.is_cache_dxf(os.path.join("logs", "_dwg_cache_ab12.dxf"))
+              and not _dwc.is_cache_dxf(os.path.join("logs", "_temp_dwg_x.dxf"))
+              and not _dwc.is_cache_dxf("")
+              and not _dwc.is_cache_dxf(None))
+
+        _cache_probe = _dwc._cache_path_for(_src_dwg)
+        with io.open(_cache_probe, "wb") as f:
+            f.write(b"  0\nSECTION\n  2\nENTITIES\n")
+        check("DWG 缓存命中: 同图直接复用缓存文件",
+              _dwc.lookup_dwg_cache(_src_dwg) == _cache_probe)
+        with io.open(_cache_probe, "wb") as f:
+            f.write(b"")
+        check("DWG 缓存未命中: 空文件忽略", _dwc.lookup_dwg_cache(_src_dwg) is None)
+        with io.open(_cache_probe, "wb") as f:
+            f.write(b"garbage-not-dxf")
+        check("DWG 缓存未命中: 损坏文件不进流水线",
+              _dwc.lookup_dwg_cache(_src_dwg) is None)
+        with io.open(_cache_probe, "wb") as f:
+            f.write(b"  0\nSECTION\n")
+        _orig_ce = _dwc._cache_enabled
+        _dwc._cache_enabled = lambda: False
+        try:
+            check("DWG 缓存未命中: 开关关闭(DWG_CACHE_ENABLE=False)",
+                  _dwc.lookup_dwg_cache(_src_dwg) is None)
+        finally:
+            _dwc._cache_enabled = _orig_ce
+        check("DWG 缓存未命中: 图纸文件不存在",
+              _dwc.lookup_dwg_cache(os.path.join(_td2, "无此图.dwg")) is None)
+
+        _stale = os.path.join(_logs_dir(), "_dwg_cache_stale_selftest.dxf")
+        with io.open(_stale, "wb") as f:
+            f.write(b"  0\nSECTION\n")
+        _old_t = time.time() - 8 * 86400
+        os.utime(_stale, (_old_t, _old_t))
+        _dwc._clean_stale_temp_files()
+        check("DWG 缓存过期自动清理(默认 7 天)", not os.path.isfile(_stale))
+    finally:
+        for _pf in (_cache_probe,):
+            if _pf and os.path.isfile(_pf):
+                try:
+                    os.remove(_pf)
+                except OSError:
+                    pass
+        _sh.rmtree(_td2, ignore_errors=True)
 
     # 12. 真实图纸(可选)
     real = dxf_path

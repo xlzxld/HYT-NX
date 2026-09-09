@@ -10,7 +10,7 @@ from cad3d.core.config import _note
 from cad3d.core.constants import (
     LAYER_TABLE, LAYER_CODES, DIALOG_GROUPS, JT_LINK_OPTS, JT_LINK_MODES,
     DEFAULT_JRT, JRT_FIELDS, DEFAULT_STD_RULE, LAYER_SEL_OPTS, ZMODE_OPTS,
-    BOOL_OPTS, DIR_OPTS
+    BOOL_OPTS, DIR_OPTS, LINE_ANCHOR_LAYERS
 )
 from cad3d.core.state import (
     load_state, merge_params, jrt_with_memory, jt_mode_with_memory,
@@ -332,12 +332,12 @@ class _BlockDialogBase(object):
             r["off_y"] = self._get_double(pfx + "offy", r["off_y"])
             r["off_z"] = self._get_double(pfx + "offz", r["off_z"])
             _old_rule = self.std_rules.get(fname) or {}
-            if (str(_old_rule.get("layer") or "").upper() == "CXK"
-                    and r["layer"] != "CXK"):
+            _old_lay = str(_old_rule.get("layer") or "").upper()
+            if _old_lay in LINE_ANCHOR_LAYERS and r["layer"] not in LINE_ANCHOR_LAYERS:
                 r["r_min"], r["r_max"] = 0.0, 15.0
-                _note("【%s】定位图层由 CXK 改为 %s: 半径筛选此前未在"
+                _note("【%s】定位图层由 %s 改为 %s: 半径筛选此前未在"
                       "界面显示, 已重置为 0~15, 请在窗口③核对。"
-                      % (fname, r["layer"]))
+                      % (fname, _old_lay or "空", r["layer"]))
             rules[fname] = sanitize_std_rule(r)
         return rules
 
@@ -418,11 +418,13 @@ class ParamDialog(_BlockDialogBase):
     def _dxf_valid_or_warn(self):
         p = self._get_path()
         if p and os.path.isfile(p):
-            return True
+            ext = os.path.splitext(p)[1].lower()
+            if ext in (".dxf", ".dwg"):
+                return True
         try:
             self.theUI.NXMessageBox.Show(
                 "CAD3D", self.nx.NXMessageBox.DialogType.Warning,
-                "DXF 文件不存在或路径无效:\n%s\n\n请重新选择有效的 .dxf 图纸。"
+                "图纸文件不存在或路径无效:\n%s\n\n请重新选择有效的 .dwg 或 .dxf 图纸。"
                 % (p or "(未选择)"))
         except Exception:
             pass
@@ -431,7 +433,7 @@ class ParamDialog(_BlockDialogBase):
     def _prefill_all(self):
         self._initializing = True
         try:
-            self._set_label("grp_file", "输入文件")
+            self._set_label("grp_file", "输入图纸文件 (DWG / DXF)")
             self._set_label("grp_flb", DIALOG_GROUPS[0][1])
             self._set_label("grp_plain", DIALOG_GROUPS[1][1])
             self._set_label("grp_sub", DIALOG_GROUPS[2][1])
@@ -454,7 +456,7 @@ class ParamDialog(_BlockDialogBase):
                     except Exception:
                         pass
             try:
-                self.theDialog.TopBlock.Label = "NX 分层拉伸 (DXF→3D)"
+                self.theDialog.TopBlock.Label = "NX 分层拉伸 (DWG/DXF→3D)"
             except Exception:
                 pass
             p = self.state.get("dxf_path") or resolve_dxf_path(self.state)
@@ -480,10 +482,57 @@ class ParamDialog(_BlockDialogBase):
             self._apply_dialog_sizing()
         return 0
 
+    def _derive_linked_from_flb(self):
+        """按当前 FLB 字段值重推全部联动层与加热条(update_cb FLB 分支同口径)。
+
+        全程挂 _initializing 守卫: 程序化写字段会触发 update_cb(坑点 6),
+        不守卫会级联触发 JT→CX 分支二次推导。镜像按钮与 FLB 编辑共用本方法,
+        保证"镜像"与"手输翻转后 FLB"的联动结果逐位一致。"""
+        self._initializing = True
+        try:
+            s = self._get_double("FLB_start", 0.0)
+            e = self._get_double("FLB_end", 0.0)
+            linked = derive_linked(max(s, e), min(s, e),
+                                   jt_mode=self._current_jt_mode())
+            for code, (v1, v2) in linked.items():
+                for suffix, val in (("_start", v1), ("_end", v2)):
+                    bid = ("jrt" if code == "JRT" else code) + suffix
+                    try:
+                        self._find(bid).Value = val
+                    except Exception:
+                        pass
+            cs, ce = _cx_link_values(linked["JT"][0])
+            try:
+                self._find("CX_start").Value = cs
+                self._find("CX_end").Value = ce
+            except Exception:
+                pass
+        finally:
+            self._initializing = False
+
     def update_cb(self, block):
         if getattr(self, "_initializing", False):
             return 0
         try:
+            try:
+                if block is self._find("flb_mirror"):
+                    # 镜像(v2.5 定案): 仅把 FLB 取负保序翻侧(-40/-85→40/85),
+                    # 随后按常规联动公式整体重推——与手输翻转后 FLB 完全等效
+                    # (同一设计搬到另一侧, 热咀/螺丝/点孔/加热条角色面不变)。
+                    # 不得把各层逐个取负: ZMODE 与 JRT 齐平/嵌入端都按数值
+                    # 大小定向, 全取负会把特征翻到对面板面(2026-09-09 实证)。
+                    s = self._get_double("FLB_start", 0.0)
+                    e = self._get_double("FLB_end", 0.0)
+                    self._initializing = True
+                    try:
+                        self._find("FLB_start").Value = -s
+                        self._find("FLB_end").Value = -e
+                    finally:
+                        self._initializing = False
+                    self._derive_linked_from_flb()
+                    return 0
+            except Exception as ex:
+                self._dbg_footprint("update_cb flb_mirror 异常: %r" % ex)
             try:
                 if block is self._find("jrt_reset"):
                     s0 = self._get_double("FLB_start", 0.0)
@@ -526,23 +575,8 @@ class ParamDialog(_BlockDialogBase):
             flb_s = self._find("FLB_start")
             flb_e = self._find("FLB_end")
             if block in (flb_s, flb_e):
-                s = self._get_double("FLB_start", 0.0)
-                e = self._get_double("FLB_end", 0.0)
-                linked = derive_linked(max(s, e), min(s, e),
-                                       jt_mode=self._current_jt_mode())
-                for code, (v1, v2) in linked.items():
-                    for suffix, val in (("_start", v1), ("_end", v2)):
-                        bid = ("jrt" if code == "JRT" else code) + suffix
-                        try:
-                            self._find(bid).Value = val
-                        except Exception:
-                            pass
-                cs, ce = _cx_link_values(linked["JT"][0])
-                try:
-                    self._find("CX_start").Value = cs
-                    self._find("CX_end").Value = ce
-                except Exception:
-                    pass
+                self._derive_linked_from_flb()
+                return 0
         except Exception as ex:
             self._dbg_footprint("update_cb(%r) 异常: %r"
                                 % (getattr(block, "Name", block), ex))

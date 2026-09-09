@@ -6,7 +6,7 @@ from cad3d.modeling.nx_compat import (
     _matrix3x3
 )
 from cad3d.modeling.purge import (
-    _CREATED_FEATURES, nx_purge, clean_previous, ensure_categories
+    _CREATED_FEATURES, nx_purge, ensure_categories
 )
 from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule,
@@ -14,7 +14,7 @@ from cad3d.modeling.std_rules import (
     anchors_overflow
 )
 from cad3d.modeling.extrude import (
-    create_curves, _create_curves, work_part_rules, _add_to_section_compat,
+    create_curves, work_part_rules, _add_to_section_compat,
     _sc_rule_options, extrude_curves, modeling_ents, build_layer
 )
 from cad3d.modeling.stdparts import (

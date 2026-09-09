@@ -29,6 +29,8 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
     import NXOpen.Features
     import NXOpen.GeometricUtilities
 
+    from cad3d.modeling.nx_compat import _mark_type
+
     if session is None:
         session = _nx.Session.GetSession()
     if work_part is None:
@@ -45,14 +47,33 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
     log("================ NX 分层拉伸 v%s ================" % SCRIPT_VERSION)
     for _note in _CFG_NOTES:
         log("【配置提示】%s" % _note)
-    log("【输入】DXF: %s" % dxf_path)
+    log("【输入】图纸: %s" % dxf_path)
     if not dxf_path or not os.path.isfile(dxf_path):
-        log("【错误】未找到 DXF 文件, 中止。")
+        log("【错误】未找到图纸文件, 中止。")
         return False, stats
+
+    actual_dxf = dxf_path
+    is_temp_dxf = False
+    is_cache_dxf_file = False
+    if dxf_path.lower().endswith(".dwg"):
+        from cad3d.geom.dwg_converter import convert_dwg_to_dxf, is_cache_dxf
+        try:
+            actual_dxf = convert_dwg_to_dxf(dxf_path, log=log)
+            # 缓存产物保留供下次复用; 仅真正的一次性临时文件随流水线销毁
+            is_cache_dxf_file = is_cache_dxf(actual_dxf)
+            is_temp_dxf = not is_cache_dxf_file
+        except Exception as ex:
+            log("【错误】DWG 转 DXF 失败: %s" % ex)
+            try:
+                _nx.UI.GetUI().NXMessageBox.Show(
+                    "CAD3D", _nx.NXMessageBox.DialogType.Error, str(ex))
+            except Exception:
+                pass
+            return False, stats
 
     mark = session.SetUndoMark(_nx.Session.MarkVisibility.Visible, "CAD3D 分层拉伸")
     try:
-        layers, dstats = parse_dxf(dxf_path)
+        layers, dstats = parse_dxf(actual_dxf)
         if dstats["ref_layers"]:
             log("【解析】参考图层(导入不建模): %s" % ", ".join(
                 "%s×%d" % kv for kv in sorted(dstats["ref_layers"].items())))
@@ -81,7 +102,7 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
 
         nx_purge(session, work_part, log, dxf_layers=layers)
 
-        layer_map = assign_layers(list(layers.keys()))
+        layer_map = assign_layers(list(layers.keys()), work_part=work_part, log=log)
         ensure_categories(work_part, layer_map, log)
         nx_curves = create_curves(work_part, layers, layer_map, log)
 
@@ -97,6 +118,8 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
             _bodies, regions = build_layer(session, work_part, code, zh, role,
                                            layers, nx_curves, params, flb_regions,
                                            log, stats)
+            for _tb in _bodies:                     # 体类型标记(模具开框规则用)
+                _mark_type(_tb, code)
             if code == TARGET_CODE:
                 flb_regions = regions
         if not flb_regions:
@@ -148,12 +171,21 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
         except Exception:
             pass
         return False, stats
+    finally:
+        if is_temp_dxf and actual_dxf and os.path.isfile(actual_dxf):
+            try:
+                os.remove(actual_dxf)
+                log("【DWG 转换】临时 DXF 文件已安全移除清理。")
+            except Exception as ex_del:
+                log("【DWG 转换】清理临时文件提示: %s" % ex_del)
+        elif is_cache_dxf_file:
+            log("【DWG 转换】缓存 DXF 已保留(logs/ 下, 下次同图免转换)。")
 
 
 def execute_pipeline(dxf, params, jrt, std_rules, session,
                      std_rules_all=None, selected=None, ui=None,
                      jt_link_mode=None):
-    """三段式最终执行: 校验 DXF → 保存 JSON(全部规则+选中清单) → run_pipeline。"""
+    """三段式最终执行: 校验图纸 → 保存 JSON(全部规则+选中清单) → run_pipeline。"""
     import NXOpen
 
     if not dxf or not os.path.isfile(dxf):
@@ -163,8 +195,8 @@ def execute_pipeline(dxf, params, jrt, std_rules, session,
             ui = NXOpen.UI.GetUI()
         ui.NXMessageBox.Show(
             "CAD3D", NXOpen.NXMessageBox.DialogType.Warning,
-            "未找到有效的 DXF 文件。\n请在主参数窗口顶部选择 DXF 文件,\n"
-            "或把 DXF 放到脚本同目录后重试。")
+            "未找到有效的图纸文件 (DWG/DXF)。\n请在主参数窗口顶部选择图纸文件,\n"
+            "或把图纸放到脚本同目录后重试。")
         return False
     full_rules = dict(std_rules_all or {})
     full_rules.update(std_rules or {})

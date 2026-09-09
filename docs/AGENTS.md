@@ -1,4 +1,4 @@
-# AGENTS.md —— NX 分层拉伸自动化（AI 接手文档）  v1.40
+# AGENTS.md —— NX 分层拉伸自动化（AI 接手文档）  v2.2
 
 > 本文档写给**接手本项目的 AI**，位于 docs\ 子目录。用户手册（给人看）在同目录 `使用手册.md`。
 
@@ -6,16 +6,16 @@
 
 | 项 | 内容 |
 |---|---|
-| 主脚本 | `nx_extrude_runner.py`（NX 2312 Python 期刊；DXF→3D） |
-| 可移植性 | 整个 NX\ 文件夹自包含，可随意移动/拷贝（路径全相对脚本自身） |
+| 主脚本 | `nx_extrude_runner.py`（v2.2 兼容门面 Facade + 日记入口；核心位于 `cad3d/` 包） |
+| 可移植性 | 整个 NX\ 文件夹自包含，脚本头已内置绝对路径引导与字节码禁写，可随意移动/拷贝 |
 | 生成物 | dlx/运行报告/调试脚印统一写入 `logs\`；__pycache__ 已禁生成 |
 | 配置 | `nx_std_config.py`（用户手工编辑；主脚本 `_load_user_config()` 动态加载，缺文件/缺键逐项回退内置默认） |
 | 标准件库 | `stdparts\*.prt`（必须与脚本同目录；v1.36 起 14 件已全部归零，定位点=零件原点） |
 | 归零工具 | `tools\nx_zero_ref.py`（v1.36 新增：日记播放，逐件点定位点，自动预览/写回归零副本；细节见文件头注释） |
-| 版本管理 | git 仓库（origin=github.com/xlzxld/HYT-NX，main 分支）；每次用户确认更新即 bump 小版本+commit+tag+push |
+| 版本管理 | git 仓库（origin=github.com/xlzxld/HYT-NX，refactor/modular-cad3d 分支）；每次用户确认更新即 bump 小版本+commit+tag+push |
 | 期刊留档 | `journals\`（**未随迁，当前不存在**；历史参考） |
-| 开发目录 | `tools\`（归零工具/探针/提取）+ `test\`（回归脚本 + fixtures，根 = test 上一级） |
-| 运行方式 | NX 内 工具→日记→播放；批量 `run_journal.exe 脚本 --batch`；离线自测 `--selftest`（155 项断言；总数随 config 标准件条目数浮动） |
+| 开发目录 | `tools\`（归零工具/探针）+ `test\`（回归脚本 + fixtures，根 = test 上一级） |
+| 运行方式 | NX 内 工具→日记→播放；批量 `run_journal.exe 脚本 --batch`；离线自测 `--selftest`（244 项断言；含 AutoCAD DWG 后台转换、即用即销与高位图层智能避让） |
 
 ## 2. 执行流水线（run_pipeline 阶段序）
 
@@ -37,26 +37,29 @@
 | 参考点 ref | **v1.36 起 14 个 prt 已全部归零，ref 恒为 [0,0,0]**——定位点=零件原点，放置公式精确对准锚点，坐标不再需要维护（config/json 均已清零）。自动探测链 v1.30 已删（STD_REF_POINTS/主导轴/大圆柱顶面/顶面后沿中点），**不要复活**；新件用 nx_zero_ref.py 归零或设计时原点建在插入位置 |
 | config 两级匹配 | 精确文件名行(带/不带 .prt) > 关键词子串行；复合名文件必须有自己的精确行（"主进胶与中心定位垫片"含"垫片"，否则错命中 DK 规则） |
 | Z 基准 | 选项表 = config `ZMODE_DEFS`（key/中文/图层/TOP-BOTTOM），加一行=新基准；`_std_z` 查表，查不到回 FLB_TOP |
-| CXK | 只做接线盒定位不建模；曲线并入 CX 一起闭环（`modeling_ents`）；CXK 件参数页不显示半径框 |
+| CXK | 只做接线盒定位不建模；曲线并入 CX 一起闭环（`modeling_ents`）；CXK 件参数页不显示半径框（v2.3 起压线板已迁出 CXK 改挂 YXB，CXK 保留兼容旧图） |
+| YXB 压线板(v2.3) | 定位图层=YXB（只定位不建模、无半径概念，同 CXK 款）；**锚点=与 CX 出线槽线共线重合的"贴合边"中点**（同板多条共线重合段取投影并集中点防拆段，容差 `YXB_COINCIDE_TOL`=0.05、重叠≥边长一半）；**贴合安装（2026-09-09 斜槽壁实机定案）**：旋转角逐板自动判向=朝向 f(背离槽) − `YXB_TEMPLATE_LONGAXIS_DEG`（=0：16.6 长边沿槽向落 CX 线上、板体沿 f 与 2D 轮廓重合，**勿改 90=横跨，实测方向全错**）；**旧"水平槽壁+180°补偿"已删**——它是 `_matrix3x3` 转置 bug（NX 按传入元素矩阵的转置生效，世界角=−θ；轴向角 −θ≡θ mod 180 不可辨，斜槽壁歪 2×倾角）的掩盖补丁，矩阵修正后 θ=f 与全部实机验证一致（竖壁原样、横壁旧合成世界角恰为 f）；无贴合边的板跳过+日志警告；标准件设置页**无任何方向字段**；26079 前跑板实图 11 板 4 朝向实证；模板原点定案在贴合长边中点（off=0）；Z 基准仍 CX_TOP；v2.3 schema=5 |
 | JRT 异形判据 | 齐平端倒圆后体内**残留型20 样条拔模面=异形**（jrt2.prt 六状态实物定案）→ 撤销降 R 重试至下限 → 兜底回退"出线端删面完成状态"。型23/样条墙产出的样条面**不是**异形（01.dxf 实证）；正常 G1 全长滚圆丢体约 11% |
 | JRT 删面 | 锚点=出线口线中点(两邻都是线的短线)；面=半径≈R 且距锚点≤2.5R+2；删前后**型20 不增加**、碎片面(bbox 零维≥2)不得出现；违规→撤销→单片回退→全失败保留倒圆面 |
 | JRT 开链 | 断口≤1mm 自动合并+桥接（桥接线打标记随重跑清理）；大缺口不桥（直线桥会包怪条）——跳过+日志报断口坐标 |
 | 防卡死护栏 | 单件锚点>STD_MAX_ANCHORS 或"空图层+半径上限≥999"指纹 → 跳过+提示 |
 | 移除参数 | 用户定案"执行后只要实体"：产物体打标记→RemoveParameters；失败留特征树不影响产物 |
 | 配置健壮性(v1.35) | config 顶层标量经 `_cfg_num/_cfg_int` 归一化(拒 nan/inf/坏类型, 非法回默认不崩)；`_load_user_config` 失败/字段异常记入 `_CFG_NOTES`(去重队列)——启动弹窗+流水线日志+自测三通道输出, **不再静默回退**；ZMODE_DEFS 缺键/坏行兜底内置三行 |
-| 记忆安全(v1.35) | `params` 受 schema 门控(v1.35 起调大 CONFIG_SCHEMA_VERSION=界面参数+规则记忆一并回默认, 文档口径已兑现；现值 4, 旧 schema=3 记忆已在升级时重置一次)；坏 JSON 改名 `.bad-<时间戳>` 隔离防覆盖；save_state 临时文件+os.replace 原子写 |
+| 记忆安全(v1.35) | `params` 受 schema 门控(v1.35 起调大 CONFIG_SCHEMA_VERSION=界面参数+规则记忆一并回默认, 文档口径已兑现；现值 5, 旧 schema=3 记忆在 v1.35 重置一次、v2.3 压线板迁移 YXB 时重置一次)；坏 JSON 改名 `.bad-<时间戳>` 隔离防覆盖；save_state 临时文件+os.replace 原子写 |
 | -Z 放置公式(v1.35) | `pos=锚点−R·ref+off`(`_place_delta` 纯函数)：翻转件 ref 的 y/z 随姿态反号——直接用 −ref 会错位 2·ref_yz |
 | 链环判据(v1.35) | find_chains 3×3 邻桶搜索(量化格边界断口不再漏配)+T 形三叉按方向延续选段；organize_loops 重复描线环去重(否则被误判为孔)+8 顶点投票包含判定——v1.29"最小包含环"定案不变 |
 | CXK 切层护栏(v1.35) | 窗口③把 CXK 件切到圆心层时半径框不存在→收集侧重置 0~15 并提示核对(防旧全半径海量锚点) |
 | SUBTRACT 兜底(v1.35) | 无 FLB 体可布尔或布尔未生效时**保留独立体**并记日志——不得走删体分支(否则孔没切件也没了) |
 | JT 联动(v1.37) | JT 起止随 FLB 双模式联动：普通=起点+10/终点-15，针阀=起点+15/终点-15（FLB -40/-85 → JT -30/-100 与 -25/-100）；偏移表 config `JT_LINK_MODES` 可改，模式选择记忆 json（jt_link_mode）；联动后仍可单独改，再动 FLB 按当前模式覆盖 |
 | CX 联动(v1.38 起, v1.40 修正) | CX 起始恒=JT 起始；**CX 结束 = CX 起始 − `CX_LINK_END_OFFSET`（默认 35；槽深固定，起始 -30 → 结束 -65）**——不再按 JT 结束算(JT 结束随联动模式漂移，不宜作槽底基准)；`_cx_link_values(cx_start)` 单参 |
+| 镜像按钮(v2.5) | 窗口② FLB 组【镜像】flb_mirror：**仅把 FLB 取负保序翻侧**（-40/-85→40/85，2026-09-09 用户定案），随后按常规联动公式整体重推 JT/CX/LS/RZ/DK/DP/JRT（`ParamDialog._derive_linked_from_flb`，与 update_cb FLB 分支同一代码路径）——结果=手输翻转后 FLB 的联动值，同一设计搬到另一侧、各特征角色面不变。**严禁把全部层逐个取负**（初版与二版方案，均已否）：ZMODE TOP/BOTTOM 与 JRT 齐平/嵌入端都按数值大小(max/min)定向，且界面字段是按当前板侧重推过的——全层取负会把热咀/压线板翻到对面板面、B 侧压条悬到板外（2026-09-09 用户实测一案）。镜像会覆盖各层手工微调（恢复联动值），提示标签已注明 |
 | 标准件归零(v1.36) | 14 个 prt 定位点已平移到零件原点(ref=[0,0,0])——放置公式在 ref=0 时精确等于锚点，-Z 翻转反号问题自然消失；输出件从"模型模板"复制而来(带建模应用记录, 打开直进建模)；**新件不归零就不放置可用性**——ref 恒 0, 未归零件会整体错位 |
 | JT 联动(v1.37) | JT 起止随 FLB 双模式联动：普通=起点+10/终点-15，针阀=起点+15/终点-15（FLB -40/-85 → JT -30/-100 与 -25/-100）；偏移表 config `JT_LINK_MODES` 可改，模式选择记忆 json（jt_link_mode）；联动后仍可单独改，再动 FLB 按当前模式覆盖 |
 
 ## 4. 坑点清单（血泪史，逐条都有事故背书）
 
 **NX API 类**
+0. **AddComponent 对 Matrix3x3 按传入元素矩阵的转置生效**（2026-09-09 实机探针定案：传 Rz(+θ) 元素世界得 Rz(−θ)）——轴向角 0/±90/180 时 −θ≡θ(mod 180) 不可辨，斜槽壁压线板歪 2×倾角一案才暴露；`_matrix3x3` 非翻转分支按 Rz(−θ) 元素传入使世界恰为 Rz(+θ)，翻转分支矩阵对称（Rz·Rx180 自转置）天然免疫。教训：**姿态矩阵验证必须用非轴向角**；
 1. `import NXOpen` 不挂子模块——`NXOpen.BlockStyler/Features/GeometricUtilities` 必须显式 import（批量环境预加载会掩盖，交互才炸）；
 2. BlockDialog 的首显钩子实名 **AddDialogShownHandler**（AddShowHandler 不存在，try/except 会静默吞掉→预填失效→NX 会话旧值回灌=记忆问题总根因）；
 3. NX 按 **dlx 文件名**回灌上次显示值（RetainValue=False 拦不住）→ dlx 必须唯一文件名（毫秒戳）；固定名=旧值死灰复燃（v1.17 翻过车）；
@@ -125,14 +128,15 @@
 | `JRT_INTRUSION_DEFAULT` | 加热条入侵深度默认 7.5 |
 | `JRT_OFFSET/JRT_DRAFT` | 壁偏置 5.0/拔模 2.0 |
 | `JRT_COLOR_STRIP/MODEL/TRANSLUCENCY` | 186/78/50 |
-| `NX_LAYER_START/JRT/DYNAMIC_START/MAX` | 图层分配 11/18/19/70 |
+| `NX_LAYER_START/JRT/DYNAMIC_START/MAX` | 高位图层分配 101/118/119/170（支持冲突智能自动避让） |
 | `LAYER_START_DEFAULTS` | 兜底初始拉伸距离（FLB -40/-85；联动层由 runner 按 FLB 推导，表中数值为普通模式快照） |
 | `STD_MAX_ANCHORS` | 单件放置数护栏 200 |
 | `JRT_BLEND_R/R_STEP/R_MIN_DEFAULT` | 3.9/0.1/3.7（永不进记忆） |
+| `ACAD_CONSOLE_PATH` | AutoCAD 无头转换程序路径（默认 None 自动探查注册表及各版本路径；可手动指定） |
 
 ## 7. 版本历史（详见主脚本文件头；此处仅骨架）
 
-v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导；修复选件落盘抹 jt_link_mode（模式记不住） · v1.39 标准件下放工具包重组（`stdparts\NX8兼容_x_t` + `stdparts\_nx_export` 合并收拢改名 `tools\NX向下兼容工具\`：export_xt.py / verify_import.py / import_xt_to_prt.py / 一键导入.bat；x_t 统一入包内 `xt\`，产出 prt 在包内 `x_t转prt\`（prt 版本=执行导入的本机 NX 版本）；stage/tmp 跑完自删，使用说明重写，弃用 v1 export_ps 清理；NX2312 端到端实测 14/14） · v1.40 NX10/12 兼容收尾+显示刷新+CX 修正：`_set_expr`(旧版无 Expression.SetFormula→RightHandSide)、`_dlg_show`(旧版 BlockDialog 无 Launch→Show)、`_refresh_display`(无界面/旧版末帧不重绘→图层全开+Unblank+RedisplayObject+重建，交互与批量共用)、`stdparts_dir` 回退固定读 stdparts(旧版 .prt 直接放入)、CX 结束改按 CX 起始−偏移(不再跟 JT 结束)；配套探针 v2.3(API026)+新增 `batch_smoke.py` 端到端冒烟；NX10/NX12 真机端到端通过。
+v1.35 全面代码审计修复（高1/中16/低15+休眠段清理；DXF 不支持实体不再静默丢、-Z 放置公式、config/记忆健壮化、链环判据加固、schema 3→4；详见主脚本文件头 v1.35 条目与审计报告） · v1.36 标准件全面归零（ref 恒 [0,0,0]，config/json 已清零）+ 新增归零工具 + git 版本管理启用（首次推送 github xlzxld/HYT-NX） · v1.37 JT 联动双模式（普通/针阀；窗口②"JT 联动模式"下拉 + 记忆 jt_link_mode；偏移表 config JT_LINK_MODES 可改）+ 目录重组（dev → tools + test） · v1.38 CX 联动（起始=JT 起始，结束=假体结束−35 可改）+ 无记忆兜底 FLB -40/-85 按联动推导；修复选件落盘抹 jt_link_mode（模式记不住） · v1.39 标准件下放工具包重组（`stdparts\NX8兼容_x_t` + `stdparts\_nx_export` 合并收拢改名 `tools\NX向下兼容工具\`：export_xt.py / verify_import.py / import_xt_to_prt.py / 一键导入.bat；x_t 统一入包内 `xt\`，产出 prt 在包内 `x_t转prt\`（prt 版本=执行导入的本机 NX 版本）；stage/tmp 跑完自删，使用说明重写，弃用 v1 export_ps 清理；NX2312 端到端实测 14/14） · v1.40 NX10/12 兼容收尾+显示刷新+CX 修正：`_set_expr`(旧版无 Expression.SetFormula→RightHandSide)、`_dlg_show`(旧版 BlockDialog 无 Launch→Show)、`_refresh_display`(无界面/旧版末帧不重绘→图层全开+Unblank+RedisplayObject+重建，交互与批量共用)、`stdparts_dir` 回退固定读 stdparts(旧版 .prt 直接放入)、CX 结束改按 CX 起始−偏移(不再跟 JT 结束)；配套探针 v2.3(API026)+新增 `batch_smoke.py` 端到端冒烟；NX10/NX12 真机端到端通过 · v2.0 全面架构模块化定版：解耦拆分为 cad3d 核心包（core/geom/modeling/pipeline/ui/selftest）+ nx_extrude_runner.py 320 行 Facade 兼容门面，补齐绝对路径引导与字节码禁写，全套边界异常防崩加固，180 项断言全绿通过 · v2.1 全量配置解耦与高位图层智能避让：消灭所有写死数据与硬编码，nx_std_config.py 划分为 7 大工程模块，nx_extrude_params.json 注入 $schema_description 详细说明元数据与自愈机制；默认采用 101~170 高位图层将 1~100 完全物理留给用户自绘图形；内置图层冲突检测与连续空闲图层自动平移避让引擎；测试断言增至 181 项全绿通过 · v2.2 AutoCAD DWG 图纸无感导入与即用即销：窗口②文件选择器扩展支持 *.dwg;*.dxf；新增 cad3d.geom.dwg_converter 转换引擎，自适应高版本 AutoCAD accoreconsole.exe（1.14s极速）与低版本 acad.exe 批处理；支持 /readonly 防文件锁死；建模全生命周期 try...finally 强力保证临时 DXF 即用即销零磁盘残留；nx_extrude_params.json 保持记忆原始 DWG 路径；新增 ACAD_CONSOLE_PATH 配置；自测断言扩充至 185 项全绿通过 · v2.5 姿态矩阵转置修复+斜槽壁压线板+窗口②镜像按钮：`_matrix3x3` 非翻转分支按 Rz(−θ) 元素传入（NX 对 AddComponent 矩阵按转置生效，世界恰为 Rz(+θ)；轴向角不可辨、斜槽壁歪 2×倾角一案定案，26079 全部实机行为不变），YXB 判向删除『水平槽壁+180°补偿』（系 bug 掩盖补丁）；窗口② FLB 组新增【镜像】按钮（仅 FLB 取负保序翻侧 + `_derive_linked_from_flb` 常规联动整体重推=手输等效；『全层取负』方案致加热条悬板外/热咀错面已否决）；26079 真图回归 11 板预期更新、自测断言 244 项全绿。
 
 **NX10/12 向下兼容改造（已随 v1.40 入库）**：主脚本兼容助手 `_add_to_section_compat`(旧版 AddToSection 用类型化 null)/`_sc_rule_options`(旧版无 CreateRuleOptions)/`_set_expr`(旧版无 Expression.SetFormula)/`_dlg_show`(旧版 BlockDialog 无 Launch)/`_import_module_from_path`(NX10 importlib) + `_refresh_display`(无界面/旧版末帧重绘) + EdgeBlend 逐属性守卫；`stdparts_dir()` 固定读 `stdparts`，旧版交付把 `tools\NX向下兼容工具\` 还原的本机 .prt 直接放入 `stdparts\`(覆盖同名)，无版本切换。详见 §4 第 21~28 条与 `docs\NX10-12兼容性评估报告.md`。`--selftest` 全绿；探针 `tools\probe_nx_compat.py` v2.3；端到端 `batch_smoke.py`/交互在 NX10/NX12 真机实测通过（建模主链 + 显示 + 标准件加载 + CX 联动）。**下放工具链在 `tools\NX向下兼容工具\`**（export_xt.py / verify_import.py / import_xt_to_prt.py / 一键导入.bat；x_t 入包内 `xt\`、产出 prt 在 `x_t转prt\`、运行日志 `*_log.txt` 均已 gitignore），导出→校验→导入在 NX2312 实测 14/14。
 

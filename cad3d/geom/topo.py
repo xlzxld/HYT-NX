@@ -3,7 +3,9 @@
 
 import math
 from collections import defaultdict
-from cad3d.core.constants import LOOP_TOL, LAYER_CODES
+from cad3d.core.constants import (
+    LOOP_TOL, LAYER_CODES, YXB_COINCIDE_TOL, YXB_TEMPLATE_LONGAXIS_DEG
+)
 
 
 def _pkey(p, tol=LOOP_TOL):
@@ -362,11 +364,169 @@ def _center_seen(grid, x, y, tol=LOOP_TOL):
     return False
 
 
-def collect_circle_anchors(layers, rule):
+def _yxb_groups(ents, tol=LOOP_TOL):
+    """(纯逻辑, 可离线测) 端点量化并查集: YXB 图元 → 连通组索引列表。
+
+    每组≈一块压线板闭合轮廓(线+弧端点同权连接)。与 find_chains 不同处:
+    只求连通分量、不排链序、不做 T 形方向选段——YXB 轮廓是独立闭合环,
+    不参与 CX 出线槽闭环逻辑, 简单并查集即可且互不干扰。
+    """
+    parent = list(range(len(ents)))
+
+    def _find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    grid = {}
+    for i, e in enumerate(ents):
+        if e.kind == "circle":    # 圆无端点不参与连通(同 find_chains), 独立成组
+            continue
+        for p in (e.p1, e.p2):
+            for nk in _near_keys(p, tol):
+                for j, q in grid.get(nk, ()):
+                    if j != i and math.hypot(p[0] - q[0], p[1] - q[1]) <= tol:
+                        ri, rj = _find(i), _find(j)
+                        if ri != rj:
+                            parent[rj] = ri
+            grid.setdefault(_pkey(p, tol), []).append((i, p))
+    groups = defaultdict(list)
+    for i in range(len(ents)):
+        groups[_find(i)].append(i)
+    return list(groups.values())
+
+
+def collect_yxb_anchors(yxb_ents, cx_ents, tol=YXB_COINCIDE_TOL,
+                        longaxis_deg=YXB_TEMPLATE_LONGAXIS_DEG):
+    """(纯逻辑, 可离线测) YXB 压线板锚点 = 贴合边中点 + 逐板轮廓自动判向。
+
+    定案(26079 前跑板实图 + 3D 实物 + 实机 7/11 板实证 + 1.prt 斜槽壁取证):
+      每块压线板轮廓(YXB 连通组)与 CX 出线槽线恰有一条共线重合的"贴合边",
+      模板原点即贴合边中点——
+      放置点 = 贴合边中点(同组多条共线重合段取投影并集中点, 防拆段);
+      旋转角 = 朝向 f(垂直贴合边、指向轮廓所在侧=背离槽)减 longaxis_deg
+               (模板贴合长边局部方向角): longaxis_deg=0 时模板 16.6 长边
+               沿槽向落在 CX 线上、板体沿 f 展开与 2D 轮廓重合; 同图多板
+               朝向各异时逐板独立求解, 不量化角度。
+      旧"水平槽壁补偿(+180°)"已删(2026-09-09): 它是 _matrix3x3 转置 bug
+      (NX 按转置生效, 世界角=−θ)在轴向槽壁(−θ≡θ mod 180)下的掩盖补丁;
+      斜槽壁下必歪 2×倾角。矩阵修正后 θ=f 即与全部实机验证结果一致
+      (竖壁 θ=f 原样正确; 横壁旧补偿+转置 bug 的合成世界角恰也是 f)。
+    判定条件: 两线方向夹角 ≈0(正弦<0.01)且偏距≤tol, 重叠≥YXB 边长一半
+      (贴合边必须基本落在 CX 线上, 压线板边缘擦过 CX 线端头不算)。
+    返回 (anchors, warns): anchors=[(cx, cy, 角度deg)] 同中点去重;
+    warns=[str] 无贴合边等被跳过的板(带轮廓中心定位), 调用方须记日志。
+    """
+    warns = []
+    anchors = []
+    cx_lines = []
+    for e in (cx_ents or []):
+        if e.kind != "line":
+            continue
+        w = (e.p2[0] - e.p1[0], e.p2[1] - e.p1[1])
+        lc = math.hypot(w[0], w[1])
+        if lc > tol:
+            cx_lines.append((e.p1, e.p2, (w[0] / lc, w[1] / lc)))
+
+    for idxs in _yxb_groups(yxb_ents, tol=tol):
+        grp = [yxb_ents[i] for i in idxs]
+        gpts = []
+        for e in grp:
+            if e.kind == "circle":
+                gpts.append(e.c)
+                continue
+            gpts.extend((e.p1, e.p2))
+            if e.kind == "arc":
+                gpts.append(e.c)
+        if not gpts:
+            continue
+        gx = (min(p[0] for p in gpts) + max(p[0] for p in gpts)) / 2.0
+        gy = (min(p[1] for p in gpts) + max(p[1] for p in gpts)) / 2.0
+
+        # 1) 组内找贴合边, 按规范方向(±u 归一)聚簇——贴合边被拆成多段时同簇合并
+        clusters = {}
+        for e in grp:
+            if e.kind != "line":
+                continue
+            d = (e.p2[0] - e.p1[0], e.p2[1] - e.p1[1])
+            le = math.hypot(d[0], d[1])
+            if le <= tol:
+                continue
+            u = (d[0] / le, d[1] / le)
+            for (cp1, cp2, v) in cx_lines:
+                if abs(u[0] * v[1] - u[1] * v[0]) > 0.01:
+                    continue                       # 方向不共线
+                dx, dy = cp1[0] - e.p1[0], cp1[1] - e.p1[1]
+                if abs(u[0] * dy - u[1] * dx) > tol:
+                    continue                       # 共线但有偏距, 不是同一条线
+                t0 = u[0] * dx + u[1] * dy         # CX 线两端在 YXB 边轴上的投影
+                t1 = (u[0] * (cp2[0] - e.p1[0])
+                      + u[1] * (cp2[1] - e.p1[1]))
+                ov = min(le, max(t0, t1)) - max(0.0, min(t0, t1))
+                if ov < 0.5 * le:
+                    continue                       # 重叠不足一半, 非贴合边
+                cu = u if (u[0], u[1]) > (-u[0], -u[1]) else (-u[0], -u[1])
+                key = (round(cu[0], 6), round(cu[1], 6))
+                cl = clusters.setdefault(key, {"A": e.p1, "u": cu,
+                                               "lo": None, "hi": None,
+                                               "n": 0.0})
+                # 锚点=贴合边(YXB 线段)并集中点: 记录贴合边端点在簇轴上的
+                # 投影(统一相对簇原点 A、用规范方向 cu, 防 ±u 符号漂移)
+                s0 = (cu[0] * (e.p1[0] - cl["A"][0])
+                      + cu[1] * (e.p1[1] - cl["A"][1]))
+                s1 = (cu[0] * (e.p2[0] - cl["A"][0])
+                      + cu[1] * (e.p2[1] - cl["A"][1]))
+                elo, ehi = (s0, s1) if s0 <= s1 else (s1, s0)
+                if cl["lo"] is None or elo < cl["lo"]:
+                    cl["lo"] = elo
+                if cl["hi"] is None or ehi > cl["hi"]:
+                    cl["hi"] = ehi
+                cl["n"] += le
+        if not clusters:
+            warns.append("压线板轮廓无与 CX 重合的贴合边, 已跳过 "
+                         "(轮廓中心≈%.2f,%.2f)" % (gx, gy))
+            continue
+        if len(clusters) > 1:
+            warns.append("压线板轮廓命中 %d 个不同方向的重合线簇, 取最长簇 "
+                         "(轮廓中心≈%.2f,%.2f)" % (len(clusters), gx, gy))
+        cl = max(clusters.values(), key=lambda c: c["n"])
+        A, u = cl["A"], cl["u"]
+        am = 0.5 * (cl["lo"] + cl["hi"])
+        ax, ay = A[0] + u[0] * am, A[1] + u[1] * am
+
+        # 2) 侧别投票: 组内图元代表点几乎全在贴合边同一侧(板体+凸台侧)
+        pos = neg = 0
+        for p in gpts:
+            s = u[0] * (p[1] - A[1]) - u[1] * (p[0] - A[0])
+            if s > tol:
+                pos += 1
+            elif s < -tol:
+                neg += 1
+        side = 1 if pos >= neg else -1
+        fx, fy = -u[1] * side, u[0] * side          # 朝向(垂直贴合边指向轮廓侧=背离槽)
+        theta = math.degrees(math.atan2(fy, fx) - math.radians(longaxis_deg))
+        if theta <= -180.0:
+            theta += 360.0                          # 归一到 (-180, 180]
+        if theta > 180.0:
+            theta -= 360.0
+        theta += 0.0                                # 消除 atan2 负零(-0.0)
+        anchors.append((ax, ay, theta))
+    seen, dedup = {}, []
+    for (ax, ay, th) in anchors:
+        if not _center_seen(seen, ax, ay):
+            dedup.append((ax, ay, th))
+    return dedup, warns
+
+
+def collect_circle_anchors(layers, rule, log=None):
     """规则筛选圆/圆弧圆心 → [(cx, cy, r)]; 同心去重。
 
     v1.10: 定位图层=CXK 时改为"线中点"锚点——2D 图 CXK 层只画一条线,
     中点即放置点(接线盒规则; 半径字段对该层无意义, 忽略)。
+    v2.3: 定位图层=YXB 时取"与 CX 重合的贴合边中点"+逐板自动判向,
+    第三元为旋转角 deg(圆层第三元为半径; CXK 恒 0)。log 传入时输出
+    跳板警告(无贴合边等), 不静默丢。
     """
     lay = rule.get("layer") or ""
     if lay == "CXK":
@@ -377,6 +537,13 @@ def collect_circle_anchors(layers, rule):
                 my = (e.p1[1] + e.p2[1]) / 2.0
                 if not _center_seen(grid, mx, my):
                     found.append((mx, my, 0.0))
+        return found
+    if lay == "YXB":
+        found, warns = collect_yxb_anchors(layers.get("YXB") or [],
+                                           layers.get("CX") or [])
+        for w in warns:
+            if log is not None:
+                log("  YXB 锚点警告: %s" % w)
         return found
     codes = [lay] if lay else LAYER_CODES
     rmin = float(rule.get("r_min", 0.0))

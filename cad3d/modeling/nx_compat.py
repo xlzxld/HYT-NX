@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """cad3d.modeling.nx_compat —— NXOpen 跨版本调用与对象属性封装。"""
 
+import math
+
 from cad3d.core.constants import SCRIPT_VERSION
 
 MARK_ATTR = "CAD3D"
+TYPE_ATTR = "CAD3D_TYPE"
 
 
 def _set_expr(expr, value_str):
@@ -16,6 +19,22 @@ def _set_expr(expr, value_str):
         expr.SetFormula(value_str)
     except Exception:
         expr.RightHandSide = value_str
+
+
+def _mark_type(obj, type_str):
+    """体类型标记(模具开框按类型套规则用); 失败静默跳过不影响建模。"""
+    try:
+        obj.SetAttribute(TYPE_ATTR, str(type_str))
+    except Exception:
+        pass
+
+
+def _type_of(obj):
+    """读体类型标记; 无标记返回空串(旧版流水线产物)。"""
+    try:
+        return str(obj.GetStringAttribute(TYPE_ATTR) or "")
+    except Exception:
+        return ""
 
 
 def _mark_curve(obj):
@@ -54,10 +73,27 @@ def _bodies_of(feat):
     return []
 
 
-def _matrix3x3(nx, flip):
-    """放置姿态: 单位阵(+Z 插入) 或绕 X 180°(-Z 插入)。"""
-    vals = ((1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0) if flip
-            else (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
+def _matrix3x3(nx, flip, ang_deg=0.0):
+    """放置姿态: NX 实际施加 Rz(ang_deg)·(flip 时绕 X 180°), 元素如列。
+
+    ang_deg=0 时与旧版逐位一致: 单位阵(+Z 插入) / diag(1,-1,-1)(-Z 插入);
+    ang_deg≠0 叠加绕世界 Z 面内旋转(YXB 压线板逐板自动判向, 零件先按
+    dir 翻转再旋转)。
+    NX2312 实机探针定案(2026-09-09): AddComponent 对 Matrix3x3 按传入
+    元素矩阵的【转置】生效——传 Rz(+θ) 元素世界得 Rz(−θ), 轴向角(0/±90/
+    180)不可辨, 斜槽壁实测歪 2×倾角(1.prt 取证)。故非翻转分支按 Rz(−θ)
+    元素传入使世界恰为 Rz(+ang_deg); 翻转分支矩阵对称(Rz·Rx180 自转置),
+    维持原值即世界=Rz(+θ)·Rx180, 无需改。"""
+    a = math.radians(ang_deg)
+    ca, sa = math.cos(a), math.sin(a)
+    if flip:
+        vals = (ca, sa, 0.0,
+                sa, -ca, 0.0,
+                0.0, 0.0, -1.0)
+    else:
+        vals = (ca, sa, 0.0,
+                -sa, ca, 0.0,
+                0.0, 0.0, 1.0)
     try:
         return nx.Matrix3x3(*vals)
     except TypeError:

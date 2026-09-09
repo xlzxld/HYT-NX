@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# npm 本地依赖（commitlint 执法用，不入库）
+node_modules/
+
 # 运行生成物（每次运行重建，不入库）
 logs/
 *.dlx
