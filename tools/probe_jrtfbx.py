@@ -23,7 +23,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from cad3d.core.constants import REF_LAYER_TABLE, assign_layers
+from cad3d.core.constants import DYNAMIC_START, REF_LAYER_TABLE, assign_layers
 from cad3d.geom.dxf_parser import parse_dxf
 from cad3d.geom.topo import (
     _bbox,
@@ -32,13 +32,13 @@ from cad3d.geom.topo import (
     _contour_outlet_mids,
     _fbx_anchor_points,
     _marker_mids_for_chains,
+    _merge_marker_lines,
     _merge_open_chains,
     find_chains,
 )
 
-DUP_TOL = 0.2          # 与 jrt.py 的并入去重容差一致
 MARK_MARGIN = 10.0     # 与 jrt.py 的标记就近分配余量一致
-BLEND_R = 3.9          # 倒圆起始 R(仅用于算 gate, 与实际参数无关)
+BLEND_R = 3.9          # 倒圆起始 R(仅用于算门控值, 与实际参数无关)
 
 
 def _latest_dxf():
@@ -61,18 +61,25 @@ def _latest_dxf():
     return max(cands, key=os.path.getmtime)
 
 
-def _is_dup(fe, pool):
-    """fe 是否与 pool 里某条直线重合(端点对端点, 双向, <DUP_TOL)。"""
-    for u in pool:
+def _same_as_jrt(fe, jrt):
+    """fe 是否与 JRT 层某条直线重合——判定复用 jrt.py 同一套(top)。"""
+    return bool(_merge_marker_lines(jrt, [fe])[1])
+
+
+def _nearest_dev(fe, jrt):
+    """fe 与 JRT 层最近直线的端点最大偏差; 没有直线可比→None。"""
+    best = None
+    for u in jrt:
         if u.kind != "line":
             continue
         d1 = max(math.hypot(fe.p1[0] - u.p1[0], fe.p1[1] - u.p1[1]),
                  math.hypot(fe.p2[0] - u.p2[0], fe.p2[1] - u.p2[1]))
         d2 = max(math.hypot(fe.p1[0] - u.p2[0], fe.p1[1] - u.p2[1]),
                  math.hypot(fe.p2[0] - u.p1[0], fe.p2[1] - u.p1[1]))
-        if min(d1, d2) < DUP_TOL:
-            return True
-    return False
+        d = min(d1, d2)
+        if best is None or d < best:
+            best = d
+    return best
 
 
 def _seglen(e):
@@ -102,37 +109,32 @@ def probe(dxf_path):
         kinds = Counter(e.kind for e in fbx)
         out.append("  %d 条: %s" % (len(fbx), dict(kinds)))
         if kinds.get("arc") or kinds.get("circle"):
-            out.append("  ⚠ 有非直线实体: jrt.py 取曲线用 _fbx_curves[序号], "
-                       "只按直线过滤序号会错位(已知隐患, 待修)。")
+            out.append("  ⚠ 有非直线实体: 并入时按原始下标取曲线, "
+                       "非直线不参与(已修, 但仍建议标记层只放直线)。")
         pts = _fbx_anchor_points(fbx)
         out.append("  标记点 %d 个: %s"
                    % (len(pts), ", ".join("(%.2f,%.2f)" % p for p in pts)))
         for e in fbx:
             if e.kind != "line":
                 continue
-            hit = [u for u in jrt if u.kind == "line" and _is_dup(e, [u])]
+            hit = _same_as_jrt(e, jrt)
             dev = ""
             if hit:
-                u = hit[0]
-                d1 = max(math.hypot(e.p1[0] - u.p1[0], e.p1[1] - u.p1[1]),
-                         math.hypot(e.p2[0] - u.p2[0], e.p2[1] - u.p2[1]))
-                d2 = max(math.hypot(e.p1[0] - u.p2[0], e.p1[1] - u.p2[1]),
-                         math.hypot(e.p2[0] - u.p1[0], e.p2[1] - u.p1[1]))
-                dev = "(与 JRT 线偏差 %.4f)" % min(d1, d2)
+                dev = "(与 JRT 线偏差 %.4f)" % _nearest_dev(e, jrt)
             out.append("    线 L=%.2f (%.2f,%.2f)-(%.2f,%.2f) %s"
                        % (_seglen(e), e.p1[0], e.p1[1], e.p2[0], e.p2[1],
                           "重合于 JRT 层" + dev if hit else "JRT 层没有对应线(靠它封口)"))
 
     out.append("")
     out.append("── 2. 条轮廓闭链(决定拉伸) ──")
-    added = [e for e in fbx if e.kind == "line" and not _is_dup(e, jrt)]
-    dropped = [e for e in fbx if e.kind == "line" and _is_dup(e, jrt)]
+    _add, _dup, _oth = _merge_marker_lines(jrt, fbx)
+    added = [fbx[k] for k in _add]
+    dropped = [fbx[k] for k in _dup]
     out.append("  并入复算: JRTFBX 直线 %d 条 → 新增 %d / 与 JRT 重合丢弃 %d"
-               % (len([e for e in fbx if e.kind == "line"]), len(added),
-                  len(dropped)))
+               % (len(_add) + len(_dup), len(added), len(dropped)))
     if dropped and not added:
         out.append("  ⚠ 全部重合被丢弃: 条轮廓完全靠 JRT 层自己的线成形, "
-                   "JRTFBX 只当锚点用(现状代码不会打这行日志)。")
+                   "JRTFBX 只当锚点用(代码会打一行大白话说明)。")
 
     ents = list(jrt) + list(added)
     closed0, opens0 = find_chains(jrt)
@@ -200,8 +202,8 @@ def probe(dxf_path):
     mp = assign_layers(sorted(layers.keys()))
     out.append("  JRTFBX → NX 图层 %s (参考图层登记表: %s)"
                % (mp.get("JRTFBX"), [r[0] for r in REF_LAYER_TABLE]))
-    out.append("  提示: 未登记的图层走动态分配(119 起按名字排序), "
-               "图纸增删图层会改号。")
+    out.append("  提示: 登记过的图层号是固定的; 没登记的走动态分配(%s 起按名字"
+               "排序), 图纸增删图层会改号。" % DYNAMIC_START)
     return out
 
 

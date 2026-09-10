@@ -61,8 +61,11 @@ for _i, (_c, _zh, _role) in enumerate(_LAYER_DEFS):
 LAYER_CODES = [r[0] for r in LAYER_TABLE]
 
 # 参考图层与保留区映射（默认高位图层区间 101 ~ 170）
-REF_LAYER_TABLE = [("JRT", "加热条(参考)", _cfg_int("NX_LAYER_JRT", 118))]
-DYNAMIC_START   = _cfg_int("NX_LAYER_DYNAMIC_START", 119)
+# JRT=加热条轮廓, JRTFBX=加热条封闭线标记(只用来定删面位置, 不建模)
+REF_LAYER_TABLE = [("JRT", "加热条(参考)", _cfg_int("NX_LAYER_JRT", 118)),
+                   ("JRTFBX", "加热条封闭线标记(参考)",
+                    _cfg_int("NX_LAYER_JRTFBX", 119))]
+DYNAMIC_START   = _cfg_int("NX_LAYER_DYNAMIC_START", 120)
 MANAGED_MIN     = _NX_LAYER_START
 MANAGED_MAX     = _cfg_int("NX_LAYER_MAX", 170)
 if MANAGED_MAX < MANAGED_MIN:
@@ -95,12 +98,18 @@ def assign_layers(layer_names, work_part=None, log=None):
 
     base_start = _NX_LAYER_START
     core_count = len(LAYER_TABLE)
-    jrt_rel = _cfg_int("NX_LAYER_JRT", 118) - _NX_LAYER_START
-    dyn_rel = _cfg_int("NX_LAYER_DYNAMIC_START", 119) - _NX_LAYER_START
+    # 参考图层(JRT/JRTFBX)相对起始层的偏移, 由 REF_LAYER_TABLE 统一推导
+    ref_rels = [(r[0], r[2] - _NX_LAYER_START) for r in REF_LAYER_TABLE]
+    dyn_rel = DYNAMIC_START - _NX_LAYER_START
+
+    def _need(base):
+        """起始层为 base 时, 本次需要占用的全部预设图层号。"""
+        return ({base + i for i in range(core_count)}
+                | {base + rel for _c, rel in ref_rels})
 
     conflict = False
     if occupied:
-        needed = {base_start + i for i in range(core_count)} | {base_start + jrt_rel}
+        needed = _need(base_start)
         if any(ly in occupied for ly in needed):
             conflict = True
 
@@ -109,16 +118,14 @@ def assign_layers(layer_names, work_part=None, log=None):
         cand = base_start + 10
         found = False
         while cand <= 240:
-            cand_needed = {cand + i for i in range(core_count)} | {cand + jrt_rel}
-            if not any(ly in occupied for ly in cand_needed):
+            if not any(ly in occupied for ly in _need(cand)):
                 found = True
                 break
             cand += 10
         if not found:
             cand = base_start + 1
             while cand <= 245:
-                cand_needed = {cand + i for i in range(core_count)} | {cand + jrt_rel}
-                if not any(ly in occupied for ly in cand_needed):
+                if not any(ly in occupied for ly in _need(cand)):
                     found = True
                     break
                 cand += 1
@@ -131,7 +138,8 @@ def assign_layers(layer_names, work_part=None, log=None):
     mapping = {}
     for i, r in enumerate(LAYER_TABLE):
         mapping[r[0]] = base_start + i
-    mapping["JRT"] = base_start + jrt_rel
+    for _code, _rel in ref_rels:
+        mapping[_code] = base_start + _rel
 
     used = set(mapping.values()) | occupied
     nxt = base_start + dyn_rel
