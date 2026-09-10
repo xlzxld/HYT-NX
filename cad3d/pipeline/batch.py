@@ -57,7 +57,7 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
         jrt.update(jrt_override)
     dxf = dxf_arg or resolve_dxf_path(state)
     log = Log(session)
-    log("【批量】dxf=%s" % dxf)
+    log("【批量】图纸: %s" % dxf)
     for _note in _CFG_NOTES:
         log("【配置提示】%s" % _note)
     ok1, stats1 = run_pipeline(dxf, params, session=session, work_part=work_part,
@@ -71,7 +71,8 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
                      if str(getattr(f, "Name", "")).startswith(FEATURE_PREFIX)])
     except Exception:
         pass
-    log("【批量】run1=%s run2=%s 特征数=%d" % (ok1, ok2, feats))
+    log("【批量】连跑两遍: 第 1 遍=%s, 第 2 遍=%s, 特征 %d 个"
+        % (ok1, ok2, feats))
     try:
         with io.open(os.path.join(_logs_dir(), "nx_extrude_report.txt"),
                      "w", encoding="utf-8") as f:

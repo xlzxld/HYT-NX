@@ -41,7 +41,7 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
     stats = {}
 
     if work_part is None:
-        log("【错误】未找到有效的工作部件(Work Part is None), 中止。")
+        log("【错误】没有工作部件(NX 里没打开任何部件), 中止。")
         return False, stats
 
     log("")
@@ -50,7 +50,7 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
         log("【配置提示】%s" % _note)
     log("【输入】图纸: %s" % dxf_path)
     if not dxf_path or not os.path.isfile(dxf_path):
-        log("【错误】未找到图纸文件, 中止。")
+        log("【错误】找不到图纸文件, 中止。")
         return False, stats
 
     actual_dxf = dxf_path
@@ -76,28 +76,29 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
     try:
         layers, dstats = parse_dxf(actual_dxf)
         if dstats["ref_layers"]:
-            log("【解析】参考图层(导入不建模): %s" % ", ".join(
+            log("【解析】参考线图层(只画出来, 不参与建模): %s" % ", ".join(
                 "%s×%d" % kv for kv in sorted(dstats["ref_layers"].items())))
         if dstats["unsupported"]:
             _uns = ", ".join("%s×%d" % kv
                              for kv in sorted(dstats["unsupported"].items()))
-            log("【解析】警告: 不支持的实体类型已跳过: %s" % _uns)
+            log("【解析】警告: 有脚本不认识的图形, 已跳过: %s" % _uns)
             if dstats.get("unsupported_model"):
-                log("【警告】建模图层上有 %d 个不支持的实体(多为 LWPOLYLINE"
-                    "多段线), 对应轮廓不会建模——请在 AutoCAD 用 EXPLODE "
-                    "炸开成直线/圆弧后重试。" % dstats["unsupported_model"])
+                log("【警告】建模图层上有 %d 个不认识的图形(多段线 LWPOLYLINE"
+                    " 最常见), 对应的轮廓不会建模——请回 AutoCAD 用 EXPLODE "
+                    "炸开成直线/圆弧后重跑。" % dstats["unsupported_model"])
                 try:
                     _nx.UI.GetUI().NXMessageBox.Show(
                         "CAD3D 解析警告", _nx.NXMessageBox.DialogType.Warning,
-                        "DXF 建模图层上有 %d 个不支持的实体(%s)。\n"
-                        "对应轮廓不会建模——请回 AutoCAD 把多段线 EXPLODE "
+                        "DXF 建模图层上有 %d 个不认识的图形(%s)。\n"
+                        "对应的轮廓不会建模——请回 AutoCAD 把多段线 EXPLODE "
                         "炸开成直线/圆弧后重跑。"
                         % (dstats["unsupported_model"], _uns))
                 except Exception:
                     pass
         if dstats["nonplanar"]:
-            log("【解析】警告: %d 个实体 Z≠0, 已按 Z=0 处理。" % dstats["nonplanar"])
-        log("【解析】共 %d 个实体, 目标图层: %s" % (
+            log("【解析】提醒: 有 %d 个图形不在 Z=0 平面上, 已按 Z=0 处理。"
+                % dstats["nonplanar"])
+        log("【解析】共读到 %d 个图形; 建模图层: %s" % (
             dstats["total"],
             ", ".join("%s×%d" % (c, len(layers.get(c) or [])) for c in LAYER_CODES)))
 
@@ -125,7 +126,8 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
                 flb_regions = regions
         if not flb_regions:
             subs = ",".join(r[0] for r in LAYER_TABLE if r[5] == "subtract")
-            log("【警告】FLB 基准体未生成, %s 等布尔减层的轮廓将按普通体保留。" % subs)
+            log("【警告】分流板(FLB)没建出来, %s 这些要挖孔的图层会当普通实体"
+                "留着, 不挖。" % subs)
 
         if std_rules is None:
             std_rules = merge_std_rules(load_state())
@@ -152,9 +154,10 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
         _remove_parameters(session, work_part, bodies, log)
 
         nfeat = sum(v.get("features", 0) for v in stats.values())
-        log("【完成】特征 %d 个。各图层: %s" % (
-            nfeat, "; ".join("%s 曲线%d/轮廓%d/%s" % (
-                c, stats[c]["curves"], stats[c]["profiles"], stats[c]["note"] or "OK")
+        log("【完成】共 %d 个特征(建模步骤)。各图层: %s" % (
+            nfeat, "; ".join("%s: %d 条线 → %d 个轮廓, %s" % (
+                c, stats[c]["curves"], stats[c]["profiles"],
+                stats[c]["note"] or "正常")
                 for c in list(LAYER_CODES) + ["JRT", "STD"] if c in stats)))
         _refresh_display(session, work_part, log)
         return True, stats
@@ -176,11 +179,11 @@ def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,
         if is_temp_dxf and actual_dxf and os.path.isfile(actual_dxf):
             try:
                 os.remove(actual_dxf)
-                log("【DWG 转换】临时 DXF 文件已安全移除清理。")
+                log("【DWG 转换】临时 DXF 已清理。")
             except Exception as ex_del:
-                log("【DWG 转换】清理临时文件提示: %s" % ex_del)
+                log("【DWG 转换】临时文件没删掉(不影响本次结果): %s" % ex_del)
         elif is_cache_dxf_file:
-            log("【DWG 转换】缓存 DXF 已保留(logs/ 下, 下次同图免转换)。")
+            log("【DWG 转换】转换结果已留在 logs/ 下, 下次同一张图免转换。")
 
 
 def _save_report(name, lines):

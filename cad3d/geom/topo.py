@@ -488,7 +488,7 @@ def collect_yxb_anchors(yxb_ents, cx_ents, tol=YXB_COINCIDE_TOL,
                          "(轮廓中心≈%.2f,%.2f)" % (gx, gy))
             continue
         if len(clusters) > 1:
-            warns.append("压线板轮廓命中 %d 个不同方向的重合线簇, 取最长簇 "
+            warns.append("压线板轮廓有 %d 组方向不同的重合线, 取最长的那组 "
                          "(轮廓中心≈%.2f,%.2f)" % (len(clusters), gx, gy))
         cl = max(clusters.values(), key=lambda c: c["n"])
         A, u = cl["A"], cl["u"]
@@ -543,7 +543,7 @@ def collect_circle_anchors(layers, rule, log=None):
                                            layers.get("CX") or [])
         for w in warns:
             if log is not None:
-                log("  YXB 锚点警告: %s" % w)
+                log("  压线板放置点提醒: %s" % w)
         return found
     codes = [lay] if lay else LAYER_CODES
     rmin = float(rule.get("r_min", 0.0))

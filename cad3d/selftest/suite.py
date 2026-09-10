@@ -755,7 +755,8 @@ def selftest(dxf_path=None):
         def UndoToMark(self, _mark, _name):
             self.undos += 1
 
-    def _drive_retry(rows_at, vol_at, dome=False, raise_at=None):
+    def _drive_retry(rows_at, vol_at, dome=False, raise_at=None,
+                     noface_at=None):
         """按 R 分派桩行为跑一遍降级循环 → (返回, 试过的R序列, 会话, 日志)。"""
         tries, logs = [], []
         st = {"blended": False, "rows": [(1, 10.0, 1)], "v0": 100.0, "v1": 100.0}
@@ -770,6 +771,8 @@ def selftest(dxf_path=None):
             st["blended"] = False
             k = round(float(r), 4)
             tries.append(k)
+            if noface_at and k in noface_at:
+                raise _mod_jrt._NoEndFace("高度 -47.5 处没有端面")
             if raise_at and k in raise_at:
                 raise RuntimeError("NX 拒绝本次圆角")
             st["v0"], st["v1"] = vol_at.get(k, (100.0, 90.0))
@@ -824,6 +827,14 @@ def selftest(dxf_path=None):
         _g, _tr, _se, _lg = _drive_retry({3.9: _R39_SP20}, {}, dome=False)
         check("圆角降级: 嵌入端不查型20(同样残留直接放行)",
               abs(_g[2] - 3.9) < 1e-9 and _tr == [3.9], str((_g[2], _tr)))
+        _g, _tr, _se, _lg = _drive_retry({}, {}, noface_at={3.9, 3.8, 3.7})
+        check("圆角降级: 找不到端面→立刻放弃, 不空降 3 次",
+              _g[0] is None and _tr == [3.9] and _se.undos == 0
+              and "没有端面" in "".join(_lg), str((_tr, _se.undos, _lg)))
+        _g, _tr, _se, _lg = _drive_retry(
+            {3.9: _R39_BAD, 3.8: _R39_BAD, 3.7: _R39_BAD}, {})
+        check("圆角降级: 到下限留一行总账(不是静默返回)",
+              "一路试到下限" in "".join(_lg), str(_lg))
     finally:
         if _nx_keep is None:
             sys.modules.pop("NXOpen", None)
@@ -1321,7 +1332,7 @@ def selftest(dxf_path=None):
             _hit_dt = time.time() - _hit_t0
             check("DWG 转换缓存二次命中(免起 AutoCAD 复用)",
                   _conv_hit == _conv_dxf
-                  and any("命中本地缓存" in m for m in _hit_logs),
+                  and any("图纸没改过" in m for m in _hit_logs),
                   "耗时 %.3fs" % _hit_dt)
             try:
                 os.remove(_conv_dxf)
@@ -1639,7 +1650,7 @@ def selftest(dxf_path=None):
           and _merge_groups("none", []) == [(None, [])])
     check("合并拉伸开关默认开 + 日志后缀",
           _merge_extrude_enabled() is True
-          and _merge_note(True) == ", 合并拉伸生效"
+          and _merge_note(True) == ", 多个轮廓一次拉伸"
           and _merge_note(False) == "")
 
     from cad3d.geom import dwg_converter as _dwc

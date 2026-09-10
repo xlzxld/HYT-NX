@@ -68,7 +68,7 @@ def create_curves(work_part, layers, layer_map, log):
         out[code] = made
         n_ok = len(made) - fails
         if n_ok:
-            extra = ("(失败 %d)" % fails) if fails else ""
+            extra = ("(有 %d 条没画出来)" % fails) if fails else ""
             log("【曲线】%s(%s): %d 条 → NX 图层 %d %s"
                 % (code, zh.get(code, "参考"), n_ok, num, extra))
     return out
@@ -189,8 +189,8 @@ def _merge_extrude_enabled():
 
 
 def _merge_note(used):
-    """(纯逻辑) 图层完成日志后缀: 合并拉伸生效时标注(便于核对提速路径)。"""
-    return ", 合并拉伸生效" if used else ""
+    """(纯逻辑) 图层完成日志后缀: 一次拉伸多个轮廓时标注(便于核对提速路径)。"""
+    return ", 多个轮廓一次拉伸" if used else ""
 
 
 def _merge_groups(role, entries):
@@ -241,28 +241,29 @@ def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
 
     if abs(start) < 1e-12 and abs(end) < 1e-12:
         stats[code]["note"] = "距离全 0, 跳过"
-        log("【%s】起始=结束=0, 跳过该图层。" % code)
+        log("【%s】起始=结束=0, 跳过这一层。" % code)
         return [], []
     if start > end:
         start, end = end, start
         stats[code]["note"] = "起始>结束, 已交换"
-        log("【%s】起始>结束, 已自动交换为 %.4g→%.4g。" % (code, start, end))
+        log("【%s】起始比结束大, 已自动对调成 %.4g→%.4g。" % (code, start, end))
     if abs(end - start) < 1e-12:
         stats[code]["note"] = "零厚度, 跳过"
-        log("【%s】起始==结束(非零), 零厚度无法拉伸, 跳过。" % code)
+        log("【%s】起始和结束一样, 厚度是 0, 没法拉伸, 跳过。" % code)
         return [], []
     if not ents:
-        stats[code]["note"] = "图层无曲线"
-        log("【%s】DXF 中无该图层曲线(距离 %.4g→%.4g), 跳过。" % (code, start, end))
+        stats[code]["note"] = "该层没有线"
+        log("【%s】图纸上没有这一层的线(距离 %.4g→%.4g), 跳过。"
+            % (code, start, end))
         return [], []
 
     profiles, opens, _nc = organize_loops(ents)
     stats[code]["profiles"] = len(profiles)
     if opens:
-        log("【%s】警告: %d 条开口链未闭合, 不参与拉伸。" % (code, len(opens)))
+        log("【%s】提醒: 有 %d 条线两头没接上, 不参与拉伸。" % (code, len(opens)))
     if not profiles:
-        stats[code]["note"] = "无封闭环"
-        log("【%s】未找到任何封闭环, 跳过拉伸。" % code)
+        stats[code]["note"] = "没有闭合的轮廓"
+        log("【%s】没找到闭合的轮廓, 跳过拉伸。" % code)
         return [], []
 
     def pick_region(bbox):
@@ -287,7 +288,7 @@ def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
                 return None
         cs = [nx_curves[i] for i in idxs if 0 <= i < len(nx_curves)]
         if len(cs) != len(idxs) or any(c is None for c in cs):
-            log("【%s】轮廓含创建失败的曲线, 该轮廓跳过。" % code)
+            log("【%s】这个轮廓里有没画出来的线, 跳过。" % code)
             return None
         return cs
 
@@ -318,10 +319,10 @@ def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
             if flb_regions:
                 pick = pick_region(prof["outer"]["bbox"])
                 if pick is None:
-                    log("【%s】轮廓 %d 不落在任何 FLB 体内, 按普通拉伸保留。"
+                    log("【%s】轮廓 %d 不落在任何分流板里, 当普通实体留着。"
                         % (code, fi))
             else:
-                log("【%s】无 FLB 基准体, 轮廓按普通拉伸保留。" % code)
+                log("【%s】没有分流板, 轮廓当普通实体留着。" % code)
         entries.append({"fi": fi,
                         "base": "%sEXT_%s_%d" % (FEATURE_PREFIX, code, fi),
                         "outer": outer_curves, "hp": chain_help(prof["outer"]),
@@ -361,8 +362,9 @@ def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
                                bool_op=hop, help_pt=chain_help(hole))
                 stats[code]["features"] += 1
             except Exception as ex:
-                stats[code]["note"] = "孔处理失败"
-                log("【%s】轮廓 %d 孔 %d 处理失败: %s" % (code, en["fi"], k, ex))
+                stats[code]["note"] = "孔没挖成"
+                log("【%s】轮廓 %d 的第 %d 个孔没挖成: %s"
+                    % (code, en["fi"], k, ex))
 
     def _merged(ens, name, op):
         """提速路径: 多轮廓/含孔截面并入同一 section, 单特征一次成体。"""
@@ -389,8 +391,8 @@ def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
                     _merged([en], en["base"], None)
                     merged_used = True
                 except Exception as ex:
-                    stats[code]["note"] = "合并拉伸回退"
-                    log("【%s】轮廓 %d 含孔合并拉伸失败(%s), 回退逐轮廓模式。"
+                    stats[code]["note"] = "改成逐个拉伸"
+                    log("【%s】轮廓 %d 带孔一次拉伸失败(%s), 改成一个个轮廓单独拉。"
                         % (code, en["fi"], ex))
                     _classic(en)
         else:
@@ -401,9 +403,9 @@ def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
                             gop)
                     merged_used = True
                 except Exception as ex:
-                    stats[code]["note"] = "合并拉伸回退"
-                    log("【%s】合并拉伸组 %d(%d 个轮廓)失败(%s), 回退逐轮廓模式。"
-                        % (code, gi, len(gents), ex))
+                    stats[code]["note"] = "改成逐个拉伸"
+                    log("【%s】第 %d 组(%d 个轮廓)一次拉伸失败(%s), "
+                        "改成一个个轮廓单独拉。" % (code, gi, len(gents), ex))
                     for en in gents:
                         _classic(en)
     else:
@@ -411,11 +413,11 @@ def build_layer(session, work_part, code, zh, role, layers, nx_curves_by_ent,
             _classic(en)
 
     if role == "target":
-        log("【%s】基准体完成: %d 个轮廓(体 %d 个), %.4g→%.4g%s。"
+        log("【%s】这个图层做好了: %d 个轮廓 → %d 个实体, 高度 %.4g→%.4g%s。"
             % (code, len(profiles), len(regions), start, end,
                _merge_note(merged_used)))
     elif role == "subtract":
-        log("【%s】布尔减完成: %d 个轮廓(从 FLB 减去)%s。"
+        log("【%s】挖孔完成: %d 个轮廓从分流板减掉%s。"
             % (code, len(profiles), _merge_note(merged_used)))
     else:
         log("【%s】拉伸完成: %d 个轮廓%s。"

@@ -77,7 +77,8 @@ def lookup_dwg_cache(dwg_path, log=None):
             head = f.read(1024)
         if b"SECTION" not in head:
             if log:
-                log("【DWG 转换】缓存文件损坏(非 DXF 头), 忽略并重新转换。")
+                log("【DWG 转换】上次留下的转换结果坏了(不是 DXF 内容), "
+                    "忽略, 重新转一遍。")
             return None
     except OSError:
         return None
@@ -239,7 +240,7 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
         cached = lookup_dwg_cache(dwg_path, log=log)
         if cached is not None:
             if log:
-                log("【DWG 转换】命中本地缓存(图纸未变更), 免转换直接复用: %s"
+                log("【DWG 转换】图纸没改过, 直接用上次转好的, 省一次转换: %s"
                     % os.path.basename(cached))
             return cached
 
@@ -299,7 +300,7 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
         raise DwgConversionError("创建临时转换脚本失败: %s" % ex)
 
     if log:
-        log("【DWG 转换】启动后台转换: %s -> DXF (%s)"
+        log("【DWG 转换】开始后台转换: %s → DXF (用 %s)"
             % (os.path.basename(dwg_path), "accoreconsole" if is_core else "acad"))
 
     try:
@@ -331,7 +332,7 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
         raise DwgConversionError(err_msg)
 
     if log:
-        log("【DWG 转换】转换成功: 大小 %.1f KB, 耗时 %.2f 秒"
+        log("【DWG 转换】转换完成: %.1f KB, 用了 %.2f 秒"
             % (os.path.getsize(out_dxf) / 1024.0, elapsed))
 
     # 转换成功后经完整性校验再入缓存(先落临时文件、os.replace 原子转正,
@@ -342,11 +343,12 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
             cache_dst = _cache_path_for(dwg_path)
             os.replace(out_dxf, cache_dst)
             if log:
-                log("【DWG 转换】产物已入缓存(下次同图免转换): %s"
+                log("【DWG 转换】转换结果已存起来, 下次同一张图免转换: %s"
                     % os.path.basename(cache_dst))
             return os.path.abspath(cache_dst)
         except OSError as ex:
             if log:
-                log("【DWG 转换】缓存落盘失败(本次仍可用, 下次重转): %s" % ex)
+                log("【DWG 转换】转换结果没存下来(本次照常用, 下次还得重转): %s"
+                    % ex)
 
     return os.path.abspath(out_dxf)

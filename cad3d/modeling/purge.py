@@ -33,7 +33,7 @@ def nx_purge(session, work_part, log, dxf_layers=None):
             if str(getattr(f, "Name", "")).startswith(FEATURE_PREFIX):
                 feats.append(f)
     except Exception as ex:
-        log("【清理】特征枚举失败: %s" % ex)
+        log("【清理】读取特征列表失败: %s" % ex)
     for f in list(_CREATED_FEATURES):               # 登记表双保险(仅本工作部件)
         try:
             if f not in feats and f.OwningPart == work_part:
@@ -48,7 +48,7 @@ def nx_purge(session, work_part, log, dxf_layers=None):
                 if str(getattr(c, "Name", "")).startswith(COMP_PREFIX):
                     comps.append(c)
     except Exception as ex:
-        log("【清理】组件枚举失败: %s" % ex)
+        log("【清理】读取装配组件失败: %s" % ex)
 
     # 曲线: 带标记的删; 范围内无标记的做指纹迁移匹配
     fps = dxf_fingerprints(dxf_layers)
@@ -71,7 +71,7 @@ def nx_purge(session, work_part, log, dxf_layers=None):
                 else:
                     kept_warn[lay] = kept_warn.get(lay, 0) + 1
     except Exception as ex:
-        log("【清理】曲线枚举失败: %s" % ex)
+        log("【清理】读取曲线失败: %s" % ex)
 
     if feats or curves or comps:
         try:
@@ -79,7 +79,7 @@ def nx_purge(session, work_part, log, dxf_layers=None):
             session.UpdateManager.DoUpdate(
                 session.SetUndoMark(NXOpen.Session.MarkVisibility.Invisible, "CAD3D 清理"))
         except Exception as ex:
-            log("【清理】删除失败(可能有特征引用曲线): %s" % ex)
+            log("【清理】删除失败(可能还有特征引用着这些曲线): %s" % ex)
             return 0                    # 返回值=实际删除数, 未删成即 0
 
     # 已标记哑体: 特征删除后幸存的(移除参数轮产物), 二次枚举补删
@@ -89,20 +89,21 @@ def nx_purge(session, work_part, log, dxf_layers=None):
             if _is_marked(b):
                 mbodies.append(b)
     except Exception as ex:
-        log("【清理】实体枚举失败: %s" % ex)
+        log("【清理】读取实体失败: %s" % ex)
     if mbodies:
         try:
             session.UpdateManager.AddToDeleteList(mbodies)
             session.UpdateManager.DoUpdate(
                 session.SetUndoMark(NXOpen.Session.MarkVisibility.Invisible, "CAD3D 清理体"))
         except Exception as ex:
-            log("【清理】已标记体删除失败: %s" % ex)
+            log("【清理】上一轮的实体没删掉: %s" % ex)
             return len(feats) + len(curves) + len(comps)   # 体未删掉
-    log("【清理】已删除上一轮: 特征 %d 个, 实体 %d 个, 曲线 %d 条(含旧版无标记 %d), 组件 %d 个。"
+    log("【清理】已清掉上一轮的: 特征 %d 个, 实体 %d 个, 曲线 %d 条"
+        "(其中旧版没标记的 %d 条), 组件 %d 个。"
         % (len(feats), len(mbodies), len(curves), legacy, len(comps)))
     if kept_warn:
-        log("【清理】警告: 图层 %s 有 %d 条不属于本脚本的曲线, 已保留"
-            "(脚本曲线将与其同层混放, 建议移到图层 1~%d 或 %d 以上)。"
+        log("【清理】提醒: 图层 %s 有 %d 条不是脚本画的线, 已保留"
+            "(脚本的线会跟它们同层, 建议你把自画的线挪到 1~%d 层或 %d 层以上)。"
             % (",".join(str(k) for k in sorted(kept_warn)),
                sum(kept_warn.values()), MANAGED_MIN - 1, MANAGED_MAX + 1))
     return len(feats) + len(curves) + len(comps) + len(mbodies)

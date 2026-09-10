@@ -131,7 +131,8 @@ def assign_layers(layer_names, work_part=None, log=None):
                 cand += 1
         if found:
             if log is not None:
-                log("【图层分配】检测到图层 %s 已有用户自有图形，已启动智能避让，本次自动平移至空闲图层 %d~%d。"
+                log("【图层分配】发现图层 %s 上已经有你自己画的图形, 已自动避开, "
+                    "这次脚本的线放到空闲的 %d~%d 层。"
                     % (sorted(needed & occupied), cand, cand + core_count - 1))
             base_start = cand
 

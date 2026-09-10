@@ -48,6 +48,14 @@ def _fmt_xy(pts):
 _FBX_MAX = 4
 
 
+class _NoEndFace(Exception):
+    """要倒圆的那一端找不到端面——跟圆角半径大小无关, 降 R 也是空跑。
+
+    `_edge_blend_end_retry` 单独接住它并立刻放弃这一段(不再逐级降 R),
+    省掉 2 次无用的质量属性积分; 其他失败(NX 拒绝/几何不过)照旧降 R 重试。
+    """
+
+
 def _uf_face_data(uf, face):
     """UF.Modeling.AskFaceData → 7 元组 (type, point[3], dir[3], bbox[6], r, ratio, norm)。"""
     return uf.Modeling.AskFaceData(face.Tag)
@@ -79,8 +87,7 @@ def _edge_blend_end(work_part, uf, body, z_plane, radius, log, feat_name=None):
 
     face = _find_flat_face(uf, body, z_plane)
     if face is None:
-        log("  圆角: 没找到高度 %.3f 处的端面" % z_plane)
-        return None, []
+        raise _NoEndFace("高度 %.4g 处没有端面" % z_plane)
     try:
         before = set(f.Tag for f in body.GetFaces())
     except Exception:
@@ -209,6 +216,10 @@ def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
         try:
             feat, nf = _edge_blend_end(work_part, uf, body, z_plane, r, log,
                                        feat_name=feat_name)
+        except _NoEndFace as ex:
+            # 端面找不到跟半径无关, 再往下降 R 纯属空跑(每次都白算体积)
+            log("  %s: %s(跟圆角大小无关), 这端不做圆角。" % (label, ex))
+            return None, [], float(r0)
         except Exception:
             feat, nf = None, []
         v1 = _body_volume(work_part, body) if feat is not None else None
@@ -230,14 +241,16 @@ def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
         elif feat is not None:
             log("  %s: R%.4g 时面不对(%s), 撤销, 换小一点再试。" % (label, r, why))
         else:
-            # 圆角根本没做出来(NX 拒绝 / 找不到端面)——这条最常发生, 必须留痕,
-            # 否则报告里只看得到"降到下限还不行", 看不出它在逐级降 R 重试。
+            # 圆角根本没做出来(NX 拒绝等异常)——这条最常发生, 必须留痕, 否则
+            # 报告里只看得到"降到下限还不行", 看不出它在逐级降 R 重试。
             log("  %s: R%.4g 这次没做出来, 撤销, 换小一点再试。" % (label, r))
         try:
             session.UndoToMark(mark, None)
         except Exception:
             pass
         r -= step
+    log("  %s: R 从 %.4g 一路试到下限 %.4g 都不行, 这端不做圆角。"
+        % (label, float(r0), float(r_min)))
     return None, [], float(r0)
 
 
@@ -463,8 +476,8 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
             "那两条线首尾相接。")
         return []
     if not flb_regions:
-        stats["JRT"]["note"] = "没有分流板基准体"
-        log("【加热条】没有分流板基准体, 跳过。")
+        stats["JRT"]["note"] = "没有分流板"
+        log("【加热条】没有分流板, 跳过。")
         return []
 
     uf = NXOpen.UF.UFSession.GetUFSession()
@@ -642,8 +655,8 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                             log("【加热条】%s: 齐平端圆角改小到 R%.4g 才做成。"
                                 % (_who, used))
                     else:
-                        log("【加热条】%s: 齐平端圆角做到 R%.4g 还不行, "
-                            "这端留直角。" % (_who, r_min_all))
+                        log("【加热条】%s: 齐平端没倒成圆角, 这端留直角"
+                            "(原因见上一行)。" % _who)
                 except Exception as ex:
                     log("【加热条】%s: 齐平端圆角出错(%s)。" % (_who, ex))
                     used, nf2 = _r_start, []

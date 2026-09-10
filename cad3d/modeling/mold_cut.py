@@ -242,7 +242,7 @@ def _body_bbox(uf, body, log=None):
                 if not _bbox_diag[0]:
                     _bbox_diag[0] = True
                     if log is not None:
-                        log("  包围盒: 体级快路径 %s 生效。" % name)
+                        log("  包围盒: 一次调用就拿到了(%s), 走的快路径。" % name)
                 return bb
         except Exception:
             continue
@@ -251,8 +251,8 @@ def _body_bbox(uf, body, log=None):
         if log is not None:
             names = sorted(n for n in dir(uf.Modeling)
                            if "bound" in n.lower())
-            log("  包围盒: 本 NX 无 %s 包装, 走逐面合并回退; 含 'bound' 的"
-                "UF 接口: %s。"
+            log("  包围盒: 本 NX 没有 %s 这个包装, 改成逐面合并(结果一样, 慢些);"
+                " 本机含 'bound' 的 UF 接口: %s。"
                 % ("/".join(_BBOX_ASK_NAMES), ", ".join(names) or "无"))
     rows = []
     try:
@@ -434,8 +434,8 @@ def _get_point_contains(uf, mold_rows, log):
             break
         diag.append("内点 %d 个 response 均与外部点(%d)同值" % (n_same, r_out))
     if outside_val is None:
-        log("  点包含预筛: 校准失败禁用。诊断: %s"
-            % ("; ".join(diag[:4]) if diag else "无可用校准模具"))
+        log("  悬空件预筛: 校准没过, 关掉。诊断: %s"
+            % ("; ".join(diag[:4]) if diag else "没有可用来校准的模具"))
         return None
 
     def contains(body, pt):
@@ -467,13 +467,13 @@ def _collect_mold(session, work_part, log):
             if not str(getattr(c, "Name", "")).startswith(COMP_PREFIX):
                 comps.append(c)
     except Exception as ex:
-        log("【模具】组件枚举失败: %s" % ex)
+        log("【模具】读取装配组件失败: %s" % ex)
         return []
     if not comps:
         return []
-    log("【模具】部件内无独立体, 检测到 %d 个非 CAD3D 装配组件, 视作手动放置"
-        "的模具: 提升全部体并移除组件引用(标准件同款, 可整体撤销)。"
-        % len(comps))
+    log("【模具】部件里没有独立实体, 但有 %d 个不是脚本放的装配组件, 当作你手动"
+        "放的模具: 把里面的实体提升上来, 再去掉组件引用(和标准件同一套做法, "
+        "可以整体撤销)。" % len(comps))
     out = []
     for c in comps:
         got = _promote_body(work_part, c, "%sBODY_MOLD" % FEATURE_PREFIX,
@@ -485,7 +485,7 @@ def _collect_mold(session, work_part, log):
                 session.SetUndoMark(nx.Session.MarkVisibility.Invisible,
                                     "CAD3D 删模具组件引用"))
         except Exception as ex:
-            log("  模具组件引用删除失败(提升体不受影响): %s" % ex)
+            log("  模具组件引用没删掉(提升上来的实体不受影响): %s" % ex)
     return out
 
 
@@ -572,8 +572,8 @@ def _blend_edges(work_part, edges, radius, log, feat_name):
             except Exception:
                 rule = None
     if rule is None:
-        log("  天侧倒圆: 本 NX 无 CreateRuleEdgeDumb 边规则"
-            "(可把 nx_mold_cut_runner.py 的 MODE 改为 \"api\" 探针确认), 跳过。")
+        log("  天侧圆角: 这个 NX 版本没有 CreateRuleEdgeDumb 边规则(想让脚本"
+            "探一下的话, 把 nx_mold_cut_runner.py 的 MODE 改成 \"api\"), 跳过。")
         return False
     bldr = work_part.Features.CreateEdgeBlendBuilder(NXOpen.Features.Feature.Null)
     try:
@@ -592,7 +592,7 @@ def _blend_edges(work_part, edges, radius, log, feat_name):
         _CREATED_FEATURES.append(feat)
         return True
     except Exception as ex:
-        log("  天侧倒圆失败(%s), 跳过。" % ex)
+        log("  天侧圆角没做成(%s), 跳过。" % ex)
         return False
     finally:
         try:
@@ -612,16 +612,16 @@ def _blend_channel(session, work_part, uf, target, tb, rule, log):
                 max(1.0, r_step - 1.0), 0.25, log,
                 "%sMOLD_CXSTEP" % FEATURE_PREFIX, "出线槽台阶边")
             if feat is not None and abs(used - r_step) > 1e-9:
-                log("  出线槽台阶边降半径至 %.4g。" % used)
+                log("  出线槽台阶边圆角改小到 R%.4g 才做成。" % used)
         except Exception as ex:
-            log("  出线槽台阶边倒圆异常: %s" % ex)
+            log("  出线槽台阶边圆角出错: %s" % ex)
     if r_flush > 0:
         z_top = _top_face_z(uf, target)
         if z_top is None:
-            log("  天侧倒圆: 未找到模具体水平顶面, 跳过。")
+            log("  没找到模具的水平顶面, 天侧圆角跳过。")
             return
         edges = _select_flush_edges(target, tb, z_top)
-        log("  天侧开口候选边 %d 条(z=%.3f)。" % (len(edges), z_top))
+        log("  天侧待倒圆的边有 %d 条(高度 z=%.3f)。" % (len(edges), z_top))
         if edges:
             _blend_edges(work_part, edges, r_flush, log,
                          "%sMOLD_CXTOP" % FEATURE_PREFIX)
@@ -635,7 +635,7 @@ def _clearance_hole(session, work_part, uf, target, tb, cfg, log):
     rows = _face_rows(uf, target, region)
     curved = [r for r in rows if r[2] > 1e-9]
     if not curved:
-        log("  扩孔: 工具体区域内未找到孔壁曲面, 跳过。")
+        log("  把孔放大: 这块区域内没找到孔壁曲面, 跳过。")
         return
     main = max(curved, key=lambda r: max(_extents(r[6])))
     slivers = [r for r in rows
@@ -643,13 +643,13 @@ def _clearance_hole(session, work_part, uf, target, tb, cfg, log):
     if slivers:
         _delete_faces(work_part, [r[0] for r in slivers], log,
                       "%sMOLD_CUTSLIVER" % FEATURE_PREFIX)
-        log("  扩孔: 已删孔内碎面 %d 片。" % len(slivers))
+        log("  把孔放大: 先删掉孔里的碎面 %d 片。" % len(slivers))
     walls = [r[0] for r in _hole_rows(_face_rows(uf, target, region))]
     if offset > 0:
         n = _offset_faces(work_part, walls, offset, log,
                           "%sMOLD_OFF" % FEATURE_PREFIX)
         if n:
-            log("  扩孔: 孔壁 %d面向外偏置 %.4g 完成。" % (n, offset))
+            log("  把孔放大: %d 个孔壁往外偏了 %.4g。" % (n, offset))
 
 
 def _offset_faces(work_part, faces, offset, log, feat_name):
@@ -670,8 +670,8 @@ def _offset_faces(work_part, faces, offset, log, feat_name):
             except Exception:
                 bldr = None
     if bldr is None:
-        log("  扩孔偏置: 本 NX 无 OffsetFace 构造器"
-            "(可把 nx_mold_cut_runner.py 的 MODE 改为 \"api\" 探针确认), 跳过。")
+        log("  把孔放大: 这个 NX 版本没有 OffsetFace 构造器(想让脚本探一下的"
+            "话, 把 nx_mold_cut_runner.py 的 MODE 改成 \"api\"), 跳过。")
         return 0
     try:
         opts = None
@@ -691,13 +691,13 @@ def _offset_faces(work_part, faces, offset, log, feat_name):
                 except Exception:
                     rule = None
         if rule is None:
-            log("  扩孔偏置: 面规则创建失败, 跳过。")
+            log("  把孔放大: 选面的规则没建成, 跳过。")
             return 0
         coll = getattr(bldr, "FaceCollector", None)
         if coll is None:
             coll = getattr(bldr, "Faces", None)
         if coll is None:
-            log("  扩孔偏置: 构造器无面收集器属性, 跳过。")
+            log("  把孔放大: 构造器上找不到面收集器, 跳过。")
             return 0
         coll.ReplaceRules([rule], False)
         dist = getattr(bldr, "Distance", None)
@@ -714,7 +714,7 @@ def _offset_faces(work_part, faces, offset, log, feat_name):
                 except Exception:
                     feat = None
         if feat is None:
-            log("  扩孔偏置: 提交失败, 跳过。")
+            log("  把孔放大: 提交没成功, 跳过。")
             return 0
         try:
             feat.SetName(feat_name)
@@ -766,17 +766,17 @@ def cut_mold(session, work_part, log, bbox_tol=None, rules=None, stats=None,
         st["tools"], st["mold"] = len(tools), len(mold)
         n_untyped = sum(1 for t in tools if not _type_of(t))
         if n_untyped:
-            log("【模具开框】提示: %d 个工具体无类型标记(旧版流水线产物), "
-                "按默认规则处理; 重跑流水线可获得标记。" % n_untyped)
-        log("【模具开框】工具 %d 个(CAD3D 产物体), 模具体 %d 个(未标记体), "
+            log("【模具开框】提醒: %d 个实体没有类型标记(旧版脚本的产物), "
+                "按默认规则处理; 重跑一遍拉伸流水线就会有标记。" % n_untyped)
+        log("【模具开框】脚本产物实体 %d 个, 模具体 %d 个(没有 CAD3D 标记的), "
             "接触容差 %.4g, 规则 %d 条, 试切%s。"
             % (len(tools), len(mold), tol, len(rules),
-               "开(总开关 MOLD_TRIAL_CUT=True)" if trial_cut
-               else "关(总开关 MOLD_TRIAL_CUT=False, 全部直接减去)"))
+               "开(MOLD_TRIAL_CUT=True)" if trial_cut
+               else "关(MOLD_TRIAL_CUT=False, 全部直接减)"))
         if not tools or not mold:
-            log("【模具开框】中止: %s。请确认已跑完分层拉伸流水线, 且模具已"
-                "手动放置到工作部件。"
-                % ("无 CAD3D 产物体" if not tools else "未找到模具体"))
+            log("【模具开框】中止: %s。请确认分层拉伸流水线跑完了, 且模具已经"
+                "手动放到工作部件里。"
+                % ("没有脚本产出的实体" if not tools else "没找到模具体"))
             return st
 
         mold_rows = []
@@ -785,24 +785,24 @@ def cut_mold(session, work_part, log, bbox_tol=None, rules=None, stats=None,
             v = _body_volume(work_part, mb) if MOLD_AUDIT_VOLUME else None
             mold_rows.append((mb, bb, v))
             if v is not None:
-                log("  模具#%d bbox=%s 体积=%.1f" % (i + 1, _fmt_bbox(bb), v))
+                log("  模具#%d 包围盒=%s 体积=%.1f" % (i + 1, _fmt_bbox(bb), v))
             else:
-                log("  模具#%d bbox=%s" % (i + 1, _fmt_bbox(bb)))
+                log("  模具#%d 包围盒=%s" % (i + 1, _fmt_bbox(bb)))
 
         # ── 阶段 A1: 冲突试切(逐工具, 只判不减) → A2 按模具攒批一次减 ──
         mold_bbs = [row[1] for row in mold_rows]
         contains = _get_point_contains(uf, mold_rows, log)
         if contains is not None:
-            log("  点包含预筛: 启用(工具体顶点判定实体接触, 悬空件直接跳过)。")
+            log("  悬空件检查: 用实体顶点判断是否真碰到模具, 悬空的直接跳过。")
         else:
-            log("  点包含预筛: 本 NX 无可用点包含接口或校准失败, 自动禁用。")
+            log("  悬空件检查: 本 NX 没有可用的判断接口或校准没过, 自动关掉。")
         pending = {}                  # 模具下标 → [(t, tb, tkey, rule, tlabel)]
         for ti, t in enumerate(tools):
             tb = _body_bbox(uf, t, log)
             tkey = _type_of(t)
             rule = _rule_for(tkey, rules)
-            tlabel = "工具#%d[%s](中心 %s)" % (ti + 1, tkey or "?",
-                                               _fmt_center(tb))
+            tlabel = "实体#%d[%s](中心 %s)" % (ti + 1, tkey or "?",
+                                              _fmt_center(tb))
             tpts = _body_vertices(t, 16) if contains is not None else []
             hits = _pair_hits(tb, mold_bbs, tol)
             if not hits:
@@ -812,9 +812,8 @@ def cut_mold(session, work_part, log, bbox_tol=None, rules=None, stats=None,
                 if contains is not None and tpts and \
                         not _any_point_inside(contains, mold_rows[mi][0], tpts):
                     st["skip"] += 1
-                    log("  预筛剔除: %s → 模具#%d(采样顶点全在模具材料外, "
-                        "悬空件不参与减)。"
-                        % (tlabel, mi + 1))
+                    log("  跳过: %s 跟模具#%d 其实没碰上(采样的顶点全在模具"
+                        "外面, 悬空的不参与挖)。" % (tlabel, mi + 1))
                     continue
                 if trial_cut and rule.get("conflict_check"):
                     _ta = time.time()
@@ -823,11 +822,11 @@ def cut_mold(session, work_part, log, bbox_tol=None, rules=None, stats=None,
                     t_trial += time.time() - _ta
                     if bad:
                         st["conflict"] += 1
-                        log("  冲突跳过: %s → 模具#%d 会破坏 %d 处已有孔壁"
-                            "(试切已撤销), 该处不减。"
+                        log("  跳过: %s 挖进模具#%d 会碰坏 %d 处已有的孔"
+                            "(试挖已经撤销), 这里就不挖了。"
                             % (tlabel, mi + 1, len(broken)))
                         for b in broken:
-                            log("    受损孔: R=%.3f 中心(%.1f,%.1f,%.1f)"
+                            log("    会碰坏的孔: R=%.3f 中心(%.1f,%.1f,%.1f)"
                                 % (b[2], b[3], b[4], b[5]))
                         continue
                 pending.setdefault(mi, []).append((t, tb, tkey, rule, tlabel))
@@ -841,8 +840,8 @@ def cut_mold(session, work_part, log, bbox_tol=None, rules=None, stats=None,
             ts = [it[0] for it in batch]
             multi = len(ts) > 1
             if multi:
-                log("  批量减去: 模具#%d 一次减 %d 件(%s)。"
-                    % (mi + 1, len(ts),
+                log("  一次挖 %d 件: 模具#%d ← %s。"
+                    % (len(ts), mi + 1,
                        "、".join(it[4].split("(")[0] for it in batch)))
             _tc = time.time()
             _fs, failed = _bool_feature(
@@ -856,17 +855,17 @@ def cut_mold(session, work_part, log, bbox_tol=None, rules=None, stats=None,
             st["fail"] += len(failed)
             if multi:
                 if not failed:
-                    log("  减去: 模具#%d ← %d 件一次减成功。" % (mi + 1, len(ts)))
+                    log("  挖好了: 模具#%d ← %d 件一次挖成。" % (mi + 1, len(ts)))
                 elif not n_ok:
-                    log("  减去: 模具#%d %d 件全部失败(无实际交集或几何失败)。"
-                        % (mi + 1, len(ts)))
+                    log("  没挖成: 模具#%d ← %d 件全失败(没真正相交, 或者"
+                        "几何不成)。" % (mi + 1, len(ts)))
                 else:
-                    log("  减去: 模具#%d ← %d 件中 %d 件成功, %d 件失败跳过。"
-                        % (mi + 1, len(ts), n_ok, len(failed)))
+                    log("  挖了 %d 件: 模具#%d ← %d 件中 %d 件成功, %d 件失败"
+                        "跳过。" % (n_ok, mi + 1, len(ts), n_ok, len(failed)))
             elif n_ok:
-                log("  减去: %s → 模具#%d 成功。" % (batch[0][4], mi + 1))
+                log("  挖好了: %s → 模具#%d。" % (batch[0][4], mi + 1))
             else:
-                log("  减去: %s → 模具#%d 失败(无实际交集或几何失败), 跳过。"
+                log("  没挖成: %s → 模具#%d(没真正相交, 或者几何不成), 跳过。"
                     % (batch[0][4], mi + 1))
             for it in batch:
                 if id(it[0]) in _fail_ids or id(it[0]) in _seen:
@@ -877,12 +876,13 @@ def cut_mold(session, work_part, log, bbox_tol=None, rules=None, stats=None,
         # ── 阶段 B/C: 按类后处理(倒圆/扩孔)【已搁置: 默认不配置即不执行】──
         for t, tb, tkey, rule, target in cut_plan:
             if rule.get("blend_step_r") or rule.get("blend_flush_r"):
-                log("【后处理】%s 出线槽倒圆。" % (tkey or "?"))
+                log("【后处理】%s: 给出线槽倒圆。" % (tkey or "?"))
                 _blend_channel(session, work_part, uf, target, tb, rule, log)
                 st["post"] += 1
             cl = rule.get("clearance")
             if isinstance(cl, dict):
-                log("【后处理】%s 扩孔(删碎面+偏置)。" % (tkey or "?"))
+                log("【后处理】%s: 把孔放大一点(先删碎面再往外偏置)。"
+                    % (tkey or "?"))
                 _clearance_hole(session, work_part, uf, target, tb, cl, log)
                 st["post"] += 1
 
@@ -893,26 +893,26 @@ def cut_mold(session, work_part, log, bbox_tol=None, rules=None, stats=None,
             for mi, (mb, _bb, v0) in enumerate(mold_rows):
                 v1 = _body_volume(work_part, mb)
                 if v0 is not None and v1 is not None and abs(v0 - v1) > 1e-6:
-                    log("  对账: 模具#%d 体积 %.1f → %.1f (减去 %.1f)。"
+                    log("  对账: 模具#%d 体积 %.1f → %.1f (挖掉 %.1f)。"
                         % (mi + 1, v0, v1, v0 - v1))
                     n_changed += 1
             t_audit = time.time() - _ta
         st["ok"] = True
-        msg = ("【模具开框】完成: 工具 %d, 减去 %d 处, 不接触 %d, 布尔失败 %d, "
-               "冲突跳过 %d 处, 后处理 %d 件"
+        msg = ("【模具开框】完成: 脚本实体 %d 个, 挖了 %d 处, 不接触跳过 %d, "
+               "没挖成 %d, 怕碰坏孔跳过 %d 处, 后处理 %d 件"
                % (st["tools"], st["cuts"], st["skip"], st["fail"],
                   st["conflict"], st["post"]))
         if MOLD_AUDIT_VOLUME:
-            msg += ", 体积变化模具 %d 块" % n_changed
-        msg += "。耗时: 总 %.1f 秒(试切 %.1f / 减去 %.1f / 对账 %.1f)。"
+            msg += ", 体积有变化的模具 %d 块" % n_changed
+        msg += "。耗时: 总 %.1f 秒(试挖 %.1f / 挖 %.1f / 对账 %.1f)。"
         log(msg % (time.time() - t0, t_trial, t_cut, t_audit))
         return st
     except Exception as ex:
-        log("【模具开框】错误: %s" % ex)
+        log("【模具开框】出错: %s" % ex)
         log("【堆栈】%s" % traceback.format_exc())
         try:
             session.UndoToMark(mark, "CAD3D 模具开框回滚")
-            log("【回滚】已撤销本次模具开框全部改动。")
+            log("【回滚】这次模具开框的改动已全部撤销。")
         except Exception as ex2:
             log("【回滚失败】%s" % ex2)
         return st

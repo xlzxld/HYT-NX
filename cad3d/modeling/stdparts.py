@@ -63,8 +63,8 @@ def _pick_target(flb_regions, cx, cy, log=None):
     if not flb_regions:
         return None
     if log is not None:
-        log("  警告: 锚点(%.3f,%.3f)不落在任何 FLB 体包围盒内, "
-            "已兜底取第 1 个 FLB 体——请核对是否切错板。" % (cx, cy))
+        log("  警告: 放置点(%.3f,%.3f)不落在任何分流板的范围内, 已先按第 1 块"
+            "分流板处理——请核对是不是切错板了。" % (cx, cy))
     return flb_regions[0][0]
 
 
@@ -276,7 +276,7 @@ def _remove_parameters(session, work_part, bodies, log):
                 pass
         bld.Commit()
     except Exception as ex:
-        log("【移除参数】失败(特征树保留): %s" % ex)
+        log("【移除参数】失败(建模步骤还留着, 不影响实体): %s" % ex)
         return 0
     finally:
         if bld is not None:
@@ -285,7 +285,8 @@ def _remove_parameters(session, work_part, bodies, log):
             except Exception:
                 pass
     del _CREATED_FEATURES[:]
-    log("【移除参数】完成: %d 个实体已去参数化(重跑按标记清理)。" % len(ok_bodies))
+    log("【移除参数】完成: %d 个实体已清掉建模步骤(重跑时按标记清理)。"
+        % len(ok_bodies))
     return len(ok_bodies)
 
 
@@ -294,9 +295,9 @@ def _usable_parts(rules, log):
     unusable = _unusable_names(rules)
     usable = {f: r for f, r in rules.items() if _rule_usable(r)}
     if unusable:
-        log("【标准件】提示: 以下标准件未在 nx_std_config.py 填写参考点"
-            "(ref), 本次跳过: " + ", ".join(unusable)
-            + "。请实测后在 config 精确文件名行中填写。")
+        log("【标准件】提醒: 这些件还没在 nx_std_config.py 里填参考点(ref), "
+            "本次跳过: " + ", ".join(unusable)
+            + "。请在 config 里给它们各自的精确文件名行补上。")
     return usable, unusable
 
 
@@ -376,7 +377,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
         stats["STD"] = std_stats
         return
     no_ref = []
-    log("【标准件】开始: %d 个件规则。" % len(std_rules))
+    log("【标准件】开始: 共 %d 个件的规则。" % len(std_rules))
     ca = work_part.ComponentAssembly
     pending_comps = []          # 段2 统一批量删除的临时组件
     bool_plan = []              # 段2 合并执行的布尔计划
@@ -388,22 +389,23 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
             continue
         path = os.path.join(stdparts_dir(), fname)
         if not os.path.isfile(path):
-            log("【标准件】%s: 文件缺失, 跳过。" % fname)
+            log("【标准件】找不到 %s 这个 .prt 文件, 跳过。" % fname)
             continue
         if anchors_overflow([], rule):
-            log("【标准件】%s: 规则指纹命中护栏(图层=%s 半径%.4g~%.4g, "
-                "空图层+大半径=全图放置会卡死), 跳过。请到标准件参数页"
-                "检查/恢复默认。"
+            log("【标准件】%s: 规则配得不对(图层=%s, 半径 %.4g~%.4g——没限图层又"
+                "放开半径, 会把整张图上的圆都放一遍, 会卡死), 跳过。"
+                "请到标准件参数页检查, 或点恢复默认。"
                 % (fname, rule["layer"] or "全部", rule["r_min"], rule["r_max"]))
             continue
         anchors = collect_circle_anchors(layers, rule, log=log)
         if not anchors:
-            log("【标准件】%s: 无匹配锚点(图层=%s 半径%.4g~%.4g), 跳过。"
-                % (fname, rule["layer"] or "全部", rule["r_min"], rule["r_max"]))
+            log("【标准件】%s: 按规则(图层=%s, 半径 %.4g~%.4g)没找到能放的位置, "
+                "跳过。" % (fname, rule["layer"] or "全部",
+                          rule["r_min"], rule["r_max"]))
             continue
         if len(anchors) > STD_MAX_ANCHORS:
-            log("【标准件】%s: 锚点 %d 个超过护栏 %d——规则疑似配错, "
-                "跳过。请到标准件参数页检查/恢复默认。"
+            log("【标准件】%s: 找出来的放置点有 %d 个, 超过上限 %d——规则可能"
+                "配错了, 跳过。请到标准件参数页检查, 或点恢复默认。"
                 % (fname, len(anchors), STD_MAX_ANCHORS))
             continue
 
@@ -412,23 +414,24 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
         stem = os.path.splitext(fname)[0]
         ref = rule.get("ref")
         if not (isinstance(ref, (list, tuple)) and len(ref) >= 3):
-            log("【标准件】%s: 参考点 ref 未配置或非法, 跳过该件。" % fname)
+            log("【标准件】%s: 参考点 ref 没填或格式不对, 这件跳过。" % fname)
             continue
         try:
             ref_xy = (float(ref[0]), float(ref[1]))
             ref_z = float(ref[2])
         except (TypeError, ValueError) as ex:
-            log("【标准件】%s: 参考点 ref 格式非法(%s), 跳过该件。" % (fname, ex))
+            log("【标准件】%s: 参考点 ref 格式不对(%s), 这件跳过。" % (fname, ex))
             continue
         off = (float(rule.get("off_x", 0.0)), float(rule.get("off_y", 0.0)),
                float(rule.get("off_z", 0.0)))
-        log("【标准件】%s: 参考点=配置值 XY=(%.3f,%.3f) Z=%.3f 偏移=(%.3f,%.3f,%.3f)"
+        log("【标准件】%s: 用配置的参考点: 原点 XY=(%.3f,%.3f), Z=%.3f, "
+            "偏移=(%.3f,%.3f,%.3f)"
             % (fname, ref_xy[0], ref_xy[1], ref_z, off[0], off[1], off[2]))
         auto_rot = (rule["layer"] == "YXB")   # YXB: 贴合边中点锚点+逐板轮廓判向
         if auto_rot:
-            log("【标准件】%s: YXB 自动定向已启用(16.6 长边贴槽落 CX 线上, "
-                "板体沿背离槽方向与 2D 轮廓重合, 角度逐板取自 2D 轮廓)。"
-                % fname)
+            log("【标准件】%s: 压线板自动摆方向已启用(16.6 长边贴着槽、落在 "
+                "CX 线上, 板体朝背离槽的一侧与 2D 轮廓重合, 每块板的角度照"
+                "它自己的轮廓算)。" % fname)
         n_ok = n_body = 0
         for i, anch in enumerate(anchors):
             cx, cy = anch[0], anch[1]
@@ -446,7 +449,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                     comp = ca.AddComponent(path, "MODEL", name, pos, m3, -1, False)
                 n_ok += 1
             except Exception as ex:
-                log("  %s 位置 %d 放置失败: %s" % (fname, i + 1, ex))
+                log("  %s 第 %d 处放置失败: %s" % (fname, i + 1, ex))
                 continue
 
             tools_all = _promote_body(work_part, comp,
@@ -462,7 +465,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
             if bm in ("SUBTRACT", "PLACE_SUBTRACT", "UNITE") and tools_all:
                 target = _pick_target(flb_regions, cx, cy, log=log)
                 if target is None:
-                    log("  %s 位置 %d: 无 FLB 体可布尔, 独立体保留(按放置处理)。"
+                    log("  %s 第 %d 处: 不在任何分流板上, 当独立实体留着。"
                         % (fname, i + 1))
                     std_stats["bodies"].extend(tools_all)
                 else:
@@ -470,7 +473,7 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                     bool_plan.append((target, op, fname, i + 1, bm, tools_all))
             elif tools_all:
                 std_stats["bodies"].extend(tools_all)
-        log("【标准件】%s: 放置 %d 处, 独立体 %d 个 (Z=%.4g, %s)。"
+        log("【标准件】%s: 放了 %d 处, 独立实体 %d 个 (Z=%.4g, 布尔方式 %s)。"
             % (fname, n_ok, n_body, z, rule["bool_mode"]))
 
     # ── 段2: 统一清理与合并布尔 ────────────────────────────────────────────
@@ -498,16 +501,17 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                     # 与旧版一致: 布尔生效即整组工具删除(零相交工具同为废料)
                     tools_to_delete.extend(tools)
                 else:
-                    log("  %s 位置 %d: 布尔未生效, 独立体保留。" % (fname, idx))
+                    log("  %s 第 %d 处: 没挖进去(跟目标没真正相交), 当独立实体留着。"
+                        % (fname, idx))
                     std_stats["bodies"].extend(tools)
             else:
                 # PLACE_SUBTRACT / UNITE: 工具体保留为独立体(旧版同款)
                 std_stats["bodies"].extend(tools)
     _batch_delete(session, tools_to_delete, log, "布尔多余体")
     for fname in sorted(bool_counts):
-        log("【标准件】%s: 布尔生效 %d 处。" % (fname, bool_counts[fname]))
+        log("【标准件】%s: 有 %d 处真挖进去了。" % (fname, bool_counts[fname]))
     std_stats["profiles"] = len(std_stats["bodies"])
     if no_ref:
-        log("【标准件】提示: %d 件未配置参考点已跳过: %s"
+        log("【标准件】提醒: %d 件没填参考点, 已跳过: %s"
             % (len(no_ref), ", ".join(no_ref)))
     stats["STD"] = std_stats
