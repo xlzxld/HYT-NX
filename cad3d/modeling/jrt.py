@@ -229,6 +229,10 @@ def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
                 % (label, r, v0, v1))
         elif feat is not None:
             log("  %s: R%.4g 时面不对(%s), 撤销, 换小一点再试。" % (label, r, why))
+        else:
+            # 圆角根本没做出来(NX 拒绝 / 找不到端面)——这条最常发生, 必须留痕,
+            # 否则报告里只看得到"降到下限还不行", 看不出它在逐级降 R 重试。
+            log("  %s: R%.4g 这次没做出来, 撤销, 换小一点再试。" % (label, r))
         try:
             session.UndoToMark(mark, None)
         except Exception:

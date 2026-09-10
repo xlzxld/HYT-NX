@@ -732,6 +732,103 @@ def selftest(dxf_path=None):
           "跟 JRT 层的线完全重合" in _jrt_src)
     check("jrt 方案二已接线(_flush_blend_allowed+skip_flush)",
           "_flush_blend_allowed(" in _jrt_src and "skip_flush" in _jrt_src)
+    # 端面圆角"降级重试"链路回归(2026-09-10): 用桩离线驱动 jrt._edge_blend_end_retry。
+    # 判据: 异形/体积异常/NX 拒绝都要降 R 重试且每次撤销; 到下限仍不行则放弃并返回
+    # 原 R; 齐平端(dome)才查型20 残留, 嵌入端不查。此前整条链路无任何测试覆盖。
+    import types as _t_mod
+
+    import cad3d.modeling.jrt as _mod_jrt
+    _nx_keep = sys.modules.get("NXOpen")
+    _nx_stub = _t_mod.ModuleType("NXOpen")
+    _nx_stub.Session = _t_mod.ModuleType("_S")
+    _nx_stub.Session.MarkVisibility = _t_mod.ModuleType("_MV")
+    _nx_stub.Session.MarkVisibility.Invisible = 1
+    sys.modules["NXOpen"] = _nx_stub
+
+    class _RetrySession:
+        def __init__(self):
+            self.undos = 0
+
+        def SetUndoMark(self, _vis, _name):
+            return 1
+
+        def UndoToMark(self, _mark, _name):
+            self.undos += 1
+
+    def _drive_retry(rows_at, vol_at, dome=False, raise_at=None):
+        """按 R 分派桩行为跑一遍降级循环 → (返回, 试过的R序列, 会话, 日志)。"""
+        tries, logs = [], []
+        st = {"blended": False, "rows": [(1, 10.0, 1)], "v0": 100.0, "v1": 100.0}
+        sess = _RetrySession()
+        _old = (_mod_jrt._body_volume, _mod_jrt._edge_blend_end,
+                _mod_jrt._body_face_rows)
+
+        def _vol(_wp, _b):
+            return st["v1"] if st["blended"] else st["v0"]
+
+        def _blend(_wp, _uf, _body, _z, r, _log, feat_name=None):
+            st["blended"] = False
+            k = round(float(r), 4)
+            tries.append(k)
+            if raise_at and k in raise_at:
+                raise RuntimeError("NX 拒绝本次圆角")
+            st["v0"], st["v1"] = vol_at.get(k, (100.0, 90.0))
+            st["rows"] = rows_at.get(k, [(1, 10.0, 1)])
+            st["blended"] = True
+            return object(), []
+
+        _mod_jrt._body_volume = _vol
+        _mod_jrt._edge_blend_end = _blend
+        _mod_jrt._body_face_rows = lambda _uf, _b: st["rows"]
+        try:
+            got = _mod_jrt._edge_blend_end_retry(
+                sess, None, None, object(), -47.5, 3.9, 3.7, 0.1,
+                lambda m: logs.append(m), "CAD3D_TEST", "第 1 根上侧嵌入端",
+                dome=dome)
+        finally:
+            (_mod_jrt._body_volume, _mod_jrt._edge_blend_end,
+             _mod_jrt._body_face_rows) = _old
+        return got, tries, sess, logs
+
+    try:
+        _R39_OK = [(1, 10.0, 1)]          # 平面, 零维 1 个 → 正常
+        _R39_BAD = [(1, 10.0, 2)]         # 零维 2 个 → 碎片面(异形)
+        _R39_SP20 = [(20, 0.0, 1)]        # 型20 样条面 → 齐平端判异形
+        _g, _tr, _se, _lg = _drive_retry({}, {})
+        check("圆角降级: 一次成就返回该 R, 不空跑不撤销",
+              abs(_g[2] - 3.9) < 1e-9 and _tr == [3.9] and _se.undos == 0, str(_tr))
+        _g, _tr, _se, _lg = _drive_retry({3.9: _R39_BAD, 3.8: _R39_OK}, {})
+        check("圆角降级: 异形面 → 降 R 重试并撤销一次",
+              abs(_g[2] - 3.8) < 1e-9 and _tr == [3.9, 3.8] and _se.undos == 1
+              and "面不对" in "".join(_lg), str((_g[2], _tr, _se.undos)))
+        _g, _tr, _se, _lg = _drive_retry(
+            {3.9: _R39_BAD, 3.8: _R39_BAD, 3.7: _R39_BAD}, {})
+        check("圆角降级: 到下限仍异形→放弃, 且每次撤销(不留半成品)",
+              _g[0] is None and abs(_g[2] - 3.9) < 1e-9
+              and _tr == [3.9, 3.8, 3.7] and _se.undos == 3,
+              str((_g[0], _g[2], _tr, _se.undos)))
+        _g, _tr, _se, _lg = _drive_retry({}, {3.9: (100.0, 50.0),
+                                              3.8: (100.0, 90.0)})
+        check("圆角降级: 体积异常(掉>25%) → 降 R 重试",
+              abs(_g[2] - 3.8) < 1e-9 and _se.undos == 1
+              and "体积不对" in "".join(_lg), str((_g[2], _lg)))
+        _g, _tr, _se, _lg = _drive_retry({}, {}, raise_at={3.9, 3.8})
+        check("圆角降级: NX 直接拒绝也降 R, 且失败那次留痕",
+              abs(_g[2] - 3.7) < 1e-9 and _tr == [3.9, 3.8, 3.7]
+              and _se.undos == 2 and "没做出来" in "".join(_lg),
+              str((_g[2], _tr, _se.undos)))
+        _g, _tr, _se, _lg = _drive_retry(
+            {3.9: _R39_SP20, 3.8: _R39_SP20, 3.7: _R39_OK}, {}, dome=True)
+        check("圆角降级: 齐平端(圆顶)判型20残留为异形 → 降 R",
+              abs(_g[2] - 3.7) < 1e-9 and _se.undos == 2, str((_g[2], _tr)))
+        _g, _tr, _se, _lg = _drive_retry({3.9: _R39_SP20}, {}, dome=False)
+        check("圆角降级: 嵌入端不查型20(同样残留直接放行)",
+              abs(_g[2] - 3.9) < 1e-9 and _tr == [3.9], str((_g[2], _tr)))
+    finally:
+        if _nx_keep is None:
+            sys.modules.pop("NXOpen", None)
+        else:
+            sys.modules["NXOpen"] = _nx_keep
     check("护栏: 全图层但半径收窄→放行(压线板式需求)",
           not anchors_overflow(list(range(47)),
                                sanitize_std_rule({"layer": "", "r_max": 20})))
