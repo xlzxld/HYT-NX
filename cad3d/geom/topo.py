@@ -640,12 +640,45 @@ def _contour_outlet_mids(chain, ents, short_max=15.0):
     return picked
 
 
-def _fbx_anchor_points(fbx_ents, short_max=15.0):
-    """(纯逻辑, 可离线测) JRTFBX(加热条封闭线)标记 → 删面锚点候选点。
+def _merge_marker_lines(ents, marker_ents, tol=0.2):
+    """(纯逻辑, 可离线测) JRTFBX 标记线并入条轮廓的下标筛选。
 
-    v2.10 用户定案新增标记图层: 沿唇线描的短线(≤short_max)取线中点;
-    横跨槽口画的长线取两端点(端点天然落在唇线附近)——两种画法都兼容。
-    非直线忽略。返回 [(x, y), ...]。"""
+    与 ents 里任一直线重合的标记线不并入(端点对端点、正反两个方向, 偏差<tol)
+    ——重复描线会让链串错、包出废截面; 不重合的才并入(老图纸靠它封上槽口)。
+
+    **返回的是 marker_ents 里的原始下标**, 不是过滤后的新列表: 调用方要拿同一
+    下标去取对应的 NX 曲线, 只按"直线"过滤再编号会整体错位, 把别的曲线塞进
+    条截面(v2.10 遗留隐患, JRTFBX 层混进弧/圆即触发)。
+    返回 (并入下标, 重合丢弃下标, 非直线下标)。
+    """
+    add, dup, other = [], [], []
+    for k, fe in enumerate(marker_ents or []):
+        if fe.kind != "line":
+            other.append(k)
+            continue
+        hit = False
+        for u in ents or []:
+            if u.kind != "line":
+                continue
+            d1 = max(math.hypot(fe.p1[0] - u.p1[0], fe.p1[1] - u.p1[1]),
+                     math.hypot(fe.p2[0] - u.p2[0], fe.p2[1] - u.p2[1]))
+            d2 = max(math.hypot(fe.p1[0] - u.p2[0], fe.p1[1] - u.p2[1]),
+                     math.hypot(fe.p2[0] - u.p1[0], fe.p2[1] - u.p1[1]))
+            if min(d1, d2) < tol:
+                hit = True
+                break
+        (dup if hit else add).append(k)
+    return add, dup, other
+
+
+def _fbx_anchor_points(fbx_ents, short_max=15.0):
+    """(纯逻辑, 可离线测) JRTFBX(加热条封闭线标记)图层 → 出线口候选点。
+
+    两种画法都认(用户定案): 沿唇线描的短线(≤short_max)取线中点; 横跨槽口
+    画的长线取两端点(端点天然落在唇线附近)。非直线忽略。
+    同位重复描画的点先去重(0.5mm, 与 _contour_outlet_mids 同口径)——标记画
+    重复或叠加描线时不让候选点翻倍, 否则下游"有一个点找不到对应面就整组
+    放弃"会被重复点把整根条打掉。返回 [(x, y), ...]。"""
     pts = []
     for e in (fbx_ents or []):
         if e.kind != "line":
@@ -657,13 +690,17 @@ def _fbx_anchor_points(fbx_ents, short_max=15.0):
         else:
             pts.append((e.p1[0], e.p1[1]))
             pts.append((e.p2[0], e.p2[1]))
-    return pts
+    uniq = []
+    for p in pts:
+        if all(math.hypot(p[0] - u[0], p[1] - u[1]) > 0.5 for u in uniq):
+            uniq.append(p)
+    return uniq
 
 
 def _marker_mids_for_chains(chain_boxes, marker_pts, margin):
-    """(纯逻辑, 可离线测) 标记点 → 就近分配到链包围盒(v2.10 JRTFBX 优先
-    锚点用)。每个标记只归最近的 1 条链; 距全部链包围盒超 margin 的标记
-    忽略并告警(标记画到条外=画错, 不盲信)。chain_boxes=[(x0,y0,x1,y1),..]。
+    """(纯逻辑, 可离线测) 标记点 → 就近分配到链包围盒(JRTFBX 优先锚点用)。
+    每个标记只归最近的 1 条链; 距全部链包围盒超 margin 的标记忽略并告警
+    (标记画到条外=画错, 不盲信)。chain_boxes=[(x0,y0,x1,y1),..]。
     返回 (每链标记点列表, 忽略告警列表)。"""
     per = [[] for _ in chain_boxes]
     warns = []
@@ -676,8 +713,8 @@ def _marker_mids_for_chains(chain_boxes, marker_pts, margin):
             if bi is None or d < bd:
                 bi, bd = i, d
         if bi is None or bd > margin:
-            warns.append("JRTFBX 标记(%.2f,%.2f)距任何加热条轮廓超 %.2f, "
-                         "忽略" % (mx, my, margin))
+            warns.append("标记 (%.2f,%.2f) 离所有加热条都超过 %.2fmm, "
+                         "已忽略(可能位置画错)" % (mx, my, margin))
             continue
         per[bi].append((mx, my))
     return per, warns

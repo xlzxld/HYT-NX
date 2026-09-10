@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
 """cad3d.modeling.jrt —— 加热条 (JRT) 双侧建模、G1 相切边倒圆与删面愈合。
 
-v2.10: 新增 JRTFBX(加热条封闭线)标记图层——用户画线优先定位出线口
-(沿唇线描短线取中点 / 横跨槽口画长线取端点), 就近分配到条、离条超限
-告警忽略; 无标记的条自动走轮廓推断, 不因缺标记而不删面(v2.7 CXK 教训)。
-封闭线还并入条轮廓参与闭链——实际画法(3.dxf)中槽口在 JRT 层张开,
-全靠 JRTFBX 线封口, 不并入则开链无法建模。
-v2.8/v2.9: 删面锚点按条自身封闭轮廓辨认出线口唇线(_contour_outlet_mids
-开放性判别)——旧"最短两条线"规则会选中槽底封口线(2.dxf 实证), 删面
-因此一直定错端。
+图纸约定(2026-09-10 用户定案, 3.dxf 实测): 一根加热条画两圈线——
+  ① 最内侧与最外侧那条(首尾相接成闭合轮廓, 含 2 条 8mm 封口线): **建模用**;
+  ② 中间那条(可能多条)是量加热条长度用的中心线: **不参与建模**
+     (拉伸它会多长一条), 它一般两头不相接, 于是被判成"两条没接上、
+     跳过不建模"——这是正常现象, 不是图纸缺线。2.dxf/26079/3.dxf 全是这个
+     结构。
+JRTFBX(加热条封闭线标记)图层: 用户画线优先定位出线口(即删面位置);
+  短线取中点、横跨画的长线取两端点, 8mm 封口线的中点就是锚点所在。
+  标记就近分配到条, 离条超限或与轮廓推断明显不符的自动剔除(不剔除会让
+  一处画歪就整根条不删面)。无标记的条自动走轮廓推断, 不因缺标记而不删面
+  (v2.7 CXK 教训)。
+v2.8/v2.9: 只认轮廓推断时, 删面锚点按条自身封闭轮廓辨认出线口唇线
+  (_contour_outlet_mids 开放性判别)——旧"最短两条线"规则会选中槽底封口线
+  (2.dxf 实证), 删面因此一直定错端。
+日志文案口径(2026-09-10): 面向操作者用大白话, 坐标/尺寸/R 值照原样保留。
 """
 
 import math
@@ -21,13 +28,24 @@ from cad3d.modeling.purge import _CREATED_FEATURES
 from cad3d.modeling.extrude import _sc_rule_options, extrude_curves
 from cad3d.modeling.stdparts import _pick_target, _bool_feature
 from cad3d.geom.topo import (
-    find_chains, _merge_open_chains, _chain_connectors, _chain_outlet_mids,
-    _contour_outlet_mids, _bbox, _fbx_anchor_points, _marker_mids_for_chains
+    find_chains, _merge_open_chains, _merge_marker_lines, _chain_connectors,
+    _chain_outlet_mids, _contour_outlet_mids, _bbox, _fbx_anchor_points,
+    _marker_mids_for_chains
 )
 from cad3d.geom.eval import (
     _faces_healthy, _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides,
     _flush_blend_allowed
 )
+
+
+def _fmt_xy(pts):
+    """点列表 → "(x,y)/(x,y)"(日志用); 空 → "无"。"""
+    return "/".join("(%.1f,%.1f)" % (p[0], p[1]) for p in pts) or "无"
+
+
+# 一根条最多 2 个出线口, 每个口最多 2 条标记线(横跨画的长线取两端点)——超过
+# 这个数的标记视为画多了, 只取离出线口最近的几条。
+_FBX_MAX = 4
 
 
 def _uf_face_data(uf, face):
@@ -61,7 +79,7 @@ def _edge_blend_end(work_part, uf, body, z_plane, radius, log, feat_name=None):
 
     face = _find_flat_face(uf, body, z_plane)
     if face is None:
-        log("  倒圆: 未找到 z=%.3f 端面" % z_plane)
+        log("  圆角: 没找到高度 %.3f 处的端面" % z_plane)
         return None, []
     try:
         before = set(f.Tag for f in body.GetFaces())
@@ -203,14 +221,14 @@ def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
                 okh, why = _dome_body_ok(rows_all)
         if feat is not None and _blend_ok(v0, v1) and okh:
             if v0 is not None and v1 is not None and v0 > 0:
-                log("  %s 倒圆R%.4g 体积%.1f→%.1f 面体检通过。"
+                log("  %s: R%.4g 圆角做成(体积 %.1f→%.1f, 面检查正常)。"
                     % (label, r, v0, v1))
             return feat, nf, r
         if feat is not None and not _blend_ok(v0, v1):
-            log("  %s 倒圆R%.4g 体积异常(%.1f→%.1f), 撤销降R重试。"
+            log("  %s: R%.4g 时体积不对(%.1f→%.1f), 撤销, 换小一点再试。"
                 % (label, r, v0, v1))
         elif feat is not None:
-            log("  %s 倒圆R%.4g 面体检不过(%s), 撤销降R重试。" % (label, r, why))
+            log("  %s: R%.4g 时面不对(%s), 撤销, 换小一点再试。" % (label, r, why))
         try:
             session.UndoToMark(mark, None)
         except Exception:
@@ -282,12 +300,12 @@ def _delete_faces_safe(session, work_part, uf, body, faces, log,
     try:
         _delete_faces(work_part, faces, log, feat_name=feat_name)
     except Exception as ex:
-        log("  %s 整组删被 NX 拒绝(%s), 转单片试删。" % (label, ex))
+        log("  %s: 一次全删被 NX 拒绝(%s), 改成一片一片删。" % (label, ex))
     else:
         okh, why = _del_ok()
         if okh:
             return True
-        log("  %s 整组删面后出现%s, 撤销转单片试删。" % (label, why))
+        log("  %s: 全删后%s, 撤销, 改成一片一片删。" % (label, why))
     try:
         session.UndoToMark(mark, None)
     except Exception:
@@ -309,16 +327,15 @@ def _delete_faces_safe(session, work_part, uf, body, faces, log,
         if okh2:
             done = True
         else:
-            log("  %s 单片删后出现%s, 撤销该片。" % (label, why2))
+            log("  %s: 这片删了会%s, 撤销这片。" % (label, why2))
             try:
                 session.UndoToMark(mark2, None)
             except Exception:
                 pass
     if done:
-        log("  %s 整组删面愈合失败, 已改单片删(部分保留)。" % label)
+        log("  %s: 一次全删不行, 改成一片一片删(只删成功了部分)。" % label)
         return True
-    log("  %s 删面愈合均产生碎片/样条补丁, 已全部撤销——保留倒圆面。"
-        % label)
+    log("  %s: 怎么删都会留下碎片, 已全部撤销——圆角面保留。" % label)
     return False
 
 
@@ -337,8 +354,8 @@ def _pick_conn_faces(uf, faces, conn_mids, r_ref=None, log=None):
     tags = _conn_face_pick(rows, conn_mids, r_ref)
     if tags is None:
         if log:
-            log("  删面放弃: 连接线附近未找到半径匹配的倒圆面"
-                "(r_ref=%s), 保留倒圆面。" % _fmt_num(r_ref or 0.0))
+            log("  出线口附近没找到半径 R%s 的圆角面, 为免删错这次不删面。"
+                % _fmt_num(r_ref or 0.0))
         return []
     by_tag = {f.Tag: f for f in faces}
     return [by_tag[t] for t in tags if t in by_tag]
@@ -376,50 +393,48 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                     "features": 0, "bodies": [], "note": "", "skip_flush": 0}
     z_start = float(jp.get("start", 0.0))
     z_end = float(jp.get("end", 0.0))
-    log("【JRT】生效参数: 起始=%.4g 结束=%.4g 边倒圆R=%.4g 步长=%.4g R下限=%.4g"
+    log("【加热条】本次参数: 嵌入端 %.4g→%.4g, 圆角 R%.4g 起、做不成就按 %.4g "
+        "往下减、最小 R%.4g。"
         % (z_start, z_end, jp.get("blend_r", 3.9), jp.get("r_step", 0.1),
            jp.get("r_min", 3.7)))
     if abs(z_end - z_start) <= 1e-9:
         stats["JRT"]["note"] = "起始=结束, 停用"
-        log("【JRT】起始=结束(零宽度), 停用。")
+        log("【加热条】起始和结束一样(厚度为 0), 不做。")
         return []
     ents = list(layers.get("JRT") or [])
     if not ents:
-        stats["JRT"]["note"] = "图层无曲线"
-        log("【JRT】图层无曲线, 跳过。")
+        stats["JRT"]["note"] = "该层没有线"
+        log("【加热条】JRT 层上没有线条, 跳过。")
         return []
-    # v2.10: JRTFBX(加热条封闭线)并入条轮廓——实际画法(3.dxf)中槽口在
-    # JRT 层张开, 封口线画在 JRTFBX 层; 并入后 find_chains 按端点自然
-    # 闭合成环。与 JRT 已有线段重合的标记不并入(防双重描线坏链)。
-    _fbx_lines = [e for e in (layers.get("JRTFBX") or []) if e.kind == "line"]
+    # JRTFBX(标记层)并入条轮廓: 老图纸槽口在 JRT 层张开, 要靠 JRTFBX 那几条
+    # 线把缺口封上才能闭合成条; 新图纸 JRT 层自己已闭合, 标记线与 JRT 线完全
+    # 重合就不重复拼(防双重描线坏链)。下标一律用标记层里的原始下标, 否则
+    # JRTFBX 混进弧/圆时取到的曲线会错位。重合丢弃的条数记账, 不再静默。
+    _fbx_all = list(layers.get("JRTFBX") or [])
     _fbx_curves = list(nx_curves.get("JRTFBX") or [])
-    _added = 0
-    for _k, _fe in enumerate(_fbx_lines):
-        _dup = False
-        for _u in ents:
-            if _u.kind != "line":
-                continue
-            if ((math.hypot(_fe.p1[0] - _u.p1[0], _fe.p1[1] - _u.p1[1]) < 0.2
-                 and math.hypot(_fe.p2[0] - _u.p2[0],
-                                _fe.p2[1] - _u.p2[1]) < 0.2)
-                or (math.hypot(_fe.p1[0] - _u.p2[0],
-                               _fe.p1[1] - _u.p2[1]) < 0.2
-                    and math.hypot(_fe.p2[0] - _u.p1[0],
-                                   _fe.p2[1] - _u.p1[1]) < 0.2)):
-                _dup = True
-                break
-        if _dup:
-            continue
+    _add_idx, _dup_idx, _ = _merge_marker_lines(ents, _fbx_all)
+    _added, _lost = 0, 0
+    for _k in _add_idx:
         _cv = _fbx_curves[_k] if _k < len(_fbx_curves) else None
         if _cv is None:
-            log("【JRT】警告: JRTFBX 封闭线 %d 未建成 NX 曲线, 无法并入轮廓。"
-                % (_k + 1))
+            _lost += 1
+            log("【加热条】标记线 %d 没画出来, 这条没能拼进条轮廓。" % (_k + 1))
             continue
-        ents.append(_fe)
+        ents.append(_fbx_all[_k])
         nx_curves.setdefault("JRT", []).append(_cv)
         _added += 1
-    if _added:
-        log("【JRT】已并入 %d 条 JRTFBX 封闭线到条轮廓(闭合槽口)。" % _added)
+    if _fbx_all:
+        _n_line = len(_add_idx) + len(_dup_idx)
+        if _added:
+            log("【加热条】标记层有 %d 条线, 其中 %d 条拼进了条轮廓(补上槽口的缺口)。"
+                % (_n_line, _added))
+        if _dup_idx:
+            log("【加热条】标记层有 %d 条线跟 JRT 层的线完全重合, 没重复拼——"
+                "条体外形仍按 JRT 层的线做, 这些线只用来定出线口的位置。"
+                % len(_dup_idx))
+        if _lost:
+            log("【加热条】标记层有 %d 条线没能画出来(见上), 不影响条体外形。"
+                % _lost)
     closed, opens = find_chains(ents)
     bridge_map = {}
     if opens:
@@ -429,20 +444,23 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
             bridge_map[id(_chain)] = pairs
             closed.append(_chain)
             for p1, p2, gap in pairs:
-                log("【JRT】开口链(%d 段)缺口 %.3f mm, 将自动桥接闭合。"
-                    % (len(_chain), gap))
+                log("【加热条】有条线差 %.3fmm 没接上(%d 段), 自动补上。"
+                    % (gap, len(_chain)))
         for nseg, tips in o_logs:
-            log("【JRT】警告: 开链 %d 段无法自动闭合(断口 %s), 跳过——"
-                "请检查 2D 图 JRT 轮廓。" % (nseg, tips))
+            log("【加热条】有 %d 段线两头没接上, 跳过不建模。中间那条中心线"
+                "(量长度用)本来就两头不相接, 属正常; 若是外形缺线, 请回 2D 图补齐。"
+                "断口 %s。" % (nseg, tips))
         if not c_extra and not b_jobs:
-            log("【JRT】警告: %d 条开口链未参与建模。" % len(opens))
+            log("【加热条】有 %d 条线没能用上(两头没接上), 说明见上。"
+                % len(opens))
     if not closed:
-        stats["JRT"]["note"] = "无封闭链"
-        log("【JRT】无封闭链(需 jrt_runner 完整流程输出), 跳过。")
+        stats["JRT"]["note"] = "没有闭合的条轮廓"
+        log("【加热条】没找到闭合的条轮廓, 跳过——请确认 JRT 层最内侧和最外侧"
+            "那两条线首尾相接。")
         return []
     if not flb_regions:
-        stats["JRT"]["note"] = "无 FLB 基准体"
-        log("【JRT】无 FLB 基准体, 跳过。")
+        stats["JRT"]["note"] = "没有分流板基准体"
+        log("【加热条】没有分流板基准体, 跳过。")
         return []
 
     uf = NXOpen.UF.UFSession.GetUFSession()
@@ -474,7 +492,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
             _boxes.append(_bbox(ps))
         fbx_per, fbx_ignore = _marker_mids_for_chains(_boxes, fbx_pts, 10.0)
         for w in fbx_ignore:
-            log("【JRT】%s。" % w)
+            log("【加热条】%s。" % w)
     _gate = 2.5 * max(float(jp["blend_r"]), 1.0) + 2.0
 
     strips = []
@@ -482,7 +500,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         idxs = [i for i, _r in chain]
         curves = [nx_curves["JRT"][i] for i in idxs]
         if any(c is None for c in curves):
-            log("【JRT】链 %d 含创建失败曲线, 跳过。" % (ci + 1))
+            log("【加热条】第 %d 根: 有线没画出来, 这根跳过。" % (ci + 1))
             continue
         br = bridge_map.get(id(chain))
         if br:
@@ -494,7 +512,8 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                     _mark_curve(bridge_line)
                     curves.append(bridge_line)
             except Exception as ex:
-                log("【JRT】链 %d 桥接线创建失败: %s" % (ci + 1, ex))
+                log("【加热条】第 %d 根: 补缺口的那条线没画出来(%s), 这根跳过。"
+                    % (ci + 1, ex))
                 continue
         if not idxs:
             continue
@@ -508,33 +527,50 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         hp = NXOpen.Point3d(first.p1[0] if first.kind != "circle" else first.c[0],
                             first.p1[1] if first.kind != "circle" else first.c[1], 0.0)
         conns = _chain_connectors(chain, ents)
-        # 出线口锚点(v2.10): JRTFBX 标记优先(用户画线定位置), 无标记自动
-        # 走轮廓推断(v2.9 唇线开放性判别), 再依次回退 期刊口线→收口连接
-        # 线——任何情况都不会因缺标记而不删面(v2.7 CXK 教训)。
+        # 出线口(要删面的位置): 标记层优先(用户画的), 没标记就按轮廓自己认。
+        # 轮廓推断同时当"参照"用来剔除画歪的标记——不剔除的话, 一个画歪的
+        # 标记会让整根条一个面都不删(下游是"有一个位置找不到对应面就整组
+        # 放弃")。全部标记都对不上时保留标记(用户画线优先), 只提示核对。
         _infer = (_chain_outlet_mids(chain, ents)
                   or _contour_outlet_mids(chain, ents) or conns)
-        _fbx = fbx_per[ci] if fbx_per else []
+        _fbx = list(fbx_per[ci]) if fbx_per else []
+        _dm = []
         if _fbx:
-            _dm = _fbx
-            log("【JRT】链 %d 出线口锚点(JRTFBX 标记): %d 处 %s。"
-                % (ci + 1, len(_dm),
-                   [(round(m[0], 1), round(m[1], 1)) for m in _dm]))
-            if _infer:
-                for _m in _dm:
-                    if all(math.hypot(_m[0] - _v[0], _m[1] - _v[1]) > _gate
-                           for _v in _infer):
-                        log("【JRT】警告: 链 %d JRTFBX 标记 (%.1f,%.1f) 距"
-                            "轮廓推断唇线超 %.1f, 请核对图纸标记位置。"
-                            % (ci + 1, _m[0], _m[1], _gate))
-                        break
+            _keep = [m for m in _fbx
+                     if not _infer
+                     or min(math.hypot(m[0] - v[0], m[1] - v[1])
+                            for v in _infer) <= _gate]
+            if _infer and not _keep:
+                _keep = list(_fbx)
+                log("【加热条】第 %d 根: 标记位置和轮廓算出来的出线口对不上"
+                    "(差 %.1f 以上), 仍按标记删面, 请核对图纸上的标记。"
+                    % (ci + 1, _gate))
+            elif _infer:
+                for _m in _fbx:
+                    if _m not in _keep:
+                        log("【加热条】第 %d 根: 标记 (%.1f,%.1f) 离出线口太远"
+                            "(超过 %.1f), 已忽略。" % (ci + 1, _m[0], _m[1], _gate))
+            _dm = _keep
+            if len(_dm) > _FBX_MAX:
+                if _infer:
+                    _dm.sort(key=lambda m: min(
+                        math.hypot(m[0] - v[0], m[1] - v[1]) for v in _infer))
+                log("【加热条】第 %d 根: 标记有 %d 处, 只取离出线口最近的 %d 处。"
+                    % (ci + 1, len(_dm), _FBX_MAX))
+                _dm = _dm[:_FBX_MAX]
+            log("【加热条】第 %d 根: 出线口按图纸标记定, %d 处 %s。"
+                % (ci + 1, len(_dm), _fmt_xy(_dm)))
         else:
-            _dm = _infer
-            log("【JRT】链 %d 出线口锚点(轮廓推断): %d 处 %s。"
-                % (ci + 1, len(_dm),
-                   [(round(m[0], 1), round(m[1], 1)) for m in _dm]))
+            _dm = list(_infer)
+            if _dm:
+                log("【加热条】第 %d 根: 图纸上没有标记, 出线口按轮廓自己认, "
+                    "%d 处 %s。" % (ci + 1, len(_dm), _fmt_xy(_dm)))
+            else:
+                log("【加热条】第 %d 根: 认不出出线口在哪, 这根不删面。" % (ci + 1))
 
         for side, z_flush, z_embed in _jrt_sides(z_start, z_end, bottom):
             base = "%sJRT_%d%s" % (FEATURE_PREFIX, ci + 1, side)
+            _who = "第 %d 根%s侧" % (ci + 1, "上" if side == "T" else "下")
             zlo, zhi = min(z_flush, z_embed), max(z_flush, z_embed)
             off = (offset, 0.0) if z_flush > z_embed else (0.0, offset)
             try:
@@ -542,11 +578,11 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                                       help_pt=hp, offset=off, draft=draft)
                 stats["JRT"]["features"] += 1
             except Exception as ex:
-                log("【JRT】链 %d 侧 %s 拉伸失败: %s" % (ci + 1, side, ex))
+                log("【加热条】%s: 拉伸失败(%s), 这段跳过。" % (_who, ex))
                 continue
             bodies = _bodies_of(feat)
             if not bodies:
-                log("【JRT】链 %d 侧 %s 无实体, 跳过。" % (ci + 1, side))
+                log("【加热条】%s: 没生成实体, 跳过。" % _who)
                 continue
             body = bodies[0]
 
@@ -557,7 +593,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                 _f, new_faces, _r_used = _edge_blend_end_retry(
                     session, work_part, uf, body, z_embed,
                     float(jp["blend_r"]), r_min_all, r_step_all, log,
-                    base + "_BLE", "链%d侧%s嵌入端" % (ci + 1, side))
+                    base + "_BLE", "%s嵌入端" % _who)
                 if _f is not None:
                     stats["JRT"]["features"] += 1
                     if _dm and len(new_faces) > 2:
@@ -567,13 +603,13 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                                                                r_ref=_r_used,
                                                                log=log),
                                               log, base + "_DELE",
-                                              "链%d侧%s嵌入端删面" % (ci + 1, side)):
+                                              "%s嵌入端删面" % _who):
                             stats["JRT"]["features"] += 1
                             embed_ok = True      # 倒圆+出线口删面双双成功
                     else:
                         embed_ok = True          # 无删面锚点: 仅倒圆不算失败
             except Exception as ex:
-                log("【JRT】链 %d 侧 %s 嵌入端倒圆失败: %s" % (ci + 1, side, ex))
+                log("【加热条】%s: 嵌入端圆角失败(%s)。" % (_who, ex))
 
             target = _pick_target(flb_regions, cx, cy, log=log)
             if target is not None:
@@ -582,32 +618,30 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                                   base + "_SUB", log, retain_tools=True)
                     stats["JRT"]["features"] += 1
                 except Exception as ex:
-                    log("【JRT】链 %d 侧 %s 相减失败: %s" % (ci + 1, side, ex))
+                    log("【加热条】%s: 切进分流板失败(%s)。" % (_who, ex))
 
             if not _flush_blend_allowed(embed_ok):
                 stats["JRT"]["skip_flush"] += 1
-                log("【JRT】链 %d 侧 %s 嵌入端倒圆/删面未成功, 按方案二规则"
-                    "跳过齐平端倒圆(此端保留直角)。" % (ci + 1, side))
+                log("【加热条】%s: 嵌入端圆角或删面没做成, 齐平端就不倒圆了"
+                    "(这端留直角)。" % _who)
             else:
                 _r_start = float(jp["blend_r"])
                 try:
                     _f2, nf2, used = _edge_blend_end_retry(
                         session, work_part, uf, body, z_flush,
                         _r_start, r_min_all, r_step_all, log,
-                        base + "_BLF", "链%d侧%s齐平端" % (ci + 1, side),
+                        base + "_BLF", "%s齐平端" % _who,
                         dome=True)
                     if _f2 is not None:
                         stats["JRT"]["features"] += 1
                         if abs(used - _r_start) > 1e-9:
-                            log("【JRT】链 %d 侧 %s 齐平端倒圆降半径至 %.4g。"
-                                % (ci + 1, side, used))
+                            log("【加热条】%s: 齐平端圆角改小到 R%.4g 才做成。"
+                                % (_who, used))
                     else:
-                        log("【JRT】链 %d 侧 %s 齐平端倒圆全部失败(下限 %.4g), "
-                            "触发兜底: 此端保留直角。"
-                            % (ci + 1, side, r_min_all))
+                        log("【加热条】%s: 齐平端圆角做到 R%.4g 还不行, "
+                            "这端留直角。" % (_who, r_min_all))
                 except Exception as ex:
-                    log("【JRT】链 %d 侧 %s 齐平端倒圆异常: %s"
-                        % (ci + 1, side, ex))
+                    log("【加热条】%s: 齐平端圆角出错(%s)。" % (_who, ex))
                     used, nf2 = _r_start, []
 
                 if _dm and len(nf2) > 2:
@@ -617,11 +651,10 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                                                                r_ref=used,
                                                                log=log),
                                               log, base + "_DELF",
-                                              "链%d侧%s圆顶删面" % (ci + 1, side)):
+                                              "%s圆顶删面" % _who):
                             stats["JRT"]["features"] += 1
                     except Exception as ex:
-                        log("【JRT】链 %d 侧 %s 圆顶删面失败: %s"
-                            % (ci + 1, side, ex))
+                        log("【加热条】%s: 圆顶删面失败(%s)。" % (_who, ex))
 
             _mark_type(body, "JRT")
             strips.append(body)
@@ -643,8 +676,9 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                  jp.get("translucency", 50))
 
     stats["JRT"]["bodies"] = strips
-    log("【JRT】完成: %d 条链 × 两侧 = %d 根加热条, 特征 %d 个%s。"
+    log("【加热条】完成: 图纸上 %d 根条 → 上下各一条共 %d 根实体, 特征 %d 个%s。"
         % (len(closed), len(strips), stats["JRT"]["features"],
-           (", 方案二跳过齐平端倒圆 %d 根" % stats["JRT"]["skip_flush"])
+           (", 其中 %d 根因嵌入端没做成、齐平端留了直角"
+            % stats["JRT"]["skip_flush"])
            if stats["JRT"]["skip_flush"] else ""))
     return strips

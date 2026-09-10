@@ -40,7 +40,8 @@ from cad3d.geom.topo import (
     _loop_in_loop, organize_loops, _chain_tips, _cluster_tips,
     _merge_open_chains, _center_seen, collect_circle_anchors,
     collect_yxb_anchors, _chain_outlet_mids, _chain_connectors,
-    _contour_outlet_mids, _fbx_anchor_points, _marker_mids_for_chains
+    _contour_outlet_mids, _fbx_anchor_points, _marker_mids_for_chains,
+    _merge_marker_lines
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
@@ -216,11 +217,14 @@ def selftest(dxf_path=None):
           str({k: len(v) for k, v in layers.items()}))
     check("JRT 参考图层导入", len(layers.get("JRT", [])) == 4)
     check("LD 参考图层导入", len(layers.get("LD", [])) == 1)
-    mp = assign_layers(["LD", "0", "FLB", "JRT"])
+    check("JRTFBX 标记层导入(1 条与 JRT 线重合 + 1 条独立短线)",
+          len(layers.get("JRTFBX", [])) == 2)
+    mp = assign_layers(["LD", "0", "FLB", "JRT", "JRTFBX"])
     check("动态图层号分配", mp["FLB"] == _cfg("NX_LAYER_START", 101)
           and mp["JRT"] == _cfg("NX_LAYER_JRT", 118)
-          and mp["0"] == _cfg("NX_LAYER_DYNAMIC_START", 119)
-          and mp["LD"] == _cfg("NX_LAYER_DYNAMIC_START", 119) + 1,
+          and mp["JRTFBX"] == _cfg("NX_LAYER_JRTFBX", 119)
+          and mp["0"] == _cfg("NX_LAYER_DYNAMIC_START", 120)
+          and mp["LD"] == _cfg("NX_LAYER_DYNAMIC_START", 120) + 1,
           str(mp))
 
     # 验证图层冲突智能避让
@@ -691,6 +695,18 @@ def selftest(dxf_path=None):
     check("JRTFBX: 离条超限的标记忽略并告警",
           _fp2 == [[], []] and len(_fw2) == 1 and "忽略" in _fw2[0],
           str((_fp2, _fw2)))
+    _fa2 = _fbx_anchor_points([DXLine((0.0, 0.0), (8.0, 0.0)),
+                               DXLine((0.0, 0.1), (8.0, 0.0))])
+    check("JRTFBX: 同位重复标记去重(0.5mm, 防候选点翻倍)",
+          _fa2 == [(4.0, 0.0)], str(_fa2))
+    _mk_base = [DXLine((0.0, 0.0), (10.0, 0.0)), DXArc((0.0, 0.0), 5.0, 0.0, 1.0)]
+    _mk_ents = [DXLine((0.0, 0.0), (10.0, 0.0)),
+                DXArc((50.0, 0.0), 5.0, 0.0, 1.0),
+                DXLine((0.0, 5.0), (8.0, 5.0))]
+    _mk_add, _mk_dup, _mk_oth = _merge_marker_lines(_mk_base, _mk_ents)
+    check("JRTFBX 并入: 下标用原始下标(重合丢弃/曲线不混淆)",
+          _mk_add == [2] and _mk_dup == [0] and _mk_oth == [1],
+          str((_mk_add, _mk_dup, _mk_oth)))
     check("方案二: 嵌入端未倒成→齐平端不倒圆",
           _flush_blend_allowed(False) is False
           and _flush_blend_allowed(None) is False)
@@ -706,9 +722,14 @@ def selftest(dxf_path=None):
     check("jrt JRTFBX 标记优先已接线(缺标记自动走推断)",
           'layers.get("JRTFBX")' in _jrt_src
           and "_marker_mids_for_chains(" in _jrt_src)
-    check("jrt JRTFBX 封闭线并入轮廓闭链(3.dxf 实际画法)",
+    check("jrt JRTFBX 封闭线并入轮廓闭链(实图与老图纸两种画法)",
           "nx_curves.setdefault(\"JRT\", []).append" in _jrt_src
           and 'layers.get("JRTFBX")' in _jrt_src)
+    check("jrt JRTFBX 并入取原始实体下标(弧/圆混入不错位, v2.11 修复)",
+          "_merge_marker_lines(" in _jrt_src
+          and "_fbx_curves[_k]" in _jrt_src)
+    check("jrt 标记重合丢弃数已记账(不再静默)",
+          "跟 JRT 层的线完全重合" in _jrt_src)
     check("jrt 方案二已接线(_flush_blend_allowed+skip_flush)",
           "_flush_blend_allowed(" in _jrt_src and "skip_flush" in _jrt_src)
     check("护栏: 全图层但半径收窄→放行(压线板式需求)",
