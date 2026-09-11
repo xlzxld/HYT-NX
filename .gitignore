@@ -34,3 +34,6 @@ tools/NX向下兼容工具/*_log.txt
 # macOS 系统元数据
 .DS_Store
 */.DS_Store
+
+# 同步器机器记录（契约约定不入库）
+.agents/.source
