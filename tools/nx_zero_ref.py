@@ -969,10 +969,6 @@ def write_back_one(session, ufs, runner, src_path, out_path, p,
          % (head, os.path.basename(out_path), len(bodies),
             fmt_point(delta_for(px, py, pz))))
     return "ok"
-    _log(session, "%s 已保存: %s (实体 %d 个, 位移 %s)"
-         % (head, os.path.basename(out_path), len(bodies),
-            fmt_point(delta_for(px, py, pz))))
-    return "ok"
 
 
 def close_loaded_src_parts(session, ufs, src_dir, files):

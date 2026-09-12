@@ -83,6 +83,12 @@ from cad3d.modeling.nx_compat import (
 from cad3d.modeling.stdparts import (
     _promote_body, _remove_parameters
 )
+from cad3d.modeling.jrt import (
+    _body_face_rows  # noqa: F401  门面兼容符号(test/test01x.py 等外部脚本经由本模块引用)
+)
+from cad3d.geom.eval import (
+    _faces_healthy  # noqa: F401  门面兼容符号(同上)
+)
 from cad3d.geom.topo import (
     collect_circle_anchors
 )

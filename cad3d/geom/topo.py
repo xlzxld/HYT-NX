@@ -96,7 +96,10 @@ def find_chains(segs):
                 pt = segs[j].p1 if e == 1 else segs[j].p2
         head_pt = segs[chain[0][0]].p1 if not chain[0][1] else segs[chain[0][0]].p2
         tail_pt = segs[chain[-1][0]].p2 if not chain[-1][1] else segs[chain[-1][0]].p1
-        if _pkey(head_pt) == _pkey(tail_pt):
+        # 闭合判定与 _take 同口径(距离<=LOOP_TOL)：v1.35 修了连接侧的邻桶搜索,
+        # 这里仍按单量化桶严格相等——端点相距<tol 但跨桶时, 连成的闭环被判开链,
+        # organize_loops 不生成 profile, 建模层把整个轮廓静默丢弃
+        if math.hypot(head_pt[0] - tail_pt[0], head_pt[1] - tail_pt[1]) <= LOOP_TOL:
             closed.append(chain)
         else:
             open_.append(chain)

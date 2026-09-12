@@ -124,17 +124,21 @@ def assign_layers(layer_names, work_part=None, log=None):
             conflict = True
 
     if conflict:
-        # 在 [base_start .. 240] 寻找完全不与用户图形冲突的空闲区间
+        # 在 [base_start .. 240] 寻找完全不与用户图形冲突的空闲区间。
+        # 约束(2026-09-13 修复): 候选起点 + 最大相对偏移(含参考层 JRT/JRTFBX)
+        # 不得超过 NX 合法层号上限 256 —— 此前滑动搜索只查占用不查上限,
+        # 用户图形占满 101~239 时 JRT/JRTFBX 会被分到 257/258(非法层号)。
+        max_rel = max([rel for _c, rel in ref_rels] + [core_count - 1])
         cand = base_start + 10
         found = False
-        while cand <= 240:
+        while cand <= min(240, 256 - max_rel):
             if not any(ly in occupied for ly in _need(cand)):
                 found = True
                 break
             cand += 10
         if not found:
             cand = base_start + 1
-            while cand <= 245:
+            while cand <= min(245, 256 - max_rel):
                 if not any(ly in occupied for ly in _need(cand)):
                     found = True
                     break
@@ -143,8 +147,14 @@ def assign_layers(layer_names, work_part=None, log=None):
             if log is not None:
                 log("【图层分配】发现图层 %s 上已经有你自己画的图形, 已自动避开, "
                     "这次脚本的线放到空闲的 %d~%d 层。"
-                    % (sorted(needed & occupied), cand, cand + core_count - 1))
+                    % (sorted(needed & occupied), cand, cand + max_rel))
             base_start = cand
+        elif log is not None:
+            # 此前两级搜索都失败时静默回退 base_start, 脚本曲线与用户图形直接
+            # 同层且无任何日志(与"确保 100% 零混层"的承诺相反)——必须让人知道
+            log("【图层分配】警告: 用户图形占满了候选图层区间, 自动避让失败, "
+                "脚本的线将与你的图形共用 %d 起的图层。"
+                "请手动挪开图形或调大 NX_LAYER_START 后重跑。" % base_start)
 
     mapping = {}
     for i, r in enumerate(LAYER_TABLE):

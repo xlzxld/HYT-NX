@@ -58,10 +58,13 @@ def parse_dxf(path):
     layers, stats = {}, {"ref_layers": {}, "unsupported": {},
                          "unsupported_model": 0, "nonplanar": 0, "total": 0}
 
-    # 定位 ENTITIES 段(记起点, 实体切到 ENDSEC 为止)
+    # 定位 ENTITIES 段(记起点, 实体切到 ENDSEC 为止)。
+    # 段名比较对组值再 strip: 个别生成器会在组值后写填充空格,
+    # 严格相等会定位失败 → 静默返回空 layers("共读到 0 个图形")
     start = None
     for i in range(1, len(pairs)):
-        if pairs[i] == ("2", "ENTITIES") and pairs[i - 1] == ("0", "SECTION"):
+        if (pairs[i][0] == "2" and pairs[i][1].strip() == "ENTITIES"
+                and pairs[i - 1][0] == "0" and pairs[i - 1][1].strip() == "SECTION"):
             start = i
             break
     if start is None:

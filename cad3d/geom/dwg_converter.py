@@ -280,8 +280,14 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
         out_dxf = os.path.join(logs_dir, "_temp_dwg_%s.dxf" % tag)
 
     scr_path = os.path.join(logs_dir, "_dwg_scr_%s.scr" % tag)
-    out_dxf_escaped = out_dxf.replace("\\", "/")
-    dwg_path_escaped = dwg_path.replace("\\", "/")
+
+    def _lisp_str(p):
+        # LISP 字符串里的双引号要转义: 路径来自 NX 文件对话框, 含 " 时
+        # 直接内插会提前截断字符串并注入后续指令
+        return p.replace("\\", "/").replace('"', '\\"')
+
+    out_dxf_escaped = _lisp_str(out_dxf)
+    dwg_path_escaped = _lisp_str(dwg_path)
 
     # 构建跨版本通用 AutoLISP 导出脚本：
     # 1. 关闭对话框提示 (FILEDIA 0)；

@@ -136,7 +136,9 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
                     jt_link_mode = _old_mode
             except Exception:
                 pass
-        tmp = "%s.tmp" % p
+        # 临时文件带 pid: 双 NX 实例同时保存时, 固定 .tmp 后缀会互踩后
+        # os.replace 竞争(同 paths._fresh_dlx_path 的时间戳+pid 思路)
+        tmp = "%s.%d.tmp" % (p, os.getpid())
         data = {
             "$schema_description": {
                 "file_purpose": "CAD3D 自动化分层拉伸运行时参数记忆持久化文件（由程序自动维护）",

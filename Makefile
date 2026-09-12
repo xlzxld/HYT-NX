@@ -2,7 +2,8 @@
 # 用法：按目标项目 AGENTS.md §2 登记的命令填充以下变量，然后执行 `make verify`
 # §2 登记"无"的项：对应变量填 skip（留空 = 未配置，报错退出，防误配静默放行）
 # 增量检查（存量问题大仓推荐）：make verify CHANGED="$(git diff --name-only)"
-#   —— fmt-check 与 lint 均只对 CHANGED 列出的文件执行（ruff 自动跳过非 .py 项）
+#   —— fmt-check 与 lint 均只对 CHANGED 列出的文件执行；lint 只取其中的 .py
+#   （ruff 显式收到非 .py 文件会按 invalid-syntax 报错, 并不会自动跳过）
 FMT_CHECK_CMD ?= skip
 LINT_CMD ?= python -m ruff check
 TEST_CMD ?= python nx_extrude_runner.py --selftest
@@ -21,7 +22,10 @@ fmt-check:
 lint:
 	@if [ -z "$(LINT_CMD)" ]; then echo "LINT_CMD 未配置（见 enforcement/README.md）"; exit 1; fi
 	@if [ "$(LINT_CMD)" = "skip" ]; then echo "skip: lint（§2 登记“无”）"; \
-	elif [ -n "$(CHANGED)" ]; then $(LINT_CMD) $(CHANGED); \
+	elif [ -n "$(CHANGED)" ]; then \
+	  CHANGED_PY=$$(printf "%s\n" $(CHANGED) | grep "\.py$$" | tr "\n" " "); \
+	  if [ -n "$$CHANGED_PY" ]; then $(LINT_CMD) $$CHANGED_PY; \
+	  else echo "skip: lint（本次改动无 .py 文件）"; fi; \
 	else $(LINT_CMD); fi
 
 test:

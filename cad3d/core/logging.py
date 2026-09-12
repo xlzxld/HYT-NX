@@ -8,7 +8,11 @@ def _fmt_num(v):
     _f = float(v)
     if _f == 0.0:
         return "0"
-    return ("%.4f" % _f).rstrip("0").rstrip(".") or "0"
+    _s = ("%.4f" % _f).rstrip("0").rstrip(".")
+    # 量化后落在 -0.0000 的小负数(如 -1e-5)会 rstrip 成 "-0", 同样归一
+    if _s in ("-0", "", "-"):
+        return "0"
+    return _s
 
 
 class Log(object):

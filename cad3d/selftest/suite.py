@@ -1010,7 +1010,9 @@ def selftest(dxf_path=None):
           sxml.count('class="UICOMP_toggle" hierarchy="UGS::UICOMP_group"') == 2
           and 'id="SEL1"' in sxml)
 
-    real2 = os.path.join(script_dir(), "3Dtest.dxf")
+    # 3Dtest.dxf 实际在 test/fixtures/ 下: 此前指向仓库根目录, isfile 恒 False,
+    # 这组真图链回归断言从未执行过也无提示(死代码)
+    real2 = os.path.join(script_dir(), "test", "fixtures", "3Dtest.dxf")
     if os.path.isfile(real2):
         layers_r2, _ = parse_dxf(real2)
         jrt_ents = layers_r2.get("JRT") or []
@@ -1026,6 +1028,8 @@ def selftest(dxf_path=None):
                    and abs(max(c2[0][0], c2[1][0]) - 4348.4) < 1.5)
             check("3Dtest 链1 连接线≈(4615.7,1366.3)/(4616.2,1391.3)", ok1, str(c1))
             check("3Dtest 链2 连接线≈(4342.1,1387.9)/(4348.4,1412.1)", ok2, str(c2))
+    else:
+        check("3Dtest 真图链回归可用", False, "fixture 缺失: %s" % real2)
     _dp = layers.get("DP") or []
     profs_dpx, opens_dp, _ = organize_loops(_dp)
     check("DP 垫片嵌套", _dp and len(profs_dpx) == 1 and len(profs_dpx[0]["holes"]) == 1,
@@ -1562,6 +1566,10 @@ def selftest(dxf_path=None):
         MarkVisibility = _MarkVis
 
     _nx.Session = _NXSession
+    # 在 NX 会话内跑 --selftest 时(sys.modules 已有真实 NXOpen), 无条件 pop 会把
+    # 真实模块摘掉, 后续任何 import NXOpen 的可用性不受控——先存后还(同 741 行
+    # JRT 桩段的 _nx_keep 模式)
+    _nx_keep = sys.modules.get("NXOpen")
     sys.modules["NXOpen"] = _nx
     try:
         class _MSession:
@@ -1664,7 +1672,10 @@ def selftest(dxf_path=None):
               _n5 == 0 and _batch_delete(_MSessUpd(_MUpdOk()), [],
                                          lambda m: None, "空") == 0)
     finally:
-        sys.modules.pop("NXOpen", None)
+        if _nx_keep is None:
+            sys.modules.pop("NXOpen", None)
+        else:
+            sys.modules["NXOpen"] = _nx_keep
 
     # 13.y v2.4 提速回归: 布尔计划分组 / 合并拉伸分组 / DWG 转换缓存
     _tg1, _tg2 = object(), object()

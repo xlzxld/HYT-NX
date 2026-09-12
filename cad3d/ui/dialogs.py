@@ -439,9 +439,11 @@ class ParamDialog(_BlockDialogBase):
         self._initializing = True
         try:
             self._set_label("grp_file", "输入图纸文件 (DWG / DXF)")
-            self._set_label("grp_flb", DIALOG_GROUPS[0][1])
-            self._set_label("grp_plain", DIALOG_GROUPS[1][1])
-            self._set_label("grp_sub", DIALOG_GROUPS[2][1])
+            # 按 DIALOG_GROUPS 动态置组标题: 此前硬编码 [0]/[1]/[2] 索引,
+            # 用户在 nx_std_config.py 配置的分组数 <3 时这里直接 IndexError,
+            # 参数窗口所有回填被整体跳过
+            for _gid, _title, _codes in DIALOG_GROUPS:
+                self._set_label(_gid, _title)
             try:
                 self._set_enum_idx("jt_link",
                                    _opt_index(JT_LINK_OPTS, self.jt_mode),

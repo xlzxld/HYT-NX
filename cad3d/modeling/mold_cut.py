@@ -512,8 +512,14 @@ def _conflict_check(session, work_part, uf, tool, tool_bbox, target, log):
             pass
     try:
         session.UndoToMark(mark, None)
-    except Exception:
-        pass
+    except Exception as ex:
+        # 试切是真实布尔减(工具已删): 撤销失败=模具已被挖掉一块且无法还原。
+        # 此前静默吞掉并按"无冲突"返回 → 该件继续进正式减(模型与统计账实
+        # 不符)。保守处理: 按冲突跳过该件并留日志叫人检查(与 _merge_undo_
+        # rollback 同款口径)
+        log("【模具】警告: 冲突试切的撤销失败(%s)。试切可能已真实挖掉模具且"
+            "工具已删, 本件按冲突处理跳过, 请检查模型后重跑。" % ex)
+        return True, broken
     return bool(broken), broken
 
 
@@ -607,9 +613,12 @@ def _blend_channel(session, work_part, uf, target, tb, rule, log):
     r_flush = float(rule.get("blend_flush_r") or 0.0)
     if r_step > 0:
         try:
+            # 下限不钳在 r_step 之下时(如 r_step=0.5 → max(1.0, -0.5)=1.0 > 起点)
+            # 循环一次都不执行, "从 R0.5 一路试到下限"自相矛盾
+            _r_min = min(r_step * 0.5, max(0.2, r_step - 1.0))
             feat, _nf, used = _edge_blend_end_retry(
                 session, work_part, uf, target, tb[2], r_step,
-                max(1.0, r_step - 1.0), 0.25, log,
+                _r_min, 0.25, log,
                 "%sMOLD_CXSTEP" % FEATURE_PREFIX, "出线槽台阶边")
             if feat is not None and abs(used - r_step) > 1e-9:
                 log("  出线槽台阶边圆角改小到 R%.4g 才做成。" % used)

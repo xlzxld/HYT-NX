@@ -18,6 +18,10 @@ def _esc(s):
 
 
 def _blk_double(bid, title, value):
+    # 量化后落在 -0.0000 的小负数会 rstrip 成 "-0"(对话框初值显示怪), 归一成 "0"
+    _val = ("%.4f" % float(value)).rstrip("0").rstrip(".")
+    if _val in ("-0", "", "-"):
+        _val = "0"
     return (
         '<Property class="UICOMP_double" hierarchy="UGS::UICOMP_group" id="{id}" mask="256" '
         'name="{id}" presentation="Double" type="uicomp">'
@@ -112,7 +116,7 @@ def _blk_double(bid, title, value):
         'hierarchy="UGS::UIFW_unit_options" id="AllowUnitEdit" mask="0" name="AllowUnitEdit" '
         'sname="AllowUnitEdit" source="1" type="logical" value="False"/>'
         '</PropertyList></item></Property>'
-    ).format(id=bid, title=_esc(title), val=("%.4f" % float(value)).rstrip("0").rstrip(".") or "0")
+    ).format(id=bid, title=_esc(title), val=_val)
 
 
 def _blk_label(bid, text, wrap=True):

@@ -23,8 +23,39 @@ jobs:
       - name: Secrets scan (gitleaks, all files)
         run: pre-commit run --all-files
       - name: Verify (fmt-check / lint / test / build, 增量=本次改动文件)
-        # 全仓存量基线问题已按 AGENTS.md §2 登记豁免, lint/fmt 仅查本 PR
-        # 改动过的文件(merge-base 三点 diff), 不传 CHANGED 会撞存量致恒红。
-        # -c core.quotepath=false: 中文文件名默认被转义成 "docs/\344..." 带引号串,
-        # 传给 make/ruff 会按文件不存在报错
-        run: make verify CHANGED="$(git -c core.quotepath=false diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+        # 全仓存量基线问题已按 AGENTS.md §2 登记豁免; lint 增量口径机械化为
+        # "改动的 .py 文件问题总数不得多于其基线版本"——存量豁免、新增必须 0 问题。
+        # - github.base_ref 仅 pull_request 事件有值: push 到 main 时它为空,
+        #   "origin/...HEAD" 不是合法 rev, git fatal → push 构建恒红(2026-09-13 修复)
+        # - ruff 显式收到非 .py 文件会按 invalid-syntax 报错, 必须先过滤
+        # - -c core.quotepath=false: 中文文件名默认被转义成 "docs/\344..." 带引号串
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          CHANGED="$(git -c core.quotepath=false diff --name-only "$BASE...HEAD")"
+          PY_FILES=""
+          for f in $CHANGED; do
+            case "$f" in *.py) PY_FILES="$PY_FILES $f" ;; esac
+          done
+          if [ -n "$PY_FILES" ]; then
+            NEW_CNT=$(python -m ruff check $PY_FILES 2>/dev/null | grep -oP 'Found \K[0-9]+' || echo 0)
+            OLD_CNT=0
+            for f in $PY_FILES; do
+              if git cat-file -e "$BASE:$f" 2>/dev/null; then
+                C=$(git show "$BASE:$f" | python -m ruff check --stdin-filename "$f" - 2>/dev/null | grep -oP 'Found \K[0-9]+' || echo 0)
+                OLD_CNT=$((OLD_CNT + C))
+              fi
+            done
+            echo "lint 增量: base=$OLD_CNT new=$NEW_CNT (files:$PY_FILES)"
+            if [ "$NEW_CNT" -gt "$OLD_CNT" ]; then
+              echo "::error::改动的 .py 文件新增了 lint 问题($OLD_CNT -> $NEW_CNT); 存量豁免只覆盖基线条目, 见 AGENTS.md §2"
+              exit 1
+            fi
+          else
+            echo "skip: lint 增量检查(本次改动无 .py 文件)"
+          fi
+          # lint 已在上面按基线口径执行, make 侧不再重复跑
+          make verify CHANGED="$CHANGED" LINT_CMD="skip"
