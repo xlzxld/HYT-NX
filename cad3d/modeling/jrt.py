@@ -510,7 +510,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         fbx_per, fbx_ignore = _marker_mids_for_chains(_boxes, fbx_pts, 10.0)
         for w in fbx_ignore:
             log("【加热条】%s。" % w)
-    _gate = 2.5 * max(float(jp["blend_r"]), 1.0) + 2.0
+    _gate = 2.5 * max(float(jp.get("blend_r", 3.9)), 1.0) + 2.0
 
     strips = []
     for ci, chain in enumerate(closed):
@@ -609,7 +609,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
             try:
                 _f, new_faces, _r_used = _edge_blend_end_retry(
                     session, work_part, uf, body, z_embed,
-                    float(jp["blend_r"]), r_min_all, r_step_all, log,
+                    float(jp.get("blend_r", 3.9)), r_min_all, r_step_all, log,
                     base + "_BLE", "%s嵌入端" % _who)
                 if _f is not None:
                     stats["JRT"]["features"] += 1
@@ -642,7 +642,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                 log("【加热条】%s: 嵌入端圆角或删面没做成, 齐平端就不倒圆了"
                     "(这端留直角)。" % _who)
             else:
-                _r_start = float(jp["blend_r"])
+                _r_start = float(jp.get("blend_r", 3.9))
                 try:
                     _f2, nf2, used = _edge_blend_end_retry(
                         session, work_part, uf, body, z_flush,

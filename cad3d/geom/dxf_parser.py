@@ -84,7 +84,6 @@ def parse_dxf(path):
             if layer in LAYER_CODES:
                 stats["unsupported_model"] += 1
             continue
-        stats["total"] += 1
         layer = (e.get("8") or "0").upper()
         if layer not in LAYER_CODES:
             stats["ref_layers"][layer] = stats["ref_layers"].get(layer, 0) + 1
@@ -93,30 +92,39 @@ def parse_dxf(path):
         def fnum(key):
             return float(e.get(key, "0") or "0")
 
-        z = fnum("30")
-        if abs(z) > 1e-9:
-            stats["nonplanar"] += 1
         try:
             if etype == "LINE":
+                # 非平面检测必须同时看起点(30)与终点(31)的 Z —— 曾只查 30,
+                # (0,0,0)->(10,0,10) 这类斜线检测通过后被静默压平到 Z=0
+                if abs(fnum("30")) > 1e-9 or abs(fnum("31")) > 1e-9:
+                    stats["nonplanar"] += 1
                 obj = DXLine((fnum("10"), fnum("20")), (fnum("11"), fnum("21")))
                 if math.hypot(obj.p2[0] - obj.p1[0], obj.p2[1] - obj.p1[1]) < 1e-9:
                     continue                      # 零长线丢弃
             elif etype == "CIRCLE":
+                if abs(fnum("30")) > 1e-9:
+                    stats["nonplanar"] += 1
                 r = fnum("40")
                 if r <= 1e-9:
                     continue                      # 零半径圆丢弃
                 obj = DXCircle((fnum("10"), fnum("20")), r)
             else:                                  # ARC
+                if abs(fnum("30")) > 1e-9:
+                    stats["nonplanar"] += 1
                 r = fnum("40")
                 if r <= 1e-9:
                     continue                      # 零半径弧丢弃
                 a0, a1 = math.radians(float(e["50"])), math.radians(float(e["51"]))
-                if a1 <= a0:
+                if abs(a1 - a0) < 1e-12:
+                    continue                      # 退化弧(起终角相同)丢弃, 拉成整圆会包出多余实体
+                if a1 < a0:
                     a1 += 2.0 * math.pi
                 obj = DXArc((fnum("10"), fnum("20")), r, a0, a1)
         except (KeyError, ValueError) as ex:
             k = "<解析失败:%s>" % ex
             stats["unsupported"][k] = stats["unsupported"].get(k, 0) + 1
             continue
+        # total 在丢弃判定之后累加, 只计真正进入建模/参考流程的受支持实体
+        stats["total"] += 1
         layers.setdefault(layer, []).append(obj)
     return layers, stats

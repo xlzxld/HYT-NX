@@ -62,9 +62,19 @@ LAYER_CODES = [r[0] for r in LAYER_TABLE]
 
 # 参考图层与保留区映射（默认高位图层区间 101 ~ 170）
 # JRT=加热条轮廓, JRTFBX=加热条封闭线标记(只用来定删面位置, 不建模)
-REF_LAYER_TABLE = [("JRT", "加热条(参考)", _cfg_int("NX_LAYER_JRT", 118)),
+def _ref_layer_no(cfg_key, default_no):
+    """参考图层号校验: 1~256 之外(NX 合法层号区间)回默认并告警,
+    防止负层号/越界层号静默进 mapping。"""
+    v = _cfg_int(cfg_key, default_no)
+    if v < 1 or v > 256:
+        _note("%s(%d) 不是合法 NX 图层号(1~256), 回退 %d。" % (cfg_key, v, default_no))
+        return default_no
+    return v
+
+
+REF_LAYER_TABLE = [("JRT", "加热条(参考)", _ref_layer_no("NX_LAYER_JRT", 118)),
                    ("JRTFBX", "加热条封闭线标记(参考)",
-                    _cfg_int("NX_LAYER_JRTFBX", 119))]
+                    _ref_layer_no("NX_LAYER_JRTFBX", 119))]
 DYNAMIC_START   = _cfg_int("NX_LAYER_DYNAMIC_START", 120)
 MANAGED_MIN     = _NX_LAYER_START
 MANAGED_MAX     = _cfg_int("NX_LAYER_MAX", 170)
@@ -144,18 +154,28 @@ def assign_layers(layer_names, work_part=None, log=None):
 
     used = set(mapping.values()) | occupied
     nxt = base_start + dyn_rel
+    _overflow = 0
     for name in sorted(n for n in layer_names if n not in mapping):
         while nxt in used or nxt in occupied:
             nxt += 1
         if nxt > 256:
-            break
+            _overflow += 1
+            continue                  # 统计溢出数, 循环结束后统一告警
         mapping[name] = nxt
         used.add(nxt)
+    if _overflow and log is not None:
+        log("【图层分配】图层号已用尽(超过 256 层), %d 个参考图层未能分配, "
+            "这些层上的线会统一落在最大受管图层 %d。"
+            % (_overflow, MANAGED_MAX))
     return mapping
 
 
 # 布尔减目标基准图层代码
 TARGET_CODE = str(_cfg("TARGET_CODE", "FLB"))
+if TARGET_CODE not in LAYER_CODES:
+    _note("TARGET_CODE(%s) 不是建模图层, 回退 FLB (否则 default_params 直接 KeyError)。"
+          % TARGET_CODE)
+    TARGET_CODE = "FLB"
 
 # 对话框拉伸参数分组定义
 _DEFAULT_DIALOG_GROUPS = [
@@ -168,7 +188,18 @@ DIALOG_GROUPS = []
 if isinstance(_RAW_DIALOG_GROUPS, (list, tuple)):
     for _g in _RAW_DIALOG_GROUPS:
         if isinstance(_g, (list, tuple)) and len(_g) == 3:
-            DIALOG_GROUPS.append((str(_g[0]), str(_g[1]), list(_g[2])))
+            _codes = [str(_c) for _c in _g[2]]
+            # 配置注入的图层码必须是已知建模层, 否则 dlx_builder 的 zh[code]
+            # 会 KeyError 崩掉整个参数窗口 (且用户看不到真实原因)
+            _bad = [c for c in _codes if c not in LAYER_CODES]
+            if _bad:
+                _note("DIALOG_GROUPS 组 %s 含未知图层码 %s, 已剔除。"
+                      % (_g[0], ",".join(_bad)))
+                _codes = [c for c in _codes if c in LAYER_CODES]
+            if _codes:
+                DIALOG_GROUPS.append((str(_g[0]), str(_g[1]), _codes))
+            else:
+                _note("DIALOG_GROUPS 组 %s 剔除后为空, 已跳过。" % _g[0])
 if not DIALOG_GROUPS:
     DIALOG_GROUPS = list(_DEFAULT_DIALOG_GROUPS)
 

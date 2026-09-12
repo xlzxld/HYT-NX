@@ -106,7 +106,12 @@ def main():
     if "--selftest" in argv:
         i = argv.index("--selftest")
         arg = argv[i + 1] if i + 1 < len(argv) and not argv[i + 1].startswith("--") else None
-        sys.exit(0 if selftest(arg) else 1)
+        _ok = selftest(arg)
+        if "NXOpen" in sys.modules:
+            # NX 期刊播放器收到 SystemExit 会弹错误对话框; NX 内打印结论即可
+            print("SELFTEST %s" % ("OK" if _ok else "FAIL"))
+            return
+        sys.exit(0 if _ok else 1)
 
     if "--make-sample-dxf" in argv:
         i = argv.index("--make-sample-dxf")

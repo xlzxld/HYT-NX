@@ -5,13 +5,13 @@ import io
 import os
 
 from cad3d.core.constants import FEATURE_PREFIX
-from cad3d.core.config import _CFG_NOTES, SCHEMA_VERSION
+from cad3d.core.config import SCHEMA_VERSION
 from cad3d.core.paths import _logs_dir, resolve_dxf_path
 from cad3d.core.logging import Log
 from cad3d.core.state import (
     load_state, merge_params, merge_jrt
 )
-from cad3d.modeling.std_rules import merge_std_rules
+from cad3d.modeling.std_rules import merge_std_rules, sanitize_std_rule
 from cad3d.modeling.nx_compat import _iter
 from cad3d.modeling.std_rules import _rule_usable
 from cad3d.modeling.display import _refresh_display
@@ -39,8 +39,11 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
         params.update(params_override)
     std_rules = merge_std_rules(state)
     if std_override:
-        std_rules.update(std_override)
-        std_rules = {f: r for f, r in std_rules.items() if f in std_override}
+        # std_override 全量接管: 批量冒烟只用显式给的规则(与 else 分支的
+        # "记忆选中/可用规则"互斥)。逐条 sanitize —— 外部注入的是原始 dict,
+        # 曾未经规范化直接进流程, 坏 r_max 等会在纯逻辑函数里炸 ValueError。
+        # (原写法先 update 再过滤, 合并结果立即被丢弃, 等价于直接用 override)
+        std_rules = {f: sanitize_std_rule(r) for f, r in std_override.items()}
     else:
         saved_sel = (state.get("selected")
                      if state.get("schema") == SCHEMA_VERSION else None)
@@ -58,8 +61,7 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
     dxf = dxf_arg or resolve_dxf_path(state)
     log = Log(session)
     log("【批量】图纸: %s" % dxf)
-    for _note in _CFG_NOTES:
-        log("【配置提示】%s" % _note)
+    # 配置提示由 run_pipeline 统一输出一次(曾在这里和 runner 里各打一遍)
     ok1, stats1 = run_pipeline(dxf, params, session=session, work_part=work_part,
                                log=log, std_rules=std_rules, jrt=jrt)
     ok2, stats2 = run_pipeline(dxf, params, session=session, work_part=work_part,

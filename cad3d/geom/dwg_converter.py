@@ -36,12 +36,14 @@ def _cache_enabled():
 def _dwg_cache_key(dwg_path):
     """(纯逻辑, 可离线测) DWG 指纹 → 缓存键。
 
-    键 = sha1(绝对路径小写 | 字节数 | mtime 整秒) 前 16 位: 同一图纸未改动时
+    键 = sha1(绝对路径小写 | 字节数 | mtime 纳秒) 前 16 位: 同一图纸未改动时
     键稳定; 内容/路径/修改时间任一变化即失配自动重转。
+    (曾用 mtime 整秒: 1 秒内"改图->保存"的同字节数微改键不变, 会命中旧图
+    的转换缓存静默建错模型, 改用纳秒精度)
     """
     st = os.stat(dwg_path)
     raw = "%s|%d|%d" % (os.path.abspath(dwg_path).lower(),
-                        st.st_size, int(st.st_mtime))
+                        st.st_size, st.st_mtime_ns)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -176,15 +178,31 @@ def find_acad_executable():
 
     # 优先使用 accoreconsole.exe（高版本极速无头引擎，倒序选最新版本）
     if found_consoles:
-        found_consoles.sort(reverse=True)
+        found_consoles.sort(key=_acad_version_key, reverse=True)
         return found_consoles[0], True
 
     # 降级使用 acad.exe（低版本经典引擎）
     if found_acads:
-        found_acads.sort(reverse=True)
+        found_acads.sort(key=_acad_version_key, reverse=True)
         return found_acads[0], False
 
     return None, False
+
+
+def _acad_version_key(path):
+    """(纯逻辑, 可离线测) 从路径提取 AutoCAD 版本号数字做排序键
+    ("AutoCAD 2026" -> 2026); 提不出取 0。曾按完整路径字符串倒序,
+    "D:...AutoCAD 2013..." 会排在 "C:...AutoCAD 2026..." 前(盘符 D>C)。"""
+    name = os.path.basename(os.path.dirname(path)) + " " + os.path.basename(path)
+    best = 0
+    for token in name.replace("(", " ").replace(")", " ").split():
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if digits:
+            try:
+                best = max(best, int(digits))
+            except ValueError:
+                continue
+    return best
 
 
 def _clean_stale_temp_files(max_age_seconds=3600, cache_max_age_seconds=None):
@@ -294,7 +312,11 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
         cmd = [exe_path, "/nologo", "/b", scr_path]
 
     try:
-        with open(scr_path, "w", encoding="utf-8") as f:
+        # accoreconsole/acad 按系统 ANSI 代码页(中文 Windows=GBK)读脚本文件,
+        # 曾按 UTF-8 写: 图纸路径含中文时被解读成乱码路径, 转换必失败且
+        # 报错不指向真实原因。
+        scr_enc = "mbcs" if os.name == "nt" else "utf-8"
+        with open(scr_path, "w", encoding=scr_enc, newline="\r\n") as f:
             f.write("\n".join(scr_lines))
     except Exception as ex:
         raise DwgConversionError("创建临时转换脚本失败: %s" % ex)

@@ -48,15 +48,22 @@ def _fresh_dlx_path(base_name, base_dir=None):
     except OSError:
         pass
     try:
+        # 只清理 10 分钟前的旧 dlx: 曾无差别删同前缀全部 —— 双 NX 实例
+        # (或 NX+探针)同时跑时, 后启动的会删掉前一个正在显示的对话框文件
+        cutoff = time.time() - 600
         for n in os.listdir(d):
             if n.endswith(".dlx") and n.startswith(base_name):
                 try:
-                    os.remove(os.path.join(d, n))
+                    fp = os.path.join(d, n)
+                    if os.path.getmtime(fp) < cutoff:
+                        os.remove(fp)
                 except OSError:
                     pass
     except OSError:
         pass
-    return os.path.join(d, "%s_%d.dlx" % (base_name, int(time.time() * 1000) % 10 ** 10))
+    # 文件名内嵌 pid: 同毫秒创建不再同名, 双实例互不干扰
+    return os.path.join(d, "%s_%d_%d.dlx"
+                        % (base_name, int(time.time() * 1000) % 10 ** 10, os.getpid()))
 
 
 def _temp_dlx_path(base_name):

@@ -61,7 +61,16 @@ def jrt_with_memory(state, params):
                 se = None
     if se is None:
         p_dict = params if isinstance(params, dict) else {}
-        s, e = p_dict.get(TARGET_CODE, (0.0, 0.0))
+        _v = p_dict.get(TARGET_CODE)
+        # 解包前先验二元数值序列: 旁路调用(外部测试/手改记忆)传进来的
+        # params 可能是坏类型, 直接 s, e = _v 会 ValueError/TypeError 冲出
+        if isinstance(_v, (list, tuple)) and len(_v) == 2:
+            try:
+                s, e = float(_v[0]), float(_v[1])
+            except (TypeError, ValueError):
+                s, e = 0.0, 0.0
+        else:
+            s, e = 0.0, 0.0
         se = derive_linked(max(s, e), min(s, e)).get(
             "JRT", (DEFAULT_JRT["start"], DEFAULT_JRT["end"]))
     jrt["start"], jrt["end"] = se

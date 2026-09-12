@@ -170,4 +170,10 @@ def anchors_overflow(anchors, rule):
     """(纯逻辑) 数量超限或"空图层+大半径"指纹 → True。"""
     if len(anchors) > STD_MAX_ANCHORS:
         return True
-    return (not rule.get("layer")) and float(rule.get("r_max", 0.0)) >= 999.0
+    r_max = rule.get("r_max", 0.0)
+    try:
+        return (not rule.get("layer")) and float(r_max) >= 999.0
+    except (TypeError, ValueError):
+        # 坏 override 的 r_max 非数值: 按"未超限"处理, 让上游 sanitize/应用
+        # 环节报出具体错, 而不是在纯逻辑函数里炸 ValueError
+        return False

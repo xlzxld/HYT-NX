@@ -432,8 +432,8 @@ def build_dlx(params=None, jrt=None, jt_mode=None):
                 _opt_index(JT_LINK_OPTS, jt_mode)))
         for code in codes:
             s, e = params.get(code, (0.0, 0.0))
-            children.append(_blk_double(code + "_start", "%s %s 起始距离" % (code, zh[code]), s))
-            children.append(_blk_double(code + "_end", "%s %s 结束距离" % (code, zh[code]), e))
+            children.append(_blk_double(code + "_start", "%s %s 起始距离" % (code, zh.get(code, code)), s))
+            children.append(_blk_double(code + "_end", "%s %s 结束距离" % (code, zh.get(code, code)), e))
         if gid == "grp_flb":
             children.append(_blk_button("flb_mirror", "镜像"))
             children.append(_blk_label(

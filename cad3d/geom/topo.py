@@ -268,6 +268,48 @@ def _chain_tips(chain, ents):
     return [p for p, c in cnt.items() if c == 1]
 
 
+def _chain_head_tail(chain, ents):
+    """(纯逻辑) 链的(头端点, 尾端点) —— 按遍历方向计, 与 loop_polygon 同口径。"""
+    i0, r0 = chain[0]
+    i1, r1 = chain[-1]
+    head = ents[i0].p2 if r0 else ents[i0].p1
+    tail = ents[i1].p1 if r1 else ents[i1].p2
+    return head, tail
+
+
+def _reorder_group_chains(chains, ents, tol=LOOP_TOL):
+    """(纯逻辑, 可离线测) 组内多链按端点连通性重排成单一链序。
+
+    并组后的 flat 曾按组内顺序直接拼接: 多条开链拼成的"闭组"若不按链序
+    连排, loop_polygon 会在每个链间接缝处跳点, 产出自交错的错误多边形。
+    贪心沿尾端找下一条相接的链(必要时整链翻转); 排不成单链返回 None
+    (调用方按不可闭合放弃并记日志, 不再输出错误几何)。
+    """
+    units = [list(ch) for ch in chains]
+
+    def _flip(ch):
+        return [(i, not r) for (i, r) in reversed(ch)]
+
+    out = units.pop(0)
+    while units:
+        _h, tail = _chain_head_tail(out, ents)
+        hit = None
+        for k, ch in enumerate(units):
+            h2, t2 = _chain_head_tail(ch, ents)
+            if math.hypot(tail[0] - h2[0], tail[1] - h2[1]) <= tol:
+                hit = (k, ch)
+                break
+            if math.hypot(tail[0] - t2[0], tail[1] - t2[1]) <= tol:
+                hit = (k, _flip(ch))
+                break
+        if hit is None:
+            return None
+        k, ch = hit
+        units.pop(k)
+        out = out + ch
+    return out
+
+
 def _cluster_tips(tips, tol):
     """(纯逻辑) 断点按 ≤tol 聚类 → [[点,...], ...]。"""
     clusters = []
@@ -323,7 +365,16 @@ def _merge_open_chains(opens, ents, tol=1.0, bridge_max=1.0):
         flat = [it for ch in g for it in ch]
         tips = _chain_tips([(i, False) for i, _r in flat], ents)
         if not tips:
-            closed_extra.append(flat)
+            if len(g) == 1:
+                closed_extra.append(flat)
+            else:
+                # 多链并成的闭组必须先重排成链序(端点两两相接), 直接按组序
+                # 拼接会在链间接缝处跳点, 包出自交多边形
+                ordered = _reorder_group_chains(g, ents, tol)
+                if ordered is not None:
+                    closed_extra.append(ordered)
+                else:
+                    open_logs.append((len(flat), tips))
             continue
         clusters = _cluster_tips(tips, tol)
         singles = [c for c in clusters if len(c) == 1]

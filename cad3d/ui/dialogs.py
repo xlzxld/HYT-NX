@@ -378,6 +378,11 @@ class ParamDialog(_BlockDialogBase):
         self.jt_mode = jt_mode_with_memory(self.state)
         self._shown = False
         self._initializing = False
+        # CX 手改脏标记(v2.12): CX 输入块可编辑, 但 _collect 曾无条件用 JT
+        # 起始值重算 CX —— 用户手改的 CX 在点 OK 的瞬间被静默覆盖(界面允许
+        # 输入但执行端忽略, 账实不符)。用户动过 CX 就尊重手改值; 程序联动
+        # 推送(jt_link/JT 编辑)会清零本标记保持默认联动。
+        self._cx_dirty = False
 
     def _current_jt_mode(self):
         """读 jt_link 枚举当前模式(标签优先, 序号次之; 失败回上次模式)。"""
@@ -513,6 +518,14 @@ class ParamDialog(_BlockDialogBase):
     def update_cb(self, block):
         if getattr(self, "_initializing", False):
             return 0
+        # CX 手改检测(v2.12): 用户在 CX 输入块里改值即标脏, _collect 不再用
+        # JT 重算覆盖; 程序化联动推送在推送后清零(见 jt_link / jt->cx 分支)
+        try:
+            if block in (self._find("CX_start"), self._find("CX_end")):
+                self._cx_dirty = True
+                return 0
+        except Exception as ex:
+            self._dbg_footprint("update_cb cx_dirty 异常: %r" % ex)
         try:
             try:
                 if block is self._find("flb_mirror"):
@@ -561,6 +574,7 @@ class ParamDialog(_BlockDialogBase):
                     cs, ce = _cx_link_values(v1)
                     self._find("CX_start").Value = cs
                     self._find("CX_end").Value = ce
+                    self._cx_dirty = False   # 程序联动推送不算手改
                     return 0
             except Exception as ex:
                 self._dbg_footprint("update_cb jt_link 异常: %r" % ex)
@@ -569,6 +583,7 @@ class ParamDialog(_BlockDialogBase):
                     cs, ce = _cx_link_values(self._get_double("JT_start", 0.0))
                     self._find("CX_start").Value = cs
                     self._find("CX_end").Value = ce
+                    self._cx_dirty = False   # 程序联动推送不算手改
                     return 0
             except Exception as ex:
                 self._dbg_footprint("update_cb jt->cx 异常: %r" % ex)
@@ -596,7 +611,8 @@ class ParamDialog(_BlockDialogBase):
             s = self._get_double(code + "_start", d_s)
             e = self._get_double(code + "_end", d_e)
             params[code] = (s, e)
-        if "JT" in params and "CX" in params:
+        if "JT" in params and "CX" in params and not getattr(
+                self, "_cx_dirty", False):
             params["CX"] = _cx_link_values(params["JT"][0])
         return params
 

@@ -32,7 +32,7 @@ from cad3d.core.state import (
     jrt_with_memory, default_params, load_state, _name_list, save_state,
     merge_params, merge_jrt
 )
-from cad3d.core.logging import Log
+from cad3d.core.logging import Log, _fmt_num
 from cad3d.geom.entities import DXLine, DXArc, DXCircle
 from cad3d.geom.dxf_parser import parse_dxf
 from cad3d.geom.topo import (
@@ -41,7 +41,7 @@ from cad3d.geom.topo import (
     _merge_open_chains, _center_seen, collect_circle_anchors,
     collect_yxb_anchors, _chain_outlet_mids, _chain_connectors,
     _contour_outlet_mids, _fbx_anchor_points, _marker_mids_for_chains,
-    _merge_marker_lines
+    _merge_marker_lines, _chain_head_tail, _reorder_group_chains
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
@@ -1026,9 +1026,12 @@ def selftest(dxf_path=None):
                    and abs(max(c2[0][0], c2[1][0]) - 4348.4) < 1.5)
             check("3Dtest 链1 连接线≈(4615.7,1366.3)/(4616.2,1391.3)", ok1, str(c1))
             check("3Dtest 链2 连接线≈(4342.1,1387.9)/(4348.4,1412.1)", ok2, str(c2))
-    profs_dpx, opens_dp, _ = organize_loops(layers["DP"])
-    check("DP 垫片嵌套", len(profs_dpx) == 1 and len(profs_dpx[0]["holes"]) == 1)
-    profs_flb, _o, _c = organize_loops(layers["FLB"])
+    _dp = layers.get("DP") or []
+    profs_dpx, opens_dp, _ = organize_loops(_dp)
+    check("DP 垫片嵌套", _dp and len(profs_dpx) == 1 and len(profs_dpx[0]["holes"]) == 1,
+          "DP 层缺失或解析回归" if not _dp else "")
+    _flb = layers.get("FLB") or []
+    profs_flb, _o, _c = organize_loops(_flb)
     check("FLB 双通道=2 轮廓", len(profs_flb) == 2)
 
     xml = build_dlx(default_params())
@@ -1128,6 +1131,47 @@ def selftest(dxf_path=None):
               and _us["unsupported_model"] == 1
               and _us["total"] == 1 and len(_ul.get("FLB") or []) == 1,
               str(_us))
+        # 2026-09-12 全面审查修复回归(解析器/拓扑/日志)
+        _sl_dxf = os.path.join(_td, "slope.dxf")
+        _sl_rows = ["0", "SECTION", "2", "ENTITIES",
+                    "0", "LINE", "8", "FLB",
+                    "10", "0", "20", "0", "30", "0",
+                    "11", "10", "21", "0", "31", "10",
+                    "0", "ENDSEC", "0", "EOF"]
+        with io.open(_sl_dxf, "w", encoding="ascii", newline="\n") as _f:
+            _f.write("\n".join(_sl_rows))
+        _sl, _ss = parse_dxf(_sl_dxf)
+        check("斜线终点 Z(组码31)计入非平面(不静默压平)",
+              _ss["nonplanar"] == 1 and _ss["total"] == 1, str(_ss))
+        _zl_dxf = os.path.join(_td, "zerolen.dxf")
+        _zl_rows = ["0", "SECTION", "2", "ENTITIES",
+                    "0", "LINE", "8", "FLB",
+                    "10", "5", "20", "5", "11", "5", "21", "5",
+                    "0", "ENDSEC", "0", "EOF"]
+        with io.open(_zl_dxf, "w", encoding="ascii", newline="\n") as _f:
+            _f.write("\n".join(_zl_rows))
+        _zl, _zs = parse_dxf(_zl_dxf)
+        check("零长线丢弃后 total 不虚增", _zs["total"] == 0 and _zl == {})
+        _da_dxf = os.path.join(_td, "degen.dxf")
+        _da_rows = ["0", "SECTION", "2", "ENTITIES",
+                    "0", "ARC", "8", "FLB",
+                    "10", "0", "20", "0", "40", "10",
+                    "50", "30", "51", "30",
+                    "0", "ENDSEC", "0", "EOF"]
+        with io.open(_da_dxf, "w", encoding="ascii", newline="\n") as _f:
+            _f.write("\n".join(_da_rows))
+        _da, _ds = parse_dxf(_da_dxf)
+        check("退化弧(起终角相同)丢弃不拉成整圆", _da == {} and _ds["total"] == 0)
+        # 两段围成闭合回路: 输入组序 [seg1, seg0], seg0 需翻转才能接上
+        _mg = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (0, 0))]
+        _ord = _reorder_group_chains([[(1, False)], [(0, True)]], _mg)
+        _oh, _ot = (_chain_head_tail(_ord, _mg) if _ord is not None
+                    else (None, None))
+        check("多链并组按端点连通性重排成链序(含整链翻转)",
+              _ord is not None and [i for i, _r in _ord] == [1, 0]
+              and _oh is not None and _ot is not None
+              and abs(_oh[0] - _ot[0]) < 1e-6 and abs(_oh[1] - _ot[1]) < 1e-6)
+        check("_fmt_num: -0.0 归一为 0", _fmt_num(-0.0) == "0")
         _gl = [DXLine((0, 0), (10.0, 0.0)), DXLine((9.994, 0.0), (20.0, 0.0))]
         _gc, _go = find_chains(_gl)
         check("格点边界断口仍能连链(邻桶)",

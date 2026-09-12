@@ -3,7 +3,12 @@
 
 
 def _fmt_num(v):
-    return ("%.4f" % float(v)).rstrip("0").rstrip(".") or "0"
+    # -0.0 归一成 "0" (曾输出 "-0", NX 表达式能吃但显示怪);
+    # 4 位小数量化口径, 量级远小于建模精度
+    _f = float(v)
+    if _f == 0.0:
+        return "0"
+    return ("%.4f" % _f).rstrip("0").rstrip(".") or "0"
 
 
 class Log(object):
