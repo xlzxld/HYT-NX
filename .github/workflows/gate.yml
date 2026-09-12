@@ -2,6 +2,8 @@ name: gate
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 jobs:
   verify:
@@ -10,11 +12,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # 按项目技术栈补充运行时安装，例如：
-      #   - uses: actions/setup-node@v4
-      #     with: { node-version: 20 }
-      #   - uses: actions/setup-python@v5
-      #     with: { python-version: "3.12" }
+      # 钉住 Python 版本: runner 预装版会漂移, 且新版 ubuntu 镜像的 PEP 668
+      # (externally-managed-environment) 可能让 pip install 直接失败
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install pre-commit & ruff
         # ruff 版本与本地门禁一致(0.16.6), 避免规则集漂移导致基线豁免失配
         run: pip install pre-commit "ruff==0.16.6"
@@ -22,5 +24,7 @@ jobs:
         run: pre-commit run --all-files
       - name: Verify (fmt-check / lint / test / build, 增量=本次改动文件)
         # 全仓存量基线问题已按 AGENTS.md §2 登记豁免, lint/fmt 仅查本 PR
-        # 改动过的文件(merge-base 三点 diff), 不传 CHANGED 会撞存量致恒红
-        run: make verify CHANGED="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+        # 改动过的文件(merge-base 三点 diff), 不传 CHANGED 会撞存量致恒红。
+        # -c core.quotepath=false: 中文文件名默认被转义成 "docs/\344..." 带引号串,
+        # 传给 make/ruff 会按文件不存在报错
+        run: make verify CHANGED="$(git -c core.quotepath=false diff --name-only "origin/${{ github.base_ref }}...HEAD")"
