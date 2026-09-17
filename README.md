@@ -3,7 +3,7 @@
 > Siemens NX 二次开发：AutoCAD 2D 图纸（DWG / DXF）一键转 3D 热流道分流板、孔系布尔、标准件装配与 JRT 加热条闭环建模。
 >
 > **支持环境**：Siemens NX 10 / NX 12 / NX 2312 及以上（Python 3.3 ~ 3.12+）
-> **当前版本**：v2.11（CAD3D 流水线）/ v1.3（模具自动开框）
+> **当前版本**：v2.12（CAD3D 流水线）/ v1.3（模具自动开框）
 
 ---
 
@@ -24,7 +24,7 @@
 
 1. **分层拉伸与布尔切割**：自动识别 FLB 基准轮廓，按图层联动距离拉伸实体并从分流板精准布尔减去。
 2. **标准件自动装配**：扫描 `stdparts/` 库中的 `.prt`，根据图纸圆心锚点计算三维位移与姿态，完成 AddComponent + 实体提升 + 切槽/合体。
-3. **JRT 加热条闭环建模**：支持 ≤1mm 细小断口自适应桥接、嵌入端倒圆、出线口删除面愈合、双侧镜像与独立着色；删面位置（出线口）优先按 `JRTFBX` 标记图层定位，图纸上没有标记时自动按条轮廓辨认。
+3. **JRT 加热条闭环建模**：支持 ≤1mm 细小断口自适应桥接、嵌入端倒圆、出线口删除面愈合、双侧镜像与独立着色；删面位置（出线口）优先按 `JRTFBX` 标记图层定位，图纸上没有标记时自动按条轮廓辨认。v2.12 起另加三道保险：导轨线画过头压回长线的重复短描线自动剔除（不再把闭链拆散导致整根条漏做）、齐平端起试 R 按条高收小（避免与嵌入端圆角碰头被 NX 裁成缝）、倒圆"空转"（体积几乎没变）判失败并降 R 重试。
 4. **无参数化归整**：建模完成后自动 Remove Parameters，清空特征树依赖，仅保留纯净几何哑实体。
 5. **增量清理与无损重跑**：每次重放自动清理上一轮生成的特征、体、组件与曲线，不影响用户自绘图形。
 6. **模具自动开框**：`nx_mold_cut_runner.py` 独立入口，支持试切与冲突保护，重跑安全。
@@ -37,13 +37,13 @@
 
 | 路径 | 属性 | 说明 |
 |---|---|---|
-| `nx_extrude_runner.py` | 主入口 | CAD3D 分层拉伸与装配的 NX Journal 入口门面（v2.11），日常使用请勿修改 |
+| `nx_extrude_runner.py` | 主入口 | CAD3D 分层拉伸与装配的 NX Journal 入口门面（v2.12），日常使用请勿修改 |
 | `nx_mold_cut_runner.py` | 入口 | 模具自动开框的 NX Journal 入口（v1.3） |
-| `nx_std_config.py` | 用户配置 | 全局工程参数与标准件规则（v2.11），业务调参改此文件。**注意：配置文件等同可执行代码**（程序以 exec 方式加载以支持跨版本 API 兼容梯与表达式配置），勿使用来历不明的配置文件，外部单位交付时建议随附校验或锁定 |
+| `nx_std_config.py` | 用户配置 | 全局工程参数与标准件规则（v2.12），业务调参改此文件。**注意：配置文件等同可执行代码**（程序以 exec 方式加载以支持跨版本 API 兼容梯与表达式配置），勿使用来历不明的配置文件，外部单位交付时建议随附校验或锁定 |
 | `nx_extrude_params.json` | 运行时记忆 | 交互记忆持久化，由程序自动维护；参数错乱可直接删除重建 |
 | `batch_smoke.py` | 测试入口 | NX 内端到端冒烟脚本（免命令行版） |
 | `AGENTS.md` | 契约 | 项目 AI 开发契约（铁律 / 红线 / 验证门禁），所有 AI 助手唯一标准入口 |
-| `AUDIT-SPEC.md` | 契约 | 审计规格，与 AGENTS.md 同批修订 |
+| `.agents/AUDIT-SPEC.md` | 契约 | 审计规格，与 AGENTS.md 同批修订 |
 | `Makefile` | 门禁 | `make verify` 聚合门禁（fmt-check / lint / test / build） |
 | `ruff.toml` | 门禁 | Ruff 检查配置（NX 旧版 Python 风格豁免） |
 | `commitlint.config.js` | 提交规范 | Conventional Commits 提交信息校验 |
@@ -68,8 +68,8 @@
 | `test/fixtures/` | 资源 | 回归测试图纸（`3Dtest.dxf`、`sample_layers.dxf` 等） |
 | `tools/` | 工具 | `nx_zero_ref.py`（标准件归零工具）、`probe_nx_compat.py`（NX 版本兼容性探测）、`probe_jrtfbx.py`（JRTFBX 标记层离线体检，不依赖 NX）、`NX向下兼容工具/` |
 | `logs/` | 产出 | 运行生成的 `.dlx` / 报告 / 调试日志；可随时删除，下次运行自动重建 |
-| `docs/` | 文档 | 使用手册、验收手册、NX10-12 兼容性评估报告、AGENTS.md 副本 |
-| `enforcement/` | 脚手架 | pre-commit / commitlint / CI 工作流模板（见 `enforcement/README.md`） |
+| `docs/` | 文档 | 使用手册、验收手册；本地《移植手册》不入库 |
+| `.agents/enforcement/` | 脚手架 | pre-commit / commitlint / CI 工作流模板（见 `.agents/enforcement/README.md`） |
 
 ---
 
@@ -126,7 +126,7 @@ make verify
 make verify CHANGED="$(git diff --name-only)"
 ```
 
-门禁命令定义在 `Makefile`，与 `AGENTS.md` §2 登记保持一致。lint 走 ruff，存量 321 条历史豁免条目（F401 / I001 等 NX10/12 旧版 Python 风格）按增量仅查本次改动文件，**新增代码必须 0 问题**。test 走 `--selftest`（当前 273 项断言全绿）。
+门禁命令定义在 `Makefile`，与 `AGENTS.md` §2 登记保持一致。lint 走 ruff，存量 322 条历史豁免条目（F401 / I001 等 NX10/12 旧版 Python 风格）按增量仅查本次改动文件，**新增代码必须 0 问题**。test 走 `--selftest`（当前 292 项断言全绿）。
 
 > 主干保护（`main`）强制 PR 合入 + `gate` CI 必须通过，**禁止未经 PR 直接 push 主干**（见 `AGENTS.md` §2 与 `enforcement/gate.yml`）。
 
@@ -138,11 +138,13 @@ make verify CHANGED="$(git diff --name-only)"
 |---|---|
 | [`docs/使用手册.md`](docs/使用手册.md) | CAD3D 主流程的标准三段式操作 + 图纸规范 + 参数配置 |
 | [`docs/验收手册.md`](docs/验收手册.md) | 验收测试用例与判定标准 |
-| [`docs/NX10-12兼容性评估报告.md`](docs/NX10-12兼容性评估报告.md) | NX 10/12 与 2312 跨版本兼容差异与适配结论 |
 | [`AGENTS.md`](AGENTS.md) | AI 开发契约（铁律 / 红线 / 行为契约 / 验证门禁）—— 所有 AI 助手唯一标准入口 |
-| [`AUDIT-SPEC.md`](AUDIT-SPEC.md) | 审计规格（与 AGENTS.md 同批修订） |
-| [`enforcement/README.md`](enforcement/README.md) | 执法脚手架四步安装与日常使用 |
+| [`.agents/AUDIT-SPEC.md`](.agents/AUDIT-SPEC.md) | 审计规格（与 AGENTS.md 同批修订） |
+| [`.agents/enforcement/README.md`](.agents/enforcement/README.md) | 执法脚手架四步安装与日常使用 |
 | [`tools/`](tools/) | NX 向下兼容工具与标准件归零工具的源码与说明 |
+
+> 老旧机器移植（NX2312 开发机 → NX 10/12）见本地《移植手册》`docs\移植手册.md` ——
+> 该文件不入版本库，随移植包单独交付。
 
 ---
 
