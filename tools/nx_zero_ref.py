@@ -588,68 +588,6 @@ def _find_open_part(session, path):
     return None, None
 
 
-def _activate(session, ufs, part):
-    """设为显示+工作部件; 各自失败仅记录不中断。"""
-    try:
-        session.Parts.SetDisplay(part)
-    except Exception:
-        try:
-            ufs.Part.SetDisplayPart(part.Tag)
-        except Exception as ex:
-            _log(session, "  设为显示部件失败(忽略): %s" % ex)
-    try:
-        session.Parts.SetWork(part)
-        return
-    except Exception as ex:
-        _log(session, "  SetWork 失败, 改试 UF: %s" % ex)
-    try:
-        ufs.Assem.SetWorkPart(part.Tag)
-    except Exception as ex:
-        _log(session, "  UF SetWorkPart 失败(忽略): %s" % ex)
-
-
-def open_part(session, ufs, path):
-    """打开部件并设为显示/工作部件; 已加载的直接复用; 三条通道逐级尝试。"""
-    part, conflict = _find_open_part(session, path)
-    if conflict:
-        raise RuntimeError(conflict)
-    if part is not None:
-        _activate(session, ufs, part)
-        _log(session, "  (会话中已加载, 直接复用)")
-        return part
-    for method_name in ("OpenBasePart", "OpenDisplay"):
-        method = getattr(session.Parts, method_name, None)
-        if method is None:
-            continue
-        try:
-            ret = method(path)
-        except Exception:
-            continue
-        p = ret[0] if isinstance(ret, tuple) else ret
-        if p is None:
-            continue
-        if isinstance(ret, tuple) and len(ret) > 1 and ret[1] is not None:
-            try:
-                ret[1].Dispose()
-            except Exception:
-                pass
-        _activate(session, ufs, p)
-        _log(session, "  (经 Parts.%s 打开)" % method_name)
-        return p
-    ret = ufs.Part.Open(path)
-    tag = ret[0] if isinstance(ret, tuple) else ret
-    try:
-        ufs.Part.SetDisplayPart(tag)
-    except Exception:
-        pass
-    p = session.Parts.Display
-    if p is None:
-        raise RuntimeError("UF 打开后拿不到显示部件对象")
-    _activate(session, ufs, p)
-    _log(session, "  (经 UF Part.Open 打开)")
-    return p
-
-
 def close_part(session, ufs, part):
     """关闭部件: NXOpen 路线失败则退 UF 路线; 全失败仅日志。"""
     if part is None:
@@ -715,11 +653,6 @@ def _name_bodies(bodies, stem):
             b.Name = "%s%s#%d" % (GROUP_PREFIX, stem, i)
         except Exception:
             pass
-
-
-def _make_group(session, ufs, bodies, name):
-    """已停用: UF 分组接口参数对不上, 标识用体名(ZERO_件名#序号)即可。"""
-    return False
 
 
 def _move_bodies_to_layer(session, work_part, bodies):
