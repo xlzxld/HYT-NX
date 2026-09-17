@@ -15,7 +15,11 @@ CHANGED ?=
 # `...py; else skip; fi`，/bin/sh 报 Syntax error、make 退 2 → fmt-check 恒定
 # 失败、gate CI 恒红（2026-09-17 用 dash 逐字节复现坐实；main 两次 CI 同样红）。
 # 故统一把换行归一化成空格：CHANGED_LINE 才是可安全展开进 shell 的单行形态。
+# ⚠ define 的值 = 中间各行 + 换行，且 make 会去掉**最后一个**换行 —— 下面必须
+#   留**两个**空行，_NL 才是一个换行符；只留一个空行得到空串，subst 静默失效
+#   （2026-09-17 踩过：CI 仍报同样的错，仅行号从 Makefile:18 变成 :28）。
 define _NL
+
 
 endef
 CHANGED_LINE = $(subst $(_NL), ,$(CHANGED))
