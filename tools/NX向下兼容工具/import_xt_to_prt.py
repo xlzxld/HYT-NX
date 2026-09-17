@@ -58,18 +58,49 @@ def is_ascii(s):
         return False
 
 
+def _safe_argv():
+    """(纯逻辑) 安全取命令行参数。
+
+    NX 界面执行日记（文件 -> 执行 -> NX Open）时，宿主给进来的不是真 sys 模块，
+    sys.argv 根本不存在，直接引用会抛：
+        AttributeError: 'module' object has no attribute 'argv'
+    （2026-09-16 NX10 实机报的就是这个）。argv 在这里只是"可选地手指定源目录"，
+    取不到就当空，不影响主流程。
+    """
+    try:
+        a = getattr(sys, "argv", None)
+        return list(a) if a else []
+    except Exception:
+        return []
+
+
 def script_dir():
+    """定位本脚本所在目录。
+
+    三级兜底 —— NX 界面执行时不保证有 __file__：
+      1) __file__（run_journal.exe 批量执行、或启动器注入时都有）
+      2) 从当前目录逐级向上找一个"含 xt 子目录"的目录
+      3) 当前目录
+    """
     try:
         d = os.path.dirname(os.path.abspath(__file__))
         if d and os.path.isdir(d):
             return d
     except Exception:
         pass
+    d = os.path.abspath(".")
+    for _ in range(4):
+        if os.path.isdir(os.path.join(d, "xt")):
+            return d
+        nd = os.path.dirname(d)
+        if nd == d:
+            break
+        d = nd
     return os.path.abspath(".")
 
 
 def src_dir():
-    for a in sys.argv[1:]:
+    for a in _safe_argv()[1:]:
         if os.path.isdir(a):
             return os.path.abspath(a)
     d = script_dir()
