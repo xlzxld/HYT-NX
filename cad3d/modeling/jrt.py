@@ -30,11 +30,11 @@ from cad3d.modeling.stdparts import _pick_target, _bool_feature
 from cad3d.geom.topo import (
     find_chains, _merge_open_chains, _merge_marker_lines, _chain_connectors,
     _chain_outlet_mids, _contour_outlet_mids, _bbox, _fbx_anchor_points,
-    _marker_mids_for_chains
+    _marker_mids_for_chains, _stub_line_indices
 )
 from cad3d.geom.eval import (
-    _faces_healthy, _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides,
-    _flush_blend_allowed
+    _faces_healthy, _dome_body_ok, _blend_ok, _blend_effective, _conn_face_pick,
+    _jrt_sides, _flush_blend_allowed, _flush_start_r
 )
 
 
@@ -205,7 +205,7 @@ def _body_volume(work_part, body):
 def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
                           r0, r_min, r_step, log, feat_name, label,
                           dome=False):
-    """带异形检测的端面倒圆: R 从 r0 起, 异形/失败撤销降 R 重试。"""
+    """带异形检测的端面倒圆: R 从 r0 起, 异形/体积异常/空转/失败撤销降 R 重试。"""
     import NXOpen
     r = float(r0)
     step = max(float(r_step), 1e-4)
@@ -225,12 +225,14 @@ def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
         v1 = _body_volume(work_part, body) if feat is not None else None
         okh = True
         why = ""
+        eff = True
         if feat is not None:
             rows_all = _body_face_rows(uf, body)
             okh, why = _faces_healthy(rows_all)
             if okh and dome:
                 okh, why = _dome_body_ok(rows_all)
-        if feat is not None and _blend_ok(v0, v1) and okh:
+            eff = _blend_effective(v0, v1)
+        if feat is not None and _blend_ok(v0, v1) and eff and okh:
             if v0 is not None and v1 is not None and v0 > 0:
                 log("  %s: R%.4g 圆角做成(体积 %.1f→%.1f, 面检查正常)。"
                     % (label, r, v0, v1))
@@ -238,6 +240,11 @@ def _edge_blend_end_retry(session, work_part, uf, body, z_plane,
         if feat is not None and not _blend_ok(v0, v1):
             log("  %s: R%.4g 时体积不对(%.1f→%.1f), 撤销, 换小一点再试。"
                 % (label, r, v0, v1))
+        elif feat is not None and not eff:
+            # R 过大被 NX 裁成一条缝(体积几乎没变)也要留痕并降 R——只查"掉太多"
+            # 会把这种空转圆角当成功放行(2026-09-17 实机)。
+            log("  %s: R%.4g 时圆角几乎没啃到料(体积 %.1f→%.1f), 撤销, "
+                "换小一点再试。" % (label, r, v0, v1))
         elif feat is not None:
             log("  %s: R%.4g 时面不对(%s), 撤销, 换小一点再试。" % (label, r, why))
         else:
@@ -423,6 +430,22 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         stats["JRT"]["note"] = "该层没有线"
         log("【加热条】JRT 层上没有线条, 跳过。")
         return []
+    # 画过头的短线(压在导轨线上的重复描画尾巴)先剔除, 再接链: 它会跟长线
+    # 共端点形成三岔, 连链时被当岔路把闭链拆开, 整根条不建模; 而 NX 里手动
+    # 拉伸照样成环(2026-09-17 RT-26031 实图: 4 根只出 3 根一案)。
+    _stub_rows = _stub_line_indices(ents)
+    if _stub_rows:
+        _nx_jrt = list(nx_curves.get("JRT") or [])
+        if len(_nx_jrt) == len(ents):
+            _keep = [i for i in range(len(ents))
+                     if i not in {r[0] for r in _stub_rows}]
+            ents = [ents[i] for i in _keep]
+            nx_curves["JRT"] = [_nx_jrt[i] for i in _keep]
+            log("【加热条】有 %d 条短线画过了头(压在长线上, 最长 %.3gmm), "
+                "已忽略——条外形照常闭合。" % (len(_stub_rows),
+                max(r[2] for r in _stub_rows)))
+        else:
+            log("【加热条】有短线画过了头, 但曲线对应关系不齐, 这次不动它。")
     # JRTFBX(标记层)并入条轮廓: 老图纸槽口在 JRT 层张开, 要靠 JRTFBX 那几条
     # 线把缺口封上才能闭合成条; 新图纸 JRT 层自己已闭合, 标记线与 JRT 线完全
     # 重合就不重复拼(防双重描线坏链)。下标一律用标记层里的原始下标, 否则
@@ -511,6 +534,17 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
         for w in fbx_ignore:
             log("【加热条】%s。" % w)
     _gate = 2.5 * max(float(jp.get("blend_r", 3.9)), 1.0) + 2.0
+    r_min_all = float(jp.get("r_min", 3.7))
+    r_step_all = max(float(jp.get("r_step", 0.1)), 1e-6)
+    # 齐平端起试半径按条高收小: 条高 7.5 时从 R3.7 起(用户手工值)。R 太大时
+    # 齐平端圆角会跟另一端圆角碰头, NX 会把它裁成一条缝——体积几乎不变、面上
+    # 还查不出毛病(2026-09-17 实机), 与其让降级循环空跑两轮, 不如从一开始就
+    # 从放得下的 R 起试; 放不下时下面的降级循环照样继续降。
+    r_flush0 = _flush_start_r(float(jp.get("blend_r", 3.9)), r_min_all,
+                              abs(z_end - z_start))
+    if abs(r_flush0 - float(jp.get("blend_r", 3.9))) > 1e-9:
+        log("【加热条】齐平端倒圆从 R%.4g 起(条高 %.4g, 再大会跟嵌入端圆角"
+            "碰头, 被 NX 裁成一条缝)。" % (r_flush0, abs(z_end - z_start)))
 
     strips = []
     for ci, chain in enumerate(closed):
@@ -603,8 +637,6 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                 continue
             body = bodies[0]
 
-            r_min_all = float(jp.get("r_min", 3.7))
-            r_step_all = max(float(jp.get("r_step", 0.1)), 1e-6)
             embed_ok = False
             try:
                 _f, new_faces, _r_used = _edge_blend_end_retry(
@@ -642,7 +674,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
                 log("【加热条】%s: 嵌入端圆角或删面没做成, 齐平端就不倒圆了"
                     "(这端留直角)。" % _who)
             else:
-                _r_start = float(jp.get("blend_r", 3.9))
+                _r_start = r_flush0
                 try:
                     _f2, nf2, used = _edge_blend_end_retry(
                         session, work_part, uf, body, z_flush,

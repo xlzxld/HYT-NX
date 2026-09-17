@@ -66,10 +66,15 @@ def _flush_start_r(blend_r, r_min, thickness):
     """(纯逻辑, 可离线测) 齐平端倒圆起试半径 = min(边倒圆R, 条厚/2−0.05),
     不低于 r_min。
 
-    【当前未接入流水线】v1.26 的逐R对照实验(exp_r)证伪了"2R>条厚即异形"
-    这一前提(R3.7 反而产样条面、R3.9 全解析), 厚度预防式起试半径已回退,
-    build_jrt 现在直接从边倒圆R 起试(靠体积/面体检网络兜底降R)。
-    保留本函数+自测供后续再实验, 调用侧接入前先确认前提成立。
+    【v2.12 起已接入 build_jrt】接入的用途**不是**"按厚度预判异形", 而是
+    **防止齐平端圆角跟嵌入端圆角碰头**——R 大过条高一半时 NX 会把圆角裁成
+    一条缝(体积几乎不变、面上还查不出毛病, 2026-09-17 实机)。与其让降级
+    循环在放不下的 R 上白跑两轮, 不如一开始就取放得下的 R; 真放不下时
+    下游的降级循环照样继续往下减。
+    与 v1.26 的 exp_r 结论**不冲突**: 那次证伪的是"2R>条厚即异形"这个
+    **判据**(实测 R3.7 反而产样条面、R3.9 全解析), 本函数现在也不做任何
+    异形预判, 只负责定起试值; 异形/体积异常/空转仍由 _blend_ok /
+    _blend_effective / _dome_body_ok 三道体检兜底降 R。
     """
     return max(float(r_min),
                min(float(blend_r), float(thickness) / 2.0 - 0.05))
@@ -100,6 +105,20 @@ def _blend_ok(vol_before, vol_after):
     if vol_after <= 0.0:
         return False
     return vol_after >= vol_before * 0.75
+
+
+def _blend_effective(vol_before, vol_after):
+    """(纯逻辑, 可离线测) 倒圆是不是真的啃掉了料(防空转/防被裁成缝)。
+
+    实机实证(2026-09-17 RT-26031): 端面整圈倒圆正常掉体约 11%
+    (22080.7→19648.8); 而 R 过大时 NX 会把圆角裁成一条缝——体积只掉
+    0.007%(19678.2→19676.8), 面体检还查不出毛病, 只有体积能抓住它。
+    阈值取 1%: 两个实测样本(11% / 0.007%)两边各留 10 倍余量。
+    体积测不到不拦(保持旧行为)。
+    """
+    if vol_before is None or vol_after is None or vol_before <= 0:
+        return True
+    return (vol_before - vol_after) >= vol_before * 0.01
 
 
 def _conn_face_pick(face_rows, conn_mids, r_ref):

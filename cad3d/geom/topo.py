@@ -402,6 +402,79 @@ def _merge_open_chains(opens, ents, tol=1.0, bridge_max=1.0):
     return closed_extra, bridge_jobs, open_logs
 
 
+def _stub_line_indices(ents, tol=LOOP_TOL, short_max=5.0, min_ratio=3.0):
+    """(纯逻辑, 可离线测) 找"画过头的短直线"(压在长线上的重复描画尾巴)。
+
+    实图(2026-09-17 RT-26031 加热条)实证: 4 根条里 1 根的导轨线画到切点后
+    又顺原方向多画了 3mm 压在导轨线上——它跟长线共端点(三岔接点), 连链时
+    被当成岔路, 闭链就此拆开、整根条不建模; 而 NX 里手动拉伸照样成环。
+    判据四重(缺一不可):
+      ① 短线(≤short_max)、非零长, 且另一端悬空(附近没有任何别的线端点);
+      ② 接点上是"三岔及以上"(≥3 条线的端点重合, 含自己);
+      ③ 同一接点有一条明显更长的直线(≥短线长 × min_ratio);
+      ④ 短线与长线从接点出发同向(cos>0.999, 即短线压在长线上)。
+    只剔这种重叠尾巴; 条轮廓上正常的短段(2 岔接点、横向岔线)一律不动。
+    返回 [(短线下标, 长线下标, 短线长), ...] 按下标升序。
+    """
+    def _ends(e):
+        if e.kind == "line":
+            return (e.p1, e.p2)
+        if e.kind == "arc":
+            return ((e.c[0] + e.r * math.cos(e.a0),
+                     e.c[1] + e.r * math.sin(e.a0)),
+                    (e.c[0] + e.r * math.cos(e.a1),
+                     e.c[1] + e.r * math.sin(e.a1)))
+        return ()
+
+    ep = []
+    for i, e in enumerate(ents):
+        for p in _ends(e):
+            ep.append((i, p))
+
+    def _peers(p, exclude):
+        return [(j, q) for (j, q) in ep
+                if j != exclude
+                and math.hypot(q[0] - p[0], q[1] - p[1]) <= tol]
+
+    found = []
+    for i, e in enumerate(ents):
+        if e.kind != "line":
+            continue
+        L = math.hypot(e.p2[0] - e.p1[0], e.p2[1] - e.p1[1])
+        if L <= 1e-9 or L > short_max:
+            continue
+        for near, far in ((e.p1, e.p2), (e.p2, e.p1)):
+            at_j = _peers(near, i)
+            if len({j for j, _q in at_j}) < 2:
+                continue                     # 不是三岔接点(含自己 = 3 条)
+            if _peers(far, i):
+                continue                     # 远端有接线: 不是画过头的尾巴
+            vx, vy = far[0] - near[0], far[1] - near[1]
+            vl = math.hypot(vx, vy)
+            host = None
+            for j, _q in at_j:
+                e2 = ents[j]
+                if e2.kind != "line":
+                    continue
+                L2 = math.hypot(e2.p2[0] - e2.p1[0], e2.p2[1] - e2.p1[1])
+                if L2 < L * min_ratio:
+                    continue
+                other = (e2.p2 if math.hypot(e2.p1[0] - near[0],
+                                             e2.p1[1] - near[1]) <= tol
+                         else e2.p1)
+                wx, wy = other[0] - near[0], other[1] - near[1]
+                wl = math.hypot(wx, wy)
+                if wl < 1e-9:
+                    continue
+                if (vx * wx + vy * wy) / (vl * wl) > 0.999:
+                    host = j
+                    break
+            if host is not None:
+                found.append((i, host, L))
+                break
+    return sorted(found)
+
+
 def _center_seen(grid, x, y, tol=LOOP_TOL):
     """量化网格 + 3×3 邻桶判同心: 已见返回 True, 未见登记并返回 False。
 
