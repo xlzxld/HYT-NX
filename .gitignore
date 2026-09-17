@@ -49,9 +49,6 @@ verify*.txt
 # 本地交付手册（随移植包单独交付，不入版本库）
 docs/移植手册.md
 
-# 移植打包工具（待移植验收通过后再定是否入库）
-tools/移植工具/
-
 # macOS 系统元数据
 .DS_Store
 */.DS_Store

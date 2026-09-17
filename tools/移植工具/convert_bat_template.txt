@@ -1,0 +1,460 @@
+@echo off
+chcp 936 >nul
+
+rem ==================================================================
+rem  【出错不闪退】先把自己塞进一个常驻窗口。
+rem  双击运行时，bat 里一旦有语法错/命令错，cmd 会立刻终止整批、窗口跟着关闭，
+rem  用户什么都看不到（2026-09-16 真实踩过：手工模式那段 echo 里有个没转义的
+rem  英文右括号，把 else（ ） 块提前闭合，整片解析崩掉、窗口闪一下就没了）。
+rem  包一层 cmd /k 之后，不管跑完还是报错，窗口都会留着让人看。
+rem  自动化跑时设 HYT_NOPAUSE=1，会跳过这层包装。
+rem ==================================================================
+if not defined HYTINNER if not "%HYT_NOPAUSE%"=="1" (
+  set "HYTINNER=1"
+  cmd /k ""%~f0" %*"
+  exit /b
+)
+if defined HYTINNER set "HYTINNER="
+
+setlocal enabledelayedexpansion
+title HYT-NX 标准件降版本（在老旧 NX 机器上运行）
+
+rem ==================================================================
+rem  把 convert\xt\*.x_t 转成"本机能打开的版本"的 .prt
+rem
+rem  【为什么必须在本机跑】.prt 的版本 = 存它的那个 NX 的版本。
+rem  x_t 是版本中立的中间格式，在本机导入，产出的就是本机版本；
+rem  在更新的 NX 上导入只会得到更新的 prt，老 NX 照样打不开。
+rem
+rem  【本机装了多个 NX 时：必须选最低版本】
+rem  NX 的 .prt 只向下兼容：
+rem      NX10 做的 prt  -^>  NX10 和 NX12 都能打开   （安全）
+rem      NX12 做的 prt  -^>  只有 NX12 能打开，NX10 打不开
+rem  本脚本绝不替你猜：列出找到的每个 NX、标出最低版本、等你确认。
+rem
+rem  【本文件必须保存成 GBK（ANSI） + CRLF】
+rem  cmd.exe 按本地代码页（中文 Windows = 936/GBK）逐字节读 .bat，
+rem  存成 UTF-8 会让解析器丢同步，报满屏
+rem      "'EV' 不是内部或外部命令"
+rem  所以本文件用 GBK 存，并在开头 chcp 936 把控制台也钉在 GBK。
+rem  打包时 make_portable_pkg.py 会强制校验编码，不合格当场终止。
+rem ==================================================================
+
+set "PKG=%~dp0"
+set "CONVERT=%PKG%convert"
+set "JOURNAL=%CONVERT%\import_xt_to_prt.py"
+set "LOG=%CONVERT%\import_log.txt"
+set "USED=%CONVERT%\used_nx.txt"
+set "STDPARTS=%PKG%stdparts"
+set "LAUNCHER=%CONVERT%\_run_in_nx.py"
+set "CN=0"
+
+echo ============================================================
+echo  HYT-NX ：把标准件转成本机能打开的版本
+echo ============================================================
+echo  包位置 ：%PKG%
+echo.
+echo  重要 ：请把本包放在【全英文】路径下，例如 C:\nxpkg\
+echo         路径里不要有中文，否则 NX10 会报"编码"错误。
+echo.
+
+if not exist "%JOURNAL%" (
+  echo [错误] 没找到 convert\import_xt_to_prt.py
+  echo        请先把压缩包【完整解压】再运行本脚本。
+  goto :the_end
+)
+
+rem ==================================================================
+rem  第 1 步：找出本机所有 NX（有 NXBIN\run_journal.exe 或 UGII\ugraf.exe 才算）
+rem ==================================================================
+echo [1/4] 正在查找本机安装的 NX ...
+
+rem 0） 如果不想让脚本找，可以自己指定：
+rem       set NX_BASE=C:\Siemens\NX 10.0
+if defined NX_BASE (
+  call :add_cand "%NX_BASE%"
+  if "!CN!"=="0" (
+    echo [错误] NX_BASE 指向 "%NX_BASE%"
+    echo        但这个目录下既没有 NXBIN\run_journal.exe
+    echo        也没有 UGII\ugraf.exe ，看起来不是 NX 安装目录。
+    goto :the_end
+  )
+  rem 这里必须补上 CHOSEN/KIND，否则后面会拿到空值
+  rem （2026-09-16 实测踩过：直接 goto :have_runner 导致 "[2/4] 将使用 ：" 后面空白）
+  set "CHOSEN=!C1!"
+  set "KIND=!K1!"
+  goto :resolve_runner
+)
+
+rem 1） 当前窗口的环境变量
+if defined UGII_BASE_DIR call :add_cand "%UGII_BASE_DIR%"
+
+rem 2） 注册表里的 UGII_BASE_DIR（变量可能是别的用户设的，或本窗口启动后才设的）
+for /f "skip=2 tokens=2,*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v UGII_BASE_DIR 2^>nul') do call :add_cand "%%B"
+for /f "skip=2 tokens=2,*" %%A in ('reg query "HKCU\Environment" /v UGII_BASE_DIR 2^>nul') do call :add_cand "%%B"
+
+rem 3） 逐个盘符扫描，三层，从省事的开始：
+rem      <盘>:\NX*                        （第 1 层）
+rem      <盘>:\<任意顶层目录>\NX*          （第 2 层，父目录不限）
+rem      <盘>:\Program Files*\Siemens\<NX*> 等已知 PLM 根（第 3 层）
+rem    注意：不能用 for /d，它不支持路径中间的通配符且会静默返回空。
+rem    通用第 3 层也不能做：实测会撞 WinSxS，23690 次目录调用。
+for %%V in (C D E F G H I J) do call :scan_drive "%%V:\"
+
+rem 3b） 装在很刁钻的路径下时：先 set NX_DEEP=1 再运行本脚本。
+rem     会用 dir /s 全盘递归找，慢（实测单盘约 80 秒），但是终极兜底。
+if not defined NX_DEEP goto :after_scan
+echo       已启用全盘搜索（NX_DEEP=1），可能要几分钟，请耐心等 ...
+for %%V in (C D E F G H I J) do (
+  for /f "delims=" %%S in ('dir /b /s /ad "%%V:\*NX*" 2^>nul') do call :add_cand "%%S"
+)
+
+:after_scan
+if "!CN!"=="0" goto :ask_manual
+
+rem ==================================================================
+rem  第 2 步：让操作员确认用哪个 NX —— 永远不自动选
+rem ==================================================================
+echo.
+echo       找到 !CN! 个 NX：
+echo.
+for /l %%I in (1,1,!CN!) do (
+  echo         %%I^) !C%%I!
+  if "!K%%I!"=="2" echo              （该 NX 里没有 run_journal.exe，需要在该 NX 里手工执行日记）
+)
+echo.
+
+call :pick_lowest
+if defined BEST echo       版本最低的是 ： !BEST!^)  !C%BEST%!
+echo.
+echo       NX 的 .prt 只向下兼容：
+echo          NX10 做的 prt  -^>  NX10 和 NX12 都能打开
+echo          NX12 做的 prt  -^>  只有 NX12 能打开，NX10 打不开
+echo       所以请回答【版本最低】的那个，除非你有明确理由不这么做。
+echo       如果本机任何地方还要用 NX10，回答 NX12 就会把 NX10 那边废掉。
+echo.
+if "!CN!"=="1" (
+  echo       另外 ：如果你确信本机还装了别的 NX 而上面没列出来，
+  echo       请不要直接接受这一条，改为直接输入那个 NX 的完整路径。
+  echo       找路径的办法 ：
+  echo          - 右键该 NX 的桌面/开始菜单快捷方式，看"目标"和"起始位置"
+  echo          - 或打开那个 NX，用 帮助 -^> 关于 NX 看版本号，
+  echo            再去各个盘符（C:、D: ...）找同名文件夹
+  echo.
+)
+
+:prompt_pick
+set "PICK="
+set /p "PICK=请选择 NX（输入编号，或直接输入 NX 安装目录的完整路径；直接回车＝放弃）："
+if not defined PICK (
+  echo.
+  echo [已放弃] 你没有输入任何内容。
+  goto :the_end
+)
+
+set "ISNUM="
+for /l %%I in (1,1,!CN!) do if "!PICK!"=="%%I" set "ISNUM=1"
+set "CHOSEN="
+set "KIND="
+if defined ISNUM (
+  set "CHOSEN=!C%PICK%!"
+  set "KIND=!K%PICK%!"
+)
+if not defined CHOSEN call :add_cand "!PICK!"
+if not defined CHOSEN if defined ISNUM goto :prompt_pick
+if not defined CHOSEN (
+  echo.
+  echo [错误] "!PICK!" 既不是上面列出的编号，也不是一个 NX 安装目录
+  echo         （目录下需要有 NXBIN\run_journal.exe 或 UGII\ugraf.exe）
+  goto :prompt_pick
+)
+rem 输入的是路径时，KIND 取刚加进来的那一条
+if not defined KIND set "KIND=!K%CN%!"
+
+if "!CN!" GTR "1" if defined ISNUM if defined BEST if not "!PICK!"=="!BEST!" (
+  echo.
+  echo [提醒] 你选的 !PICK!^) 不是找到的最低版本（最低的是 !BEST!^)。
+  echo        新版本 NX 做的模型，旧版本 NX 打不开。
+  echo        如果还有别的机器要用旧版 NX 打开这些模型，那边会失败。
+)
+
+rem 找出真正要调用的 run_journal.exe；找不到就转手工模式
+goto :resolve_runner
+
+:ask_manual
+echo.
+echo       没能自动找到任何 NX。
+echo.
+echo       请输入 NX 的安装目录 —— 就是里面有 NXBIN 或 UGII 的那一层。
+echo       例如 ：C:\Siemens\NX 10.0
+echo       直接回车＝放弃。
+echo.
+echo       找路径的办法 ：
+echo         1^) 右键 NX 的桌面快捷方式 -^> 属性，看"目标"/"起始位置"那一行
+echo         2^) 或打开那个 NX，用 帮助 -^> 关于 NX 看版本号，
+echo            再去各个盘符找同名文件夹
+echo         3^) 都不行 ：先 set NX_DEEP=1 再运行本脚本，会做全盘搜索（几分钟）
+echo.
+set "NXD="
+set /p "NXD=NX 安装目录 ："
+if not defined NXD (
+  echo.
+  echo [已放弃] 你没有输入任何内容。
+  goto :the_end
+)
+call :add_cand "!NXD!"
+if "!CN!"=="0" (
+  echo.
+  echo [错误] "!NXD!" 下面没有 NXBIN\run_journal.exe，也没有 UGII\ugraf.exe
+  goto :the_end
+)
+set "CHOSEN=!C1!"
+set "KIND=!K1!"
+goto :resolve_runner
+
+rem ==================================================================
+rem  统一在这里决定"能不能自动导入"（三条入口都走这里，别再各写一份）
+rem  KIND=1 -> 找 run_journal.exe（NXBIN 优先，其次 UGII）
+rem  KIND=2 或没找到 -> RUNNER 留空 = 手工模式，提示用户在 NX 界面跑日记
+rem ==================================================================
+:resolve_runner
+set "RUNNER="
+if "!KIND!"=="1" (
+  if exist "!CHOSEN!\NXBIN\run_journal.exe" set "RUNNER=!CHOSEN!\NXBIN\run_journal.exe"
+  if not defined RUNNER if exist "!CHOSEN!\UGII\run_journal.exe" set "RUNNER=!CHOSEN!\UGII\run_journal.exe"
+)
+
+rem ==================================================================
+rem  第 3 步：导入；第 4 步：把产出的 .prt 拷回 stdparts
+rem ==================================================================
+:have_runner
+echo.
+if defined RUNNER (
+  echo [2/4] 将使用 ：!CHOSEN!
+  echo       导入程序 ：%RUNNER%
+) else (
+  echo [2/4] 将使用 ：!CHOSEN!
+  echo       该 NX 里没有 run_journal.exe（NX 10 及更早版本常常没有），
+  echo       所以这一步需要你在 NX 界面里手工执行一次日记。
+)
+> "%USED%" echo !CHOSEN!
+echo       （已记录到 convert\used_nx.txt）
+echo.
+
+echo [3/4] 开始把 .x_t 导入并另存为 .prt ...
+if not defined RUNNER goto :manual_import
+echo       NX 会在后台干活，可能要几分钟，请不要关窗口。
+echo.
+"%RUNNER%" "%JOURNAL%"
+goto :after_import
+
+rem ------------------------------------------------------------------
+rem  手工模式：NX 10 及更早版本没有 run_journal.exe，只能在 NX 界面里执行日记。
+rem  但 NX 界面执行时**不给 __file__、也不保证有 sys.argv**
+rem  （2026-09-16 NX10 实测报 "'module' object has no attribute 'argv'"），
+rem  原脚本因此找不到自己所在目录、找不到 xt\。
+rem  所以这里现场生成一个启动器，把绝对路径写死给它，让原脚本自己去 exec。
+rem  注意：这几行必须放在 （ ） 块**外面**，否则行内的英文括号会把块切断。
+rem ------------------------------------------------------------------
+:manual_import
+> "%LAUNCHER%" echo # Auto-generated by the down-version script. Do not edit.
+>> "%LAUNCHER%" echo # It exists because the NX GUI journal host provides neither
+>> "%LAUNCHER%" echo # __file__ nor sys.argv, so the real script cannot locate itself.
+>> "%LAUNCHER%" echo import io
+>> "%LAUNCHER%" echo import os
+>> "%LAUNCHER%" echo CONVERT_DIR = r"%CONVERT%"
+>> "%LAUNCHER%" echo _real = os.path.join(CONVERT_DIR, "import_xt_to_prt.py")
+>> "%LAUNCHER%" echo _g = {"__file__": _real, "__name__": "__main__"}
+>> "%LAUNCHER%" echo with io.open(_real, encoding="utf-8") as _f:
+>> "%LAUNCHER%" echo     _src = _f.read()
+>> "%LAUNCHER%" echo exec(compile(_src, _real, "exec"), _g)
+echo.
+echo       请按下面四步操作 ：
+echo         1^) 打开这个 NX  ：!CHOSEN!
+echo         2^) 菜单 ：文件 -^> 执行 -^> NX Open
+echo         3^) 选中这个脚本（注意是下面这个，不是 import_xt_to_prt.py）：
+echo            %LAUNCHER%
+echo            ^(它是本脚本刚生成的启动器，里面写死了本包的绝对路径^)
+echo         4^) 等它跑完（几分钟），回到本窗口按任意键继续
+echo.
+echo       （它会把 14 个 x_t 逐个导入、另存为本机版本的 prt，
+echo         放在 convert\ 下新建的一个文件夹里，日志是 convert\import_log.txt）
+echo.
+if not "%HYT_NOPAUSE%"=="1" pause
+
+:after_import
+echo.
+
+if not exist "%LOG%" (
+  echo [错误] 完全没有生成 import_log.txt
+  echo        说明导入没跑起来，stdparts\ 一个字都没动。
+  echo        重试办法 ：打开 NX，菜单 文件 -^> 执行 -^> NX Open ，
+  echo        然后选中  %LAUNCHER%
+  goto :the_end
+)
+
+echo       ---- import_log.txt 摘要 ----
+findstr /c:"DONE" "%LOG%"
+findstr /c:"FAIL" "%LOG%"
+echo       ----------------------------
+echo.
+
+findstr /c:"fail=0" "%LOG%" >nul
+if errorlevel 1 (
+  echo [失败] 导入日志里有失败项，请看上面的几行和这个文件 ：
+  echo        %LOG%
+  echo        stdparts\ 没有被改动。处理完再运行本脚本。
+  goto :the_end
+)
+
+echo [4/4] 正在把转换好的 .prt 拷进 stdparts\ ...
+if not exist "%STDPARTS%" mkdir "%STDPARTS%"
+set /a COPIED=0
+rem 只拷真正的产物；跳过 NX 用的 ASCII 暂存目录（里面可能留着 i000.prt 这种垃圾）。
+rem 注意 ：这里不能用 findstr 过滤，实测 "findstr /v /i "\_tmp\"" 根本拦不住
+rem （findstr 的正则里反斜杠是转义符）。所以用纯 cmd 的字符串替换。
+for /f "delims=" %%F in ('dir /b /s "%CONVERT%\*.prt" 2^>nul') do (
+  set "PP=%%~fF"
+  if /i "!PP:_tmp=!"=="!PP!" (
+    copy /y "%%~fF" "%STDPARTS%\%%~nxF" >nul
+    if not errorlevel 1 set /a COPIED+=1
+  )
+)
+echo       已拷贝 !COPIED! 个文件
+
+if "!COPIED!"=="0" (
+  echo [失败] 一个文件都没拷到，请看 ：
+  echo        %LOG%
+  goto :the_end
+)
+
+echo.
+echo       stdparts\ 现在的内容 ：
+dir /b "%STDPARTS%\*.prt"
+echo.
+echo ============================================================
+echo  完成。产出这些 prt 的 NX 是 ：
+echo      !CHOSEN!
+echo.
+echo  请自检 ：用你必须支持的最旧版本 NX 打开其中一个零件。
+echo  如果打不开，重新运行本脚本，改选版本更低的 NX ——
+echo  convert\xt\ 里的 x_t 没被动过，重跑没有任何代价。
+echo.
+echo  接下来 ：在 NX 里播放包根目录的 batch_smoke.py 做验收，
+echo  最后一行应该是
+echo      BATCH RESULT run1=True run2=True
+echo ============================================================
+goto :the_end
+
+
+rem ==================================================================
+rem  子程序
+rem  注意 ：这里不要放 setlocal，否则变量传不回调用方。
+rem ==================================================================
+:scan_drive
+rem  %~1 = "C:\" 。三层扫描，从省事的开始。
+rem  不能用 for /d ：它不支持路径中间的通配符，会静默返回空。
+if not exist "%~1" goto :eof
+echo       正在扫描 %~d1 盘 ...
+rem  第 1 层：<盘>:\NX*
+for /f "delims=" %%A in ('dir /b /ad "%~1" 2^>nul') do (
+  set "_N=%%A"
+  if /i "!_N:~0,2!"=="NX" call :add_cand "%~1%%A"
+)
+rem  第 2 层：<盘>:\<任意顶层目录>\NX*
+rem  （这一层专门覆盖"装在非标准父目录"的情况，例如 D:\cad\NX 10.0）
+for /f "delims=" %%P in ('dir /b /ad "%~1" 2^>nul') do call :scan_child "%~1%%P"
+rem  第 3 层：只扫已知 PLM 根。通用第 3 层不能做，实测 23690 次目录调用。
+for %%R in (
+  "%~1Program Files\Siemens"
+  "%~1Program Files (x86)\Siemens"
+  "%~1Program Files\Siemens PLM Software"
+  "%~1Program Files\UGS"
+  "%~1Siemens"
+  "%~1Siemens\PLM Software"
+  "%~1UGS\NX"
+) do call :scan_child "%%~fR"
+goto :eof
+
+:scan_child
+rem  %~1 = 一个父目录。它的 NX* 子目录都交给 add_cand 判定，其余忽略。
+rem  （多命中没关系，add_cand 会用存在性校验把噪声过滤掉。）
+for /f "delims=" %%A in ('dir /b /ad "%~1" 2^>nul') do (
+  set "_N=%%A"
+  if /i "!_N:~0,2!"=="NX" call :add_cand "%~1\%%A"
+)
+goto :eof
+
+:add_cand
+rem  %~1 = 候选 NX 安装目录
+rem  判定标准放宽成两种，因为 NX 10 及更早版本的 NXBIN 里不一定有 run_journal.exe ：
+rem     K=1  能找到 run_journal.exe（NXBIN 或 UGII 下）-> 脚本可以自动导入
+rem     K=2  只有 UGII\ugraf.exe，是个真 NX 但没 run_journal.exe -> 需要在该 NX 里手工执行日记
+set "_B=%~1"
+if "%_B%"=="" goto :eof
+set "_K="
+if exist "%_B%\NXBIN\run_journal.exe" set "_K=1"
+if not defined _K if exist "%_B%\UGII\run_journal.exe" set "_K=1"
+if not defined _K if exist "%_B%\UGII\ugraf.exe" set "_K=2"
+if not defined _K goto :eof
+if "!CN!"=="0" (
+  set "CN=1"
+  set "C1=%_B%"
+  set "K1=!_K!"
+  goto :eof
+)
+for /l %%I in (1,1,!CN!) do if /i "!C%%I!"=="%_B%" goto :eof
+set /a _A=!CN!+1
+set "C!_A!=%_B%"
+set "K!_A!=!_K!"
+set "CN=!_A!"
+goto :eof
+
+:pick_lowest
+rem  把 BEST 设成版本号最低那一条的编号
+set "BEST="
+set "BESTV="
+for /l %%I in (1,1,!CN!) do (
+  call :verkey "!C%%I!"
+  if defined _KV (
+    if not defined BESTV (
+      set "BESTV=!_KV!"
+      set "BEST=%%I"
+    ) else if !_KV! LSS !BESTV! (
+      set "BESTV=!_KV!"
+      set "BEST=%%I"
+    )
+  )
+)
+goto :eof
+
+:verkey
+rem  %~1 = NX 安装目录 -> _KV = 目录名里的数字（作为整数）
+rem  NX 8.0 -^> 80,  NX 8.5 -^> 85,  NX 9.0 -^> 90,  NX 10.0 -^> 100,
+rem  NX 12.0 -^> 120,  NX1847 -^> 1847,  NX2312 -^> 2312
+rem  对新旧两代命名都单调递增，所以可以直接比大小。
+rem  不是纯数字的名字（PLMLicenseServer 之类）拿不到 _KV，自然不参与比较。
+rem
+rem  为什么用 set /a 往返校验 ：
+rem  本来"把 0~9 逐个替换掉再看是否为空"这种写法是不成立的 ——
+rem  cmd 会把置空的变量直接删掉，之后 set "T=%T:9=%" 会把字面量 "9=" 写进变量
+rem  （实测 trace ：after 8 [] -> after 9 [9=]），结果只有 NX 9.0 能过。
+rem  别改回那种写法。
+set "_KV="
+set "_S=%~nx1"
+if "%_S%"=="" goto :eof
+set "_D=%_S:N=%"
+set "_D=%_D:X=%"
+set "_D=%_D: =%"
+set "_D=%_D:.=%"
+if "%_D%"=="" goto :eof
+set "_V="
+set /a _V=%_D% 2>nul
+if not defined _V goto :eof
+if not "%_V%"=="%_D%" goto :eof
+set "_KV=%_V%"
+goto :eof
+
+:the_end
+if not "%HYT_NOPAUSE%"=="1" pause
+exit /b 0
