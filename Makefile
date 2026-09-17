@@ -10,20 +10,30 @@ TEST_CMD ?= python nx_extrude_runner.py --selftest
 BUILD_CMD ?= skip
 CHANGED ?=
 
+# CHANGED 通常来自 $(git diff --name-only)，是**多行**文本。recipe 里不加引号
+# 直接展开时，多行的最后一行会跟续行末尾的 `else skip; fi` 拼成
+# `...py; else skip; fi`，/bin/sh 报 Syntax error、make 退 2 → fmt-check 恒定
+# 失败、gate CI 恒红（2026-09-17 用 dash 逐字节复现坐实；main 两次 CI 同样红）。
+# 故统一把换行归一化成空格：CHANGED_LINE 才是可安全展开进 shell 的单行形态。
+define _NL
+
+endef
+CHANGED_LINE = $(subst $(_NL), ,$(CHANGED))
+
 .PHONY: verify fmt-check lint test build
 verify: fmt-check lint test build
 
 fmt-check:
 	@if [ -z "$(FMT_CHECK_CMD)" ]; then echo "FMT_CHECK_CMD 未配置（见 enforcement/README.md）"; exit 1; fi
 	@if [ "$(FMT_CHECK_CMD)" = "skip" ]; then echo "skip: fmt-check（§2 登记“无”）"; \
-	elif [ -n "$(CHANGED)" ]; then $(FMT_CHECK_CMD) $(CHANGED); \
+	elif [ -n "$(CHANGED_LINE)" ]; then $(FMT_CHECK_CMD) $(CHANGED_LINE); \
 	else $(FMT_CHECK_CMD); fi
 
 lint:
 	@if [ -z "$(LINT_CMD)" ]; then echo "LINT_CMD 未配置（见 enforcement/README.md）"; exit 1; fi
 	@if [ "$(LINT_CMD)" = "skip" ]; then echo "skip: lint（§2 登记“无”）"; \
-	elif [ -n "$(CHANGED)" ]; then \
-	  CHANGED_PY=$$(printf "%s\n" $(CHANGED) | grep "\.py$$" | tr "\n" " "); \
+	elif [ -n "$(CHANGED_LINE)" ]; then \
+	  CHANGED_PY=$$(printf "%s\n" $(CHANGED_LINE) | grep "\.py$$" | tr "\n" " "); \
 	  if [ -n "$$CHANGED_PY" ]; then $(LINT_CMD) $$CHANGED_PY; \
 	  else echo "skip: lint（本次改动无 .py 文件）"; fi; \
 	else $(LINT_CMD); fi
