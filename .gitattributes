@@ -1,0 +1,13 @@
+# 面向 cmd.exe 的文本：CRLF 是**功能要求**，不是风格偏好。
+#
+# 为什么必须钉：cmd.exe 按本地代码页（中文 Windows = 936/GBK）逐字节读 .bat；
+# 打包工具 make_portable_pkg.py 还会硬校验降级脚本模板"必须全 CRLF、无 BOM、
+# 合法 GBK"，混了裸 LF 就当场终止（详见 docs\移植手册.md §10）。
+# 本机 core.autocrlf=true 会把它们转成 LF 入库 —— 换机器 clone、或从 git archive
+# 取材时拿到的就是坏的。故显式声明 -text：入库与检出都不做任何换行转换。
+#
+# 2026-09-18 加此文件时的实况：tools\NX向下兼容工具\一键导入.bat 与 使用说明.txt
+# 在仓库里已经是 LF 了（隐患早就存在），由本次 --renormalize 一并修正为 CRLF。
+*.bat                                    -text
+tools/NX向下兼容工具/使用说明.txt         -text
+tools/移植工具/convert_bat_template.txt   -text
