@@ -31,6 +31,27 @@ tools/NX向下兼容工具/xt/
 tools/NX向下兼容工具/x_t转prt/
 tools/NX向下兼容工具/*_log.txt
 
+# ===== 日志类文件：一律不追踪（2026-09-17 定案）=====
+# 任何运行/校验/探针产生的日志、报告、调试脚印都不入库；
+# 目录内只保留"使用说明.txt"这类真文档（不匹配以下任何一条）。
+logs/
+*.log
+*.dlx
+*_log.txt
+*_report.txt
+*_debug.txt
+*_probe*.txt
+verify*.txt
+
+# 工具缓存
+.ruff_cache/
+
+# 本地交付手册（随移植包单独交付，不入版本库）
+docs/移植手册.md
+
+# 移植打包工具（待移植验收通过后再定是否入库）
+tools/移植工具/
+
 # macOS 系统元数据
 .DS_Store
 */.DS_Store

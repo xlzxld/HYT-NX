@@ -41,11 +41,12 @@ from cad3d.geom.topo import (
     _merge_open_chains, _center_seen, collect_circle_anchors,
     collect_yxb_anchors, _chain_outlet_mids, _chain_connectors,
     _contour_outlet_mids, _fbx_anchor_points, _marker_mids_for_chains,
-    _merge_marker_lines, _chain_head_tail, _reorder_group_chains
+    _merge_marker_lines, _chain_head_tail, _reorder_group_chains,
+    _stub_line_indices
 )
 from cad3d.geom.eval import (
     _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
-    _dome_body_ok, _blend_ok, _conn_face_pick, _jrt_sides,
+    _dome_body_ok, _blend_ok, _blend_effective, _conn_face_pick, _jrt_sides,
     _flush_blend_allowed
 )
 from cad3d.modeling.std_rules import (
@@ -594,6 +595,42 @@ def selftest(dxf_path=None):
     check("开链修复: 断口>2簇→放弃记日志",
           not _ce4 and not _bj4 and len(_ol4) == 1)
 
+    # 画过头的短线(2026-09-17 RT-26031 实图): 导轨线到切点后又顺原方向多画
+    # 一截压回长线, 三岔接点把闭链拆开→整根条不建模(NX 手动拉伸却没问题)。
+    # 修复前本组必红: 短线不剔除时闭链不复原。
+    _ov = [DXLine((0, 0), (0, -3)),
+           DXArc((5, 0), 5.0, math.pi / 2, math.pi),
+           DXLine((0, 0), (0, -10)),
+           DXLine((0, -10), (10, -10)),
+           DXLine((10, -10), (10, 5)),
+           DXLine((10, 5), (5, 5))]
+    _ov_before, _ = find_chains(_ov)
+    _ov_stubs = _stub_line_indices(_ov)
+    _ov_after, _ = find_chains(
+        [e for i, e in enumerate(_ov)
+         if i not in {r[0] for r in _ov_stubs}])
+    check("画过头短线: 剔除前闭链被拆开(复现整根不建模)",
+          not _ov_before and [(r[0], r[1]) for r in _ov_stubs] == [(0, 2)]
+          and abs(_ov_stubs[0][2] - 3.0) < 1e-9, str(_ov_stubs))
+    check("画过头短线: 剔除后闭链恢复",
+          len(_ov_after) == 1 and len(_ov_after[0]) == 5)
+    _neg1 = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 3)),
+             DXLine((10, 3), (8, 3)), DXLine((8, 3), (0, 3)),
+             DXLine((0, 3), (0, 0))]
+    check("画过头短线: 两岔接点的正常短边不动",
+          _stub_line_indices(_neg1) == [])
+    _neg2 = _neg1 + [DXLine((0, 0), (0, -3))]
+    check("画过头短线: 三岔接点但方向垂直的岔线不动",
+          _stub_line_indices(_neg2) == [])
+    _neg3 = _neg1 + [DXLine((0, 0), (3.0, 0.5))]
+    check("画过头短线: 三岔接点但没压在同一条线上的短段不动",
+          _stub_line_indices(_neg3) == [])
+    _neg4 = [DXLine((0, 0), (10, 0)), DXLine((10, 0), (10, 3)),
+             DXLine((10, 3), (0, 3)), DXLine((0, 3), (0, 0)),
+             DXLine((3, 0), (0, 0))]      # 反向描画的叠线也识别
+    check("画过头短线: 反方向描画的叠线同样识别",
+          [(r[0], r[1]) for r in _stub_line_indices(_neg4)] == [(4, 0)])
+
     check("_blend_ok: 丢体11%=正常(基准样板实证)",
           _blend_ok(41049.5, 36553.8))
     _good_rows = [(16, 3.9, 0), (19, 25.1, 0), (22, 0.0, 1),
@@ -607,6 +644,12 @@ def selftest(dxf_path=None):
           and "碎片" in _faces_healthy(_sliver)[1])
     check("_blend_ok: 丢体>25%=异形", not _blend_ok(100.0, 74.0))
     check("_blend_ok: 体积0=异形", not _blend_ok(100.0, 0.0))
+    check("_blend_effective: 正常掉体11%→有效", _blend_effective(22080.7, 19648.8))
+    check("_blend_effective: 空转掉0.007%→判无效(2026-09-17 实机)",
+          not _blend_effective(19678.2, 19676.8))
+    check("_blend_effective: 体积测不到不拦",
+          _blend_effective(None, 90.0) and _blend_effective(100.0, None)
+          and _blend_effective(0.0, 0.0))
     check("_blend_ok: 测不到不拦", _blend_ok(None, None))
 
     _rows = [(1, 10.0, 10.0, 3.9), (2, 10.0, 40.0, 3.9), (3, 50.0, 10.0, 3.9),
@@ -732,6 +775,12 @@ def selftest(dxf_path=None):
           "跟 JRT 层的线完全重合" in _jrt_src)
     check("jrt 方案二已接线(_flush_blend_allowed+skip_flush)",
           "_flush_blend_allowed(" in _jrt_src and "skip_flush" in _jrt_src)
+    check("jrt 画过头短线先剔除再接链(_stub_line_indices 已接线)",
+          "_stub_rows = _stub_line_indices(" in _jrt_src
+          and 'nx_curves["JRT"] = [' in _jrt_src)
+    check("jrt 齐平端起试R按条高收小(_flush_start_r 已接线)",
+          "_r_start = r_flush0" in _jrt_src
+          and "r_flush0 = _flush_start_r(" in _jrt_src)
     # 端面圆角"降级重试"链路回归(2026-09-10): 用桩离线驱动 jrt._edge_blend_end_retry。
     # 判据: 异形/体积异常/NX 拒绝都要降 R 重试且每次撤销; 到下限仍不行则放弃并返回
     # 原 R; 齐平端(dome)才查型20 残留, 嵌入端不查。此前整条链路无任何测试覆盖。
@@ -759,16 +808,20 @@ def selftest(dxf_path=None):
                      noface_at=None):
         """按 R 分派桩行为跑一遍降级循环 → (返回, 试过的R序列, 会话, 日志)。"""
         tries, logs = [], []
-        st = {"blended": False, "rows": [(1, 10.0, 1)], "v0": 100.0, "v1": 100.0}
+        st = {"rows": [(1, 10.0, 1)], "v0": 100.0, "v1": 90.0, "after": False}
         sess = _RetrySession()
         _old = (_mod_jrt._body_volume, _mod_jrt._edge_blend_end,
                 _mod_jrt._body_face_rows)
 
         def _vol(_wp, _b):
-            return st["v1"] if st["blended"] else st["v0"]
+            # 一进一出计一次: 圆角前读到 v0, 圆角后读到 v1(与真实测量的调用
+            # 次序同口径; 失败撤销后下一次再读回 v0)
+            if st["after"]:
+                st["after"] = False
+                return st["v1"]
+            return st["v0"]
 
         def _blend(_wp, _uf, _body, _z, r, _log, feat_name=None):
-            st["blended"] = False
             k = round(float(r), 4)
             tries.append(k)
             if noface_at and k in noface_at:
@@ -777,7 +830,7 @@ def selftest(dxf_path=None):
                 raise RuntimeError("NX 拒绝本次圆角")
             st["v0"], st["v1"] = vol_at.get(k, (100.0, 90.0))
             st["rows"] = rows_at.get(k, [(1, 10.0, 1)])
-            st["blended"] = True
+            st["after"] = True
             return object(), []
 
         _mod_jrt._body_volume = _vol
@@ -820,6 +873,13 @@ def selftest(dxf_path=None):
               abs(_g[2] - 3.7) < 1e-9 and _tr == [3.9, 3.8, 3.7]
               and _se.undos == 2 and "没做出来" in "".join(_lg),
               str((_g[2], _tr, _se.undos)))
+        # 被 NX 裁成一条缝的空转圆角(体积几乎不变)必须降 R——此前只查"掉太多",
+        # 会把这种假成功放行, 齐平端看起来"没做"(2026-09-17 实机)。
+        _g, _tr, _se, _lg = _drive_retry({}, {3.9: (100.0, 99.99),
+                                              3.8: (100.0, 90.0)})
+        check("圆角降级: 空转(几乎没啃到料)→降 R 重试",
+              abs(_g[2] - 3.8) < 1e-9 and _se.undos == 1
+              and "没啃到料" in "".join(_lg), str((_g[2], _lg)))
         _g, _tr, _se, _lg = _drive_retry(
             {3.9: _R39_SP20, 3.8: _R39_SP20, 3.7: _R39_OK}, {}, dome=True)
         check("圆角降级: 齐平端(圆顶)判型20残留为异形 → 降 R",
