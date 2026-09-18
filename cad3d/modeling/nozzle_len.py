@@ -134,17 +134,18 @@ def pick_faces(face_boxes, center_z, half=None, flat_only=True, tol=0.01):
 def next_step(old_len, cur_len, axis_sign=None, tol=None):
     """(纯逻辑) 复测出来的残差 → 这一轮该沿世界 Z 移多少; 已经够准就返回 0。
 
-    ⭐ 用户 2026-09-18 定案的换算: **移面量 Δ 与件总长的关系是 总长变化 = −Δ**
-    (他移 Δ=−20 ⇒ 总长短了 20) ⇒ 要让件变长 (old_len − cur_len) 这么多,
-    就该移 Δ = **cur_len − old_len**。
-    axis_sign 只作签名兼容(新口径下不再需要区分头端朝向), 保留以免破坏调用方。
+    ⭐ 用用户 2026-09-18 的例子校准: 他移 **Δ = −20 时总长**短**了 20** ⇒
+    **总长变化 = +Δ**(移多少就长多少, 负就缩短)。
+    ⇒ 想让件从 cur_len 变成 old_len, 该移 **Δ = old_len − cur_len**。
+    (⚠️ 曾写成相反符号, 实机上就是"越移越远": 124.7 要缩到 118, 结果变 131.6)
+    axis_sign 只作签名兼容(新口径下不再需要区分头端朝向)。
     """
     tol = _LEN_TOL if tol is None else float(tol)
     try:
-        return (float(cur_len) - float(old_len)) if abs(
-            float(cur_len) - float(old_len)) > tol else 0.0
+        _d = float(old_len) - float(cur_len)
     except (TypeError, ValueError):
         return 0.0
+    return _d if abs(_d) > tol else 0.0
 
 
 def nearest_anchor_len(anchor, old_lens, tol=0.05):
@@ -547,8 +548,9 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
                 idxs = pick_faces([r[0] for r in rows], _fix_z, flat_only=False)
             faces = [rows[i][3] for i in idxs]
             if not faces:
-                log("【长度对齐】%s 第 %d 处: 头部带以下没有可移的面(旧件长 %.4g, "
-                    "新件长 %.4g), 这处保持原长。" % (fname, idx, old_len, cur))
+                log("【长度对齐】%s 第 %d 处: 定位点±%.4g 那一带里没有可移的面"
+                    "(旧件长 %.4g, 新件长 %.4g), 这处保持原长。"
+                    % (fname, idx, _BAND_HALF, old_len, cur))
                 adj_stats["skip"] = adj_stats.get("skip", 0) + 1
                 return tools
             if not _move_faces_z(work_part, session, faces, step, log):
@@ -572,9 +574,9 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
         # ⭐ 定位点补偿(用户 2026-09-18 定案): 移面把件上"定位点"(那个 Z=0 面的
         # 圆心)带走了, 用「移动对象 + 点对点」把它搬回**放置点** —— 让"动态的
         # 定位点"永远与"绝对的放置点"重合。换算关系也用他给的:
-        #   移面量 Δ 与总长变化是 **总长变化 = −Δ** ⇒ Δ = 新件原长 − 旧件长;
-        #   移面后定位点在世界里的位置 = 放置点 + (0, 0, Δ)。
-        real_delta = new_len0 - old_len
+        #   换算关系(用他给的例子校准): **总长变化 = +Δ**(移多少就长多少) ⇒
+        #   Δ = 旧件长 − 新件原长; 移面后定位点在世界里的位置 = 放置点 + (0,0,Δ)。
+        real_delta = old_len - new_len0
         if _fix_z is not None and abs(real_delta) > 1e-9:
             _from = (float(anch[0]), float(anch[1]), float(_fix_z) + real_delta)
             _to = (float(anch[0]), float(anch[1]), float(_fix_z))

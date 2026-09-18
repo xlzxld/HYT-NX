@@ -596,9 +596,10 @@ def selftest(dxf_path=None):
     check("选面: 空/坏输入安全",
           pick_faces([], -60.0) == [] and pick_faces(None, -60.0) == []
           and pick_faces([None], -60.0) == [])
-    # 迭代步长: 用户定案"总长变化 = −Δ" ⇒ 要变长就移 cur−old
-    check("移面步长: 总长变化=−Δ ⇒ 短了移负、长了移正",
-          next_step(100.0, 80.0) == -20.0 and next_step(100.0, 120.0) == 20.0)
+    # 迭代步长: 用用户例子校准(他移 −20 ⇒ 总长短 20) ⇒ **总长变化 = +Δ**
+    # ⇒ 想从 cur 变成 old, 该移 Δ = old − cur。符号反了会"越移越远"。
+    check("移面步长: 件短了要给正(变长)、长了要给负(缩短)",
+          next_step(100.0, 80.0) == 20.0 and next_step(100.0, 120.0) == -20.0)
     check("移面步长: 够准/坏输入都返回 0(停止迭代)",
           next_step(100.0, 100.03) == 0.0 and next_step(None, 80.0) == 0.0
           and next_step(100.0, None) == 0.0)
