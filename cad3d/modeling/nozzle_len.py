@@ -228,6 +228,42 @@ def _union_bbox(bboxes):
             max(b[4] for b in vals), max(b[5] for b in vals))
 
 
+def _tune_motion(mo, nx):
+    """把"移动面"的运动参数全部收敛到**纯 DeltaXyz 平移** —— 照用户录制的日记逐条设。
+
+    日记里这些**全都显式设过**(OrientXpress / AlongCurveAngle 的各选项、各
+    Distance/Angle 表达式归零)。**漏设的后果就是实机上的"移完异形"** —— NX 会
+    沿用别的运动模式(方向/曲线), 移出来不是纯平移, 几何被拽歪(用户 2026-09-18)。
+    跨版本设不上的只跳过; 关键三项(Option / DeltaEnum / DeltaZc)由调用方单独负责。
+    """
+    gu = nx.GeometricUtilities
+    orient = gu.OrientXpressBuilder
+
+    def _set(path, attr, val):
+        """按属性路径逐级取(路径取不到就跳过 —— 跨版本有的节点不存在)。"""
+        try:
+            obj = mo
+            for p in path:
+                obj = getattr(obj, p)
+            if attr == "SetFormula":
+                obj.SetFormula(val)
+            else:
+                setattr(obj, attr, val)
+        except Exception:
+            pass
+
+    _set(("DistanceAngle", "OrientXpress"), "AxisOption", orient.Axis.Passive)
+    _set(("DistanceAngle", "OrientXpress"), "PlaneOption", orient.Plane.Passive)
+    _set(("OrientXpress",), "AxisOption", orient.Axis.Passive)
+    _set(("OrientXpress",), "PlaneOption", orient.Plane.Passive)
+    for path in (("AlongCurveAngle", "AlongCurve", "Expression"),
+                 ("DistanceValue",), ("DistanceBetweenPointsDistance",),
+                 ("RadialDistance",), ("Angle",),
+                 ("DistanceAngle", "Distance"), ("DistanceAngle", "Angle")):
+        _set(path, "SetFormula", "0")
+    _set(("AlongCurveAngle", "AlongCurve"), "IsPercentUsed", True)
+
+
 def _move_faces_z(work_part, session, faces, shift, log):
     """用同步建模「移动面」把给定面沿世界 Z 平移 shift。成功 True。
 
@@ -284,9 +320,12 @@ def _move_faces_z(work_part, session, faces, shift, log):
             log("【长度对齐】本 NX 的移动面没有 DeltaXyz 运动选项(%s), 这处保持原长。"
                 % ex)
             return False
+        # 其余运动参数照日记全部归零/关掉 —— **不设就会"移完异形"**(实机踩过)
+        _tune_motion(bld.Motion, NXOpen)
         for attr, val in (("RelationScope", 1023), ("CloneScope", 511),
                           ("UseFindClone", True), ("UseFindRelated", True),
                           ("UseFaceBrowse", True),
+                          ("FindGeneralClone", True),      # 日记里有, 漏了会少延伸
                           ("CoplanarEnabled", False),
                           ("CoplanarAxesEnabled", False),
                           ("CoaxialEnabled", False),
@@ -305,6 +344,11 @@ def _move_faces_z(work_part, session, faces, shift, log):
                 setattr(bld, attr, val)
             except Exception:
                 continue
+        # 清空"虚拟面"收集器(日记里也做了): 留着可能把上次的面一起带进来
+        try:
+            bld.FaceToMove.VirtualFaceCollector.ReplaceRules([], False)
+        except Exception:
+            pass
         opts = _sc_rule_options(work_part)
         try:
             if opts is not None:

@@ -620,6 +620,19 @@ def selftest(dxf_path=None):
           plan_shift(96.1716, [(0.0, 0.0, -82.9673, 1.0, 1.0, 13.2043)],
                      1)[2].startswith("新旧等长"))
 
+    # 回归(2026-09-18): 实机"移完异形"的根因是**运动参数没照日记设全** ——
+    # 只设 DeltaXyz 三项不够, NX 会沿用方向/曲线模式, 移出来不是纯平移。
+    # 这类"参数遗漏"只能靠源码守门(离线跑不了 NX)。
+    with io.open(sys.modules["cad3d.modeling.nozzle_len"].__file__,
+                 encoding="utf-8") as _nl_f:
+        _nl_src = _nl_f.read()
+    check("移面: 运动参数照日记设全(漏设 = 实机异形)",
+          "_tune_motion(bld.Motion, NXOpen)" in _nl_src
+          and "FindGeneralClone" in _nl_src
+          and "VirtualFaceCollector" in _nl_src
+          and "OrientXpress" in _nl_src
+          and "AlongCurveAngle" in _nl_src)
+
     check("长度对齐: 按锚点找旧件长度(容差内命中/miss回None)",
           nearest_anchor_len((100.0, 50.0, -85.0),
                              [((100.0, 50.0, -85.0, 0.0), 60.0)]) == 60.0
