@@ -342,6 +342,143 @@ class _BlockDialogBase(object):
         return rules
 
 
+class ReplaceMapDialog(_BlockDialogBase):
+    """一键替换的第一段: 每行一个"模型里现有的标准件" + 下拉选新规格。
+
+    与 SelectionDialog 的区别: 那是"勾不勾", 这是"换成谁"; 取消 = 中止本次替换。
+    Launch() 返回 {旧件文件名: 新规格文件名}(只含要换的); None = 取消。
+    """
+
+    def __init__(self, dlx_path, old_files, all_parts):
+        import NXOpen
+        import NXOpen.BlockStyler
+        self.nx = NXOpen
+        self.old_files = list(old_files)
+        self.labels = ["不替换"] + list(all_parts)
+        self.theUI = NXOpen.UI.GetUI()
+        self.theDialog = self.theUI.CreateDialog(dlx_path)
+        self.theDialog.AddOkHandler(self.ok_cb)
+        self.theDialog.AddCancelHandler(self.cancel_cb)
+        self.theDialog.AddInitializeHandler(self.initialize_cb)
+        try:
+            self.theDialog.AddDialogShownHandler(self.show_cb)
+        except Exception:
+            pass
+        self.blocks = {}
+        self._shown = False
+        self.result = None          # None=取消; 否则={旧件: 新规格}
+
+    def initialize_cb(self):
+        for i, old in enumerate(self.old_files):
+            try:
+                self._find("MAP%d" % i).Label = old
+            except Exception:
+                pass
+
+    def show_cb(self):
+        # 选中项在生成 dlx 时已按记忆写死, 首显不必再刷
+        if not getattr(self, "_shown", False):
+            self._shown = True
+        return 0
+
+    def ok_cb(self):
+        mapping = {}
+        for i, old in enumerate(self.old_files):
+            try:
+                idx = self._get_enum_idx("MAP%d" % i, 0, self.labels)
+            except Exception:
+                idx = 0
+            if 1 <= idx < len(self.labels):
+                mapping[old] = self.labels[idx]
+        self.result = mapping
+        return 0
+
+    def cancel_cb(self):
+        self.result = None
+        return 0
+
+    def Launch(self):
+        try:
+            _dlg_show(self.theDialog)
+        except Exception as ex:
+            self.theUI.NXMessageBox.Show(
+                "CAD3D", self.nx.NXMessageBox.DialogType.Error, str(ex))
+        return self.result
+
+    def Dispose(self):
+        if getattr(self, "theDialog", None) is not None:
+            try:
+                self.theDialog.Dispose()
+            except Exception:
+                pass
+            self.theDialog = None
+
+
+class DxfPickDialog(_BlockDialogBase):
+    """图纸手选对话框(只在记忆里的图纸找不到时弹)。取消返回 None。"""
+
+    def __init__(self, dlx_path):
+        import NXOpen
+        import NXOpen.BlockStyler
+        self.nx = NXOpen
+        self.theUI = NXOpen.UI.GetUI()
+        self.theDialog = self.theUI.CreateDialog(dlx_path)
+        self.theDialog.AddOkHandler(self.ok_cb)
+        self.theDialog.AddCancelHandler(self.cancel_cb)
+        self.blocks = {}
+        self.result = None
+
+    def _invalid_response(self):
+        try:
+            return self.nx.BlockStyler.BlockDialog.DialogResponse.Invalid
+        except Exception:
+            return 1
+
+    def _pick_path(self):
+        try:
+            return str(self._find("PICKDXF").Path) or ""
+        except Exception:
+            try:
+                pl = self.theDialog.GetBlockProperties("PICKDXF")
+                return str(pl.GetString("Path")) or ""
+            except Exception:
+                return ""
+
+    def ok_cb(self):
+        p = self._pick_path()
+        if p and os.path.isfile(p) \
+                and os.path.splitext(p)[1].lower() in (".dxf", ".dwg"):
+            self.result = p
+            return 0
+        try:
+            self.theUI.NXMessageBox.Show(
+                "CAD3D", self.nx.NXMessageBox.DialogType.Warning,
+                "图纸文件不存在、或不是 .dxf / .dwg:\n%s" % (p or "(未选择)"))
+        except Exception:
+            pass
+        return self._invalid_response()
+
+    def cancel_cb(self):
+        self.result = None
+        return 0
+
+    def Launch(self):
+        try:
+            _dlg_show(self.theDialog)
+        except Exception as ex:
+            self.theUI.NXMessageBox.Show(
+                "CAD3D", self.nx.NXMessageBox.DialogType.Error, str(ex))
+        return self.result
+
+    def Dispose(self):
+        if getattr(self, "theDialog", None) is not None:
+            try:
+                self.theDialog.Dispose()
+            except Exception:
+                pass
+            self.theDialog = None
+
+
 class ParamDialog(_BlockDialogBase):
     def __init__(self, dlx_path, std_rules=None, selected=None,
                  execute_on_ok=True, execute_fn=None):

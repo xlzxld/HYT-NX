@@ -51,10 +51,12 @@ from cad3d.geom.eval import (
 )
 from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
-    _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow
+    _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow,
+    std_family
 )
 from cad3d.modeling.stdparts import (
-    _bool_feature, _place_delta, _rot_xy, _batch_delete, _group_bool_plan
+    _bool_feature, _place_delta, _rot_xy, _batch_delete, _group_bool_plan,
+    scan_model_bodies, snap_bodies_to_anchors, _snap_tol, solve_placements
 )
 from cad3d.modeling.nx_compat import _matrix3x3
 from cad3d.modeling.mold_cut import (
@@ -70,7 +72,7 @@ from cad3d.modeling.extrude import (
 )
 from cad3d.ui.dlx_builder import (
     _blk_enum, build_dlx, build_selection_dlx, build_std_dlx, _group_item,
-    _blk_label
+    _blk_label, build_replace_map_dlx, build_dxf_pick_dlx
 )
 from cad3d.ui.dialogs import _BlockDialogBase
 from cad3d.selftest.sample_dxf import make_sample_dxf
@@ -404,6 +406,133 @@ def selftest(dxf_path=None):
     check("CXK 线中点锚点≈(4526.31,1790.27)(3Dtest 实线)",
           len(ak) == 1 and abs(ak[0][0] - 4526.3106) < 0.01
           and abs(ak[0][1] - 1790.2716) < 0.01, str(ak))
+
+    # 7d-2. 一键替换同家族标准件: 家族识别 + 模型扫描过滤(2026-09-18 新增)
+    check("家族名: 大水口-18 → 大水口", std_family("大水口-18.prt") == "大水口")
+    check("家族名: 接线盒-24针 → 接线盒", std_family("接线盒-24针.prt") == "接线盒")
+    check("家族名: 主进胶与中心定位垫片-30 → 去规格",
+          std_family("主进胶与中心定位垫片-30.prt") == "主进胶与中心定位垫片")
+    check("家族名: 无规格件(压线板) → 自身", std_family("压线板.prt") == "压线板")
+    check("家族名: 同家族不同规格归一",
+          std_family("大水口-18.prt") == std_family("大水口-35.prt")
+          and std_family("接线盒-16针.prt") == std_family("接线盒-48针.prt"))
+    check("家族名: 大写后缀与空值安全",
+          std_family("大水口-18.PRT") == "大水口" and std_family(None) == "")
+
+    class _MockMarkedBody:
+        def __init__(self, type_str):
+            self._t = type_str
+
+        def GetStringAttribute(self, name):
+            return self._t if name == "CAD3D_TYPE" else ""
+
+    class _MockScanPart:
+        def __init__(self, bodies):
+            self.Bodies = bodies
+
+    _scan_rows = scan_model_bodies(
+        _MockScanPart([_MockMarkedBody("STD:大水口-18.prt"),
+                       _MockMarkedBody("FLB"),
+                       _MockMarkedBody("")]), None)
+    check("扫描: 只收带 CAD3D_TYPE 标记的体(用户图形不碰)",
+          len(_scan_rows) == 2
+          and [r[0] for r in _scan_rows] == ["STD:大水口-18.prt", "FLB"],
+          str([r[0] for r in _scan_rows]))
+    check("扫描: 离线拿不到 UF 时包围盒为 None(不崩不中断)",
+          all(r[2] is None for r in _scan_rows))
+
+    # 7d-3. 一键替换: 图纸锚点吸附 + 映射页(2026-09-18 修"重复替换/位置跑偏")
+    _anch = [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)]
+    _pk, _un = snap_bodies_to_anchors(
+        _anch, [(0.0, 0.0), (1.2, -0.8), (-1.0, 1.5), (0.5, 0.5)])
+    check("吸附: 一个件的多个实体归成 1 处(不再重复替换好几个出来)",
+          len(_pk) == 1 and _pk[0][3] == [0, 1, 2, 3], str(_pk))
+    check("吸附: 落点用图纸锚点而不是几何中心(不再整体跑偏)",
+          abs(_pk[0][0]) < 1e-9 and abs(_pk[0][1]) < 1e-9, str(_pk[0]))
+    _pk2, _un2 = snap_bodies_to_anchors(
+        _anch, [(0.0, 0.0), (100.0, 0.5), (0.2, 99.0)])
+    check("吸附: 三处各自归一, 结果按锚点原顺序",
+          [p[3] for p in _pk2] == [[0], [1], [2]] and not _un2, str(_pk2))
+    _pk3, _un3 = snap_bodies_to_anchors(_anch, [(0.0, 0.0), (900.0, 900.0)])
+    check("吸附: 对不上图纸的旧件记入未匹配(调用方不删也不放)",
+          len(_pk3) == 1 and _un3 == [1], "%r %r" % (_pk3, _un3))
+    check("吸附: 空锚点 → 全部未匹配(整条跳过)",
+          snap_bodies_to_anchors([], [(1.0, 2.0)]) == ([], [0]))
+    check("吸附: 空输入安全", snap_bodies_to_anchors([(0.0, 0.0)], []) == ([], []))
+    check("吸附: 坏点保留下标不错位(否则会删错体)",
+          snap_bodies_to_anchors([(0.0, 0.0)], [None, (1.0, 1.0)])[1] == [0])
+    check("吸附: 容差 = 锚点最小间距的一半(封顶 5mm, 单锚点 5mm)",
+          abs(_snap_tol([(0.0, 0.0), (10.0, 0.0)]) - 5.0) < 1e-9
+          and abs(_snap_tol([(0.0, 0.0), (4.0, 0.0)]) - 2.0) < 1e-9
+          and abs(_snap_tol([(0.0, 0.0)]) - 5.0) < 1e-9)
+
+    # 7d-4. 反推锚点(首选定位法, 不需要图纸): 件已归零 ⇒ 锚点 = 体世界中心
+    #       − R·体零件局部中心; 同件多实体互相印证 → 归组 + 自检
+    _loc2 = [((30.0, 30.0, 20.0), (0.0, 0.0, 0.0)),        # 包住原点的定位体
+             ((10.0, 10.0, 40.0), (0.0, 12.0, -30.0))]
+    _wr_plus = [((30.0, 30.0, 20.0), (100.0, 50.0, -85.0)),
+                ((10.0, 10.0, 40.0), (100.0, 62.0, -115.0)),
+                ((30.0, 30.0, 20.0), (300.0, 200.0, -85.0)),
+                ((10.0, 10.0, 40.0), (300.0, 212.0, -115.0))]
+    _s_plus = solve_placements(_loc2, _wr_plus)
+    check("反推锚点: 两个件实例各归一处(治“重复替换好几个”)",
+          len(_s_plus["anchors"]) == 2 and not _s_plus["unmatched"]
+          and not _s_plus["ambiguous"], str(_s_plus))
+    check("反推锚点: 位置精确(四个体推出两个重合点)",
+          abs(_s_plus["anchors"][0][0] - 100.0) < 1e-9
+          and abs(_s_plus["anchors"][0][1] - 50.0) < 1e-9
+          and abs(_s_plus["anchors"][1][0] - 300.0) < 1e-9
+          and abs(_s_plus["anchors"][1][1] - 200.0) < 1e-9,
+          str(_s_plus["anchors"]))
+    check("反推锚点: 每个体都被认领(删旧件只删该删的)",
+          _s_plus["matched"] == [0, 1, 2, 3], str(_s_plus["matched"]))
+    _wr_flip = [((30.0, 30.0, 20.0), (100.0, 50.0, -85.0)),
+                ((10.0, 10.0, 40.0), (100.0, 38.0, -55.0)),
+                ((30.0, 30.0, 20.0), (300.0, 200.0, -85.0)),
+                ((10.0, 10.0, 40.0), (300.0, 188.0, -55.0))]
+    _s_flip = solve_placements(_loc2, _wr_flip, flip=True)
+    check("-Z 翻转件: 局部 y/z 反号后仍能推出同一锚点",
+          len(_s_flip["anchors"]) == 2 and not _s_flip["unmatched"]
+          and abs(_s_flip["anchors"][0][1] - 50.0) < 1e-9, str(_s_flip))
+    _loc_dup = [((10.0, 10.0, 10.0), (0.0, 0.0, 0.0)),
+                ((10.0, 10.0, 10.0), (0.0, 0.0, -20.0))]
+    check("反推锚点: 件里有尺寸重样的实体 → 判为认不清(不硬猜)",
+          solve_placements(_loc_dup, _wr_plus)["ambiguous"] is True)
+    _loc1 = [((10.0, 10.0, 10.0), (0.0, 0.0, 0.0))]
+    _wr1 = [((10.0, 10.0, 10.0), (5.0, 5.0, -85.0)),
+            ((10.0, 10.0, 10.0), (55.0, 5.0, -85.0))]
+    _s1 = solve_placements(_loc1, _wr1)
+    check("反推锚点: 单实体件(接线盒-16针)一个体就是一实例",
+          len(_s1["anchors"]) == 2 and not _s1["unmatched"], str(_s1))
+    _wr_odd = [((30.0, 30.0, 20.0), (100.0, 50.0, -85.0)),
+               ((10.0, 10.0, 40.0), (100.0, 62.0, -115.0)),
+               ((30.0, 30.0, 20.0), (300.0, 200.0, -85.0))]
+    _s_odd = solve_placements(_loc2, _wr_odd)
+    check("反推锚点: 落单的体不硬认(记未匹配, 交给图纸兜底)",
+          len(_s_odd["anchors"]) == 1 and _s_odd["unmatched"] == [2],
+          str(_s_odd))
+    _s_bad = solve_placements(_loc2, [((99.0, 99.0, 99.0), (0.0, 0.0, 0.0))])
+    check("反推锚点: 尺寸对不上任何实体 → 未匹配",
+          not _s_bad["anchors"] and _s_bad["unmatched"] == [0], str(_s_bad))
+    check("反推锚点: 空输入安全",
+          solve_placements([], [])["anchors"] == []
+          and solve_placements(_loc2, [])["anchors"] == []
+          and solve_placements([], _wr_plus)["unmatched"] == [0, 1, 2, 3])
+
+    _rmx = build_replace_map_dlx(["大水口-25.prt", "接线盒-48针.prt"],
+                                 ["大水口-18.prt", "大水口-25.prt"],
+                                 {"大水口-25.prt": "大水口-18.prt"})
+    check("映射页: 每个旧件一行, 候选含“不替换”+全部规格",
+          _rmx.count('id="MAP0"') >= 1 and _rmx.count('id="MAP1"') >= 1
+          and "不替换" in _rmx and "大水口-18.prt" in _rmx)
+    check("映射页: 上次的映射写进 selected 序号(记忆回填)",
+          'selected="1"' in _rmx and "没选的标准件不会被改动" in _rmx)
+    check("映射页: 空旧件列表也生成良构 XML",
+          "Dialog" in build_replace_map_dlx([], ["a.prt"], None)
+          and "当前模型里没有标准件" in build_replace_map_dlx([], [], None))
+    check("图纸手选页: 带文件浏览块与提示",
+          'id="PICKDXF"' in build_dxf_pick_dlx("上次的图纸找不到了: X")
+          and "上次的图纸找不到了" in build_dxf_pick_dlx("上次的图纸找不到了: X"))
 
     # 7e. YXB 压线板: 贴合边中点锚点 + 逐板轮廓自动判向(26079 前跑板实图定案,
     #     16.6 长边沿槽向落 CX 线上、板体沿背离槽方向, longaxis_deg=0;
