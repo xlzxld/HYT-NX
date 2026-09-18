@@ -300,6 +300,7 @@ def _do_replace(session, work_part, mapping, rules, params, log):
 
     to_place, anchors_override, to_delete, old_lens = {}, {}, [], []
     anchor_record = {}          # 体上要记的**真实放置点**(放置位置是偏过的)
+    shift_map = {}              # {(规格, 第几处): 预偏移量 Δ} 给 hook 还原锚点用
     for old_fname in sorted(mapping):
         new_fname = mapping[old_fname]
         olds = existing.get(old_fname) or []
@@ -355,6 +356,9 @@ def _do_replace(session, work_part, mapping, rules, params, log):
                        "、".join("%.4g" % (_a[2] - _s[2])
                                  for _a, _s in zip(anchors, shifted))))
                 anchor_record.setdefault(new_fname, []).extend(anchors)
+                # 记下每处偏了多少, 好让 hook 把锚点还原回真实放置点去匹配
+                for _n, (_a, _s) in enumerate(zip(anchors, shifted), 1):
+                    shift_map[(new_fname, _n)] = _a[2] - _s[2]
                 anchors = shifted
 
         # 两个旧规格换成同一个新规格时, 锚点要合并而不是覆盖
@@ -388,7 +392,7 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         placed_hook = None
         if old_lens:
             placed_hook = make_nozzle_hook(session, work_part, old_lens, log,
-                                           adj_stats)
+                                           adj_stats, shift_map=shift_map)
         place_std_parts(session, work_part, None, flb_regions, params,
                         to_place, log, stats=stats,
                         anchors_override=anchors_override,

@@ -483,11 +483,17 @@ def _move_faces_z(work_part, session, faces, shift, log):
             pass
 
 
-def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
+def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None,
+                     shift_map=None):
     """造一个 place_std_parts 的 placed_hook: 放好的热咀按旧件长度移面对齐。
 
     old_lens: [(锚点(x,y,z,..), 旧件实例长度), ...] —— 替换入口按旧件体
     分组算好传入; adj_stats: 可变 dict, 回填 adj/skip 计数供报告。
+    shift_map: {(文件名, 第几处): 预偏移量 Δ} —— 走"预偏移"(A 方案)时, 传进来的
+      锚点是**偏移过的**(放置点 − (0,0,Δ)); 必须先**还原**成真实放置点, 才能在
+      old_lens 里匹配到旧件长度(否则匹配不上 → 拿不到长度 → 移面被跳过, 只剩
+      位置偏着的原始长度件, 一根都不对 —— 2026-09-18 实机踩过)。
+      而"移面带"的中心就用**偏移后的 anch[2]**(件现在真的在这个高度)。
     hook 签名 (fname, 序号, 锚点, 规则, 体列表, 待删组件列表) → 新体列表
     (移面就地改, **体列表原样返回**); 出错/不可用则本处保持原长不动。
     """
@@ -508,7 +514,15 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             return tools
         if not is_nozzle(fname):
             return tools
-        old_len = nearest_anchor_len(anch, old_lens)
+        # 走了"预偏移"的话, 传进来的锚点是偏过的 —— 还原成真实放置点, 才能
+        # 在 old_lens 里匹配到这根的旧件长度(不还原就匹配不上, 移面会被跳过)
+        try:
+            _sh = float((shift_map or {}).get((fname, idx)) or 0.0)
+            _real = (float(anch[0]), float(anch[1]), float(anch[2]) + _sh,
+                     float(anch[3]) if len(anch) > 3 else 0.0)
+        except (TypeError, ValueError, IndexError):
+            _real = anch
+        old_len = nearest_anchor_len(_real, old_lens)
         bboxes = [_body_bbox(uf, t) for t in tools]
         # 长度按"主平面口径"量(用户 2026-09-18 定案): 顶 = 朝上的平面里最高的,
         # 底 = 朝下的平面里最低的 —— 顶上的小凸起是曲面, 天然落不进"平面"
