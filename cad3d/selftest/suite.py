@@ -444,9 +444,14 @@ def selftest(dxf_path=None):
           all(r[2] is None for r in _scan_rows))
 
     # 7d-3. 一键替换 v3: 体上记的锚点 → 实例放置点 + 映射页(2026-09-18 改口径)
-    check("锚点记录解析: 正常值",
-          parse_anchor_off("12.5,-3,45,90") == (12.5, -3.0, 45.0, 90.0))
-    check("锚点记录解析: 缺角度按 0", parse_anchor_off("1,2,3") == (1.0, 2.0, 3.0, 0.0))
+    # v3.3(用户 2026-09-18 定案): 锚点存**绝对坐标** + 记时的体中心 + 角度(7 个数)。
+    # 旧版 4 个数是"锚点−体中心"的偏移, 仍要能读(老模型兼容)。
+    check("锚点记录解析: 7 数(绝对锚点+记时体中心+角度)",
+          parse_anchor_off("100,50,-85,10,5,-131,90")
+          == ((100.0, 50.0, -85.0), (10.0, 5.0, -131.0), 90.0))
+    check("锚点记录解析: 旧 4 数(偏移)仍能读, 体中心记 None",
+          parse_anchor_off("12.5,-3,45,90") == ((12.5, -3.0, 45.0), None, 90.0)
+          and parse_anchor_off("1,2,3") == ((1.0, 2.0, 3.0), None, 0.0))
     check("锚点记录解析: 空/坏值/字段不足都回 None",
           parse_anchor_off("") is None and parse_anchor_off("a,b,c") is None
           and parse_anchor_off("1,2") is None and parse_anchor_off(None) is None)
@@ -455,14 +460,17 @@ def selftest(dxf_path=None):
         return (c[0] - half, c[1] - half, c[2] - half,
                 c[0] + half, c[1] + half, c[2] + half)
 
-    # 一个 7 实体件(含两颗小螺丝)放在 (100,50,-85): 每体偏移 = 锚点 − 体中心
+    # 一个 7 实体件(含两颗小螺丝)放在 (100,50,-85): 每体都记同一个**绝对锚点**
     _anchor = (100.0, 50.0, -85.0)
     _centers = [(100.0, 50.0, -85.0), (100.0, 50.0, -115.0),
                 (103.0, 50.0, -85.0), (100.0, 47.0, -85.0),
                 (100.0, 50.0, -55.0), (106.0, 50.0, -85.0),
                 (100.0, 56.0, -85.0)]
-    _items = [(_bb_of(c), (_anchor[0] - c[0], _anchor[1] - c[1],
-                           _anchor[2] - c[2], 0.0)) for c in _centers]
+    _items = [(_bb_of(c),
+               parse_anchor_off("%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,0"
+                                % (_anchor[0], _anchor[1], _anchor[2],
+                                   c[0], c[1], c[2])))
+              for c in _centers]
     _anch, _miss = anchors_from_offsets(_items)
     check("反推锚点: 7 个实体(含尺寸重样的)归成 1 处实例",
           len(_anch) == 1 and _miss == 0, str(_anch))
@@ -471,22 +479,43 @@ def selftest(dxf_path=None):
           and abs(_anch[0][2] + 85.0) < 1e-9, str(_anch))
     check("反推锚点: 角度跟着记录走(压线板摆向不丢)",
           anchors_from_offsets([(_bb_of((0.0, 0.0, 0.0)),
-                                 (5.0, 6.0, 7.0, 33.0))])[0][0][3] == 33.0)
+                                 parse_anchor_off("5,6,7,0,0,0,33"))])[0][0][3]
+          == 33.0)
 
-    # 件被整体挪走(用户手动改坐标): 偏移不变 ⇒ 锚点跟着走
+    # v3.3 的取舍: 锚点是**绝对坐标** ⇒ 件被手动挪走后锚点**不动**(不再跟随)。
+    # 用户 2026-09-18 明确要求"锚点永远一样, 不随长度改变而改变" —— 长度/几何
+    # 一变就漂是实机偏移的根因, 所以这里选了"绝对不变"。
     _dx, _dy = 54.0, -39.0
     _moved = [((bb[0] + _dx, bb[1] + _dy, bb[2], bb[3] + _dx, bb[4] + _dy,
-               bb[5]), off) for (bb, off) in _items]
+               bb[5]), rec) for (bb, rec) in _items]
     _anch_m, _miss_m = anchors_from_offsets(_moved)
-    check("反推锚点: 件被手动挪走后锚点跟着走(动态锚点)",
+    check("反推锚点: v3.3 绝对锚点 → 件被挪走后锚点也不动",
           len(_anch_m) == 1 and _miss_m == 0
-          and abs(_anch_m[0][0] - (100.0 + _dx)) < 1e-9
-          and abs(_anch_m[0][1] - (50.0 + _dy)) < 1e-9, str(_anch_m))
+          and abs(_anch_m[0][0] - 100.0) < 1e-9
+          and abs(_anch_m[0][1] - 50.0) < 1e-9, str(_anch_m))
 
-    _two = list(_items) + [((bb[0] + 200.0, bb[1] + 150.0, bb[2],
-                             bb[3] + 200.0, bb[4] + 150.0, bb[5]), off)
-                           for (bb, off) in _items]
-    _anch2, _miss2 = anchors_from_offsets(_two)
+    # 关键回归(用户正是这么撞上的): **件被拉长/缩短后锚点必须纹丝不动**
+    _rec_one = parse_anchor_off("1046.745,-46.859,-85,5,5,-131,0")
+    _a_ok = anchors_from_offsets([((0.0, 0.0, -190.0, 10.0, 10.0, -72.0),
+                                   _rec_one)])[0][0]
+    _a_long = anchors_from_offsets([((0.0, 0.0, -210.0, 10.0, 10.0, -72.0),
+                                     _rec_one)])[0][0]
+    check("反推锚点: 件拉长 20mm 后锚点一模一样(不再漂)",
+          _a_ok[:3] == (1046.745, -46.859, -85.0) and _a_long[:3] == _a_ok[:3],
+          "%r vs %r" % (_a_ok, _a_long))
+    check("反推锚点: 旧格式(只有偏移)仍按体中心换算 —— 老模型兼容",
+          abs(anchors_from_offsets(
+              [((0.0, 0.0, -210.0, 10.0, 10.0, -72.0),
+                parse_anchor_off("0,0,50,0"))])[0][0][2] + 91.0) < 1e-9)
+
+    _three = list(_items) + [
+        ((bb[0] + 200.0, bb[1] + 150.0, bb[2],
+          bb[3] + 200.0, bb[4] + 150.0, bb[5]),
+         parse_anchor_off("%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,0"
+                          % (_anchor[0] + 200.0, _anchor[1] + 150.0,
+                             _anchor[2], c[0] + 200.0, c[1] + 150.0, c[2])))
+        for (bb, _r), c in zip(_items, _centers)]
+    _anch2, _miss2 = anchors_from_offsets(_three)
     check("反推锚点: 同件放两处 → 2 处实例(不会少也不会多)",
           len(_anch2) == 2 and _miss2 == 0, str(_anch2))
 
@@ -645,11 +674,16 @@ def selftest(dxf_path=None):
     def _bbz(zmin, zmax, x=100.0):
         return (x, 50.0, zmin, x, 50.0, zmax)
 
+    def _rec_at(ax, ay, az, cx, cy, cz):
+        return parse_anchor_off("%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,0"
+                                % (ax, ay, az, cx, cy, cz))
+
     _old_items = [
-        (_bbz(-70.0, -40.0), (0.0, 0.0, -30.0, 0.0)),     # 实例A 头(锚点100,50,-85)
-        (_bbz(-120.0, -80.0), (0.0, 0.0, 15.0, 0.0)),     # 实例A 咀身(同锚点)
-        (_bbz(-70.0, -40.0, x=300.0), (200.0, 0.0, -30.0, 0.0)),  # 实例B 头(锚点300,50,-85)
-        (None, (0.0, 0.0, 0.0, 0.0)),                     # 坏记录不进组
+        (_bbz(-70.0, -40.0), _rec_at(100.0, 50.0, -85.0, 100.0, 50.0, -55.0)),
+        (_bbz(-120.0, -80.0), _rec_at(100.0, 50.0, -85.0, 100.0, 50.0, -100.0)),
+        (_bbz(-70.0, -40.0, x=300.0),
+         _rec_at(300.0, 50.0, -85.0, 300.0, 50.0, -55.0)),
+        (None, _rec_at(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)),   # 坏记录不进组
     ]
     _grp = group_anchor_instances(_old_items)
     check("旧件分实例: 同锚点归同组, 坏记录不进组",

@@ -330,21 +330,25 @@ def scan_model_bodies(work_part, log=None):
 
 
 def _mark_anchor(obj, anchor, ang, uf):
-    """把「锚点 − 该体包围盒中心」与放置角记在体上(替换标准件时唯一的定位依据)。
+    """把**锚点的绝对坐标** + 记时的体中心 + 放置角记在体上(v3.3, 用户 2026-09-18 定案)。
 
-    记的是**偏移**不是绝对坐标: 偏移在整体平移下不变, 所以用户把标准件挪到别处
-    之后, 反推出来的锚点会跟着走(动态锚点)。量不到包围盒/写属性失败都只跳过 ——
-    替换脚本会对这种体报"无标准件锚点", 不影响本次建模。
+    ⭐ **锚点就是图纸上那个圆心, 永远不变** —— 件被拉长/缩短多少都不该动它。
+    所以这里记的是**绝对坐标**, 不再是"锚点 − 体中心"的偏移: 偏移会随几何变,
+    实机就是这么漂的(同一个件的 6 个实例量出 −95/−75/−85 三种锚点)。
+
+    体中心只作**留档/诊断**, 反推时不用它 —— 旧格式(只有偏移)才靠它换算,
+    那是给老模型兼容的(见 _anchor_of_record)。
     """
     from cad3d.modeling.mold_cut import _body_bbox
     bb = _body_bbox(uf, obj, None) if uf is not None else None
     if not bb or len(bb) < 6:
         return False
     try:
-        val = "%.6f,%.6f,%.6f,%.6f" % (
-            float(anchor[0]) - (float(bb[0]) + float(bb[3])) / 2.0,
-            float(anchor[1]) - (float(bb[1]) + float(bb[4])) / 2.0,
-            float(anchor[2]) - (float(bb[2]) + float(bb[5])) / 2.0,
+        val = "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f" % (
+            float(anchor[0]), float(anchor[1]), float(anchor[2]),
+            (float(bb[0]) + float(bb[3])) / 2.0,
+            (float(bb[1]) + float(bb[4])) / 2.0,
+            (float(bb[2]) + float(bb[5])) / 2.0,
             float(ang or 0.0))
         obj.SetAttribute(ANCHOR_ATTR, val)
         return True
@@ -353,20 +357,46 @@ def _mark_anchor(obj, anchor, ang, uf):
 
 
 def parse_anchor_off(text):
-    """(纯逻辑) 读体上的锚点记录 "dx,dy,dz,ang" → (dx,dy,dz,ang); 坏了/空回 None。"""
+    """(纯逻辑) 读体上的锚点记录 → (锚点3, 记时体中心3 或 None, 角度); 坏了/空 → None。
+
+    v3.3 起是 **7 个数**「锚点x, y, z, 记时体中心x, y, z, 角度」—— 锚点存**绝对
+    坐标**, 件长度怎么改都不动它。
+    旧版是 4 个数「dx, dy, dz, 角度」= 锚点 − 体中心 的**偏移**(留给老模型换算)。
+    """
     try:
         parts = [float(v) for v in str(text).split(",")]
     except (TypeError, ValueError):
         return None
-    if len(parts) < 3:
-        return None
-    return (parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else 0.0)
+    if len(parts) >= 7:
+        return ((parts[0], parts[1], parts[2]),
+                (parts[3], parts[4], parts[5]), parts[6])
+    if len(parts) >= 3:
+        return ((parts[0], parts[1], parts[2]), None,
+                parts[3] if len(parts) > 3 else 0.0)
+    return None
+
+
+def _anchor_of_record(bb, rec):
+    """(纯逻辑) 体记录 + 当前包围盒 → 该体的锚点 (x, y, z, 角度)。
+
+    v3.3 记录里就是**绝对锚点** → 原样返回(**件长度怎么变都不动**)。
+    旧格式(只存了偏移) → 锚点 = 当前体中心 + 偏移(老模型兼容, 会随几何漂)。
+    """
+    anch, ctr, ang = rec
+    if ctr is not None:
+        return (float(anch[0]), float(anch[1]), float(anch[2]),
+                float(ang or 0.0))
+    cx = (float(bb[0]) + float(bb[3])) / 2.0
+    cy = (float(bb[1]) + float(bb[4])) / 2.0
+    cz = (float(bb[2]) + float(bb[5])) / 2.0
+    return (cx + float(anch[0]), cy + float(anch[1]), cz + float(anch[2]),
+            float(ang or 0.0))
 
 
 def anchors_from_offsets(items, tol=0.05):
     """(纯逻辑) 体上的锚点记录 → 去重后的实例锚点 + 缺记录的体数。
 
-    items: [(包围盒6, 偏移4 或 None), ...] —— 每个体一条(偏移由 _mark_anchor 写)。
+    items: [(包围盒6, 解析后的记录 或 None), ...] —— 每个体一条。
     同件的多个体各算一次, 算出来**必须重合**(纯算术), 所以按重合去重即得
     "一个实例一个锚点" —— 不用认实体、不用图纸、也不会留下没处理的体。
     返回 ([(x, y, z, ang), ...], 缺记录的体数)
@@ -375,14 +405,11 @@ def anchors_from_offsets(items, tol=0.05):
     missing = 0
     for row in (items or []):
         try:
-            bb, off = row
-            if off is None or len(bb) < 6:
+            bb, rec = row
+            if rec is None or len(bb) < 6:
                 missing += 1
                 continue
-            a = ((float(bb[0]) + float(bb[3])) / 2.0 + off[0],
-                 (float(bb[1]) + float(bb[4])) / 2.0 + off[1],
-                 (float(bb[2]) + float(bb[5])) / 2.0 + off[2],
-                 off[3] if len(off) > 3 else 0.0)
+            a = _anchor_of_record(bb, rec)
         except (TypeError, ValueError, IndexError):
             missing += 1
             continue
@@ -396,7 +423,7 @@ def anchors_from_offsets(items, tol=0.05):
 
 
 def group_anchor_instances(items, tol=0.05):
-    """(纯逻辑) [(包围盒6, 偏移4|None)] → [((x,y,z,ang), [体下标...]), ...]。
+    """(纯逻辑) [(包围盒6, 解析后的记录|None)] → [((x,y,z,ang), [体下标...]), ...]。
 
     与 anchors_from_offsets 同一"锚点重合即同实例"口径, 但保留分组信息
     (哪些体属于哪一处实例) —— 热咀替换调长度要按实例算旧件长度用。
@@ -405,13 +432,10 @@ def group_anchor_instances(items, tol=0.05):
     groups = []
     for k, row in enumerate(items or []):
         try:
-            bb, off = row
-            if off is None or len(bb) < 6:
+            bb, rec = row
+            if rec is None or len(bb) < 6:
                 continue
-            a = ((float(bb[0]) + float(bb[3])) / 2.0 + off[0],
-                 (float(bb[1]) + float(bb[4])) / 2.0 + off[1],
-                 (float(bb[2]) + float(bb[5])) / 2.0 + off[2],
-                 off[3] if len(off) > 3 else 0.0)
+            a = _anchor_of_record(bb, rec)
         except (TypeError, ValueError, IndexError):
             continue
         for g in groups:
