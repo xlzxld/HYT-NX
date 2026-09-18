@@ -7,11 +7,13 @@ from cad3d.core.constants import SCRIPT_VERSION
 
 MARK_ATTR = "CAD3D"
 TYPE_ATTR = "CAD3D_TYPE"
-# 标准件体的"锚点记录"属性: 值形如 "dx,dy,dz,ang"
-#   dx,dy,dz = 放置锚点 − 该体世界包围盒中心(主脚本放置时写; 替换标准件时按
-#              "当前锚点 = 当前体中心 + 偏移" 反推 —— 记偏移不记绝对坐标, 用户
-#              把件挪走后反推出来的锚点会跟着走)
-#   ang      = 该件的放置角(压线板逐板判向用; 其余件恒 0)
+# 标准件体的"锚点记录"属性: v3.3 起是 7 个数「锚点x,y,z, 记时体中心x,y,z, 角度」
+#   反推(v3.5 动态锚点): 当前锚点 = 当前体中心 + (记时锚点 − 记时体中心)
+#   —— 记时锚点与记时体中心构成偏移, 件被平移(挪到模具上)后锚点**跟着走**;
+#   而锚点在 placed_hook(移面/回位)之后才记, 长度怎么改都不会漂。
+#   旧版 4 个数「dx,dy,dz,ang」= 锚点 − 体中心 的偏移, 同口径换算(老模型兼容)。
+#   ang = 该件的放置角(压线板逐板判向用; 其余件恒 0)。
+#   ⚠️ 只跟平移; 旋转对位不在支持范围。
 ANCHOR_ATTR = "CAD3D_ANCHOR_OFF"
 
 
@@ -44,7 +46,8 @@ def _type_of(obj):
 
 
 def _anchor_of(obj):
-    """读体上的锚点记录("dx,dy,dz,ang"); 没有记录/读不到返回空串(旧版产物)。"""
+    """读体上的锚点记录("锚点x,y,z, 记时中心x,y,z, 角度" 或旧版 "dx,dy,dz,ang");
+    没有记录/读不到返回空串。"""
     try:
         return str(obj.GetStringAttribute(ANCHOR_ATTR) or "")
     except Exception:

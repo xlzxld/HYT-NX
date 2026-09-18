@@ -12,8 +12,8 @@
      一根咀底/顶面 z 是 0/100 的咀, 选择范围就是 [40,140]: 咀尖底部 40mm
      固定不动, **范围内被选中的一切面都要移动**; **所有被选中实体的带内面
      合成一份、一次「移动面」一起移**(有多少实体被选中, 就移多少实体中被
-     选中的面, 不能只移一个实体的); 单步 ≤10mm(大了相邻几何会被扯脱,
-     实机验证过);
+     选中的面, 不能只移一个实体的); **一步移到位**(v3.5: 之前拆小步是
+     因为选择范围窄容易扯脱, 范围扩到 [底+40,顶+40] 后实测不必再拆);
   3. 移多移少、往哪边移**现场校准**, 不猜符号: 先探一小步(−2mm)复测, 量出
      "每移 1mm 总长变多少"(符号各件不同), 再按斜率补齐, 复测、不齐再补
      (有轮数上限);
@@ -38,12 +38,8 @@ from cad3d.core.constants import (
 _PROBE_STEP = 2.0
 # 斜率下限: |斜率| 低于它 = 移了面长度也不跟变(范围内面不控制总长), 放弃
 _SLOPE_MIN = 0.2
-# 补差主循环轮数(每轮: 按当前斜率补 ≤10mm → 复测; 与 v3.2 实机验证过的预算一致)
-_MAX_STEPS = 12
-# 单步移面上限(mm) —— 一步拽 20mm 以上会把相邻几何扯脱(NX 报"某个面不再
-# 与先前的邻近对象相交", 实机 5/6 处全挂); v3.3 改成整量一步移后又翻车
-# (用户 2026-09-19: "在你没改之前至少移动面是正确的"), 恢复 ≤10mm 小步。
-_MAX_STEP = 10.0
+# 补差主循环轮数(每轮: 按斜率一步移到位 → 复测; 留几轮是给斜率重校兜底)
+_MAX_STEPS = 6
 # 长度对齐判定容差(mm)
 _LEN_TOL = 0.05
 
@@ -490,7 +486,7 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
     hook 签名 (fname, 序号, 锚点, 规则, 体列表, 待删组件列表) → 新体列表
     (移面就地改 + 定位点回位, 体列表原样返回)。
     流程 = 用户 2026-09-19 定案: 摆正(放置时已做) → 带内移面(所有被选实体
-    的面一起移, 单步 ≤10mm, 方向探步校准) → 去参 → 整件点对点平移回位,
+    的面一起移, 一步移到位, 方向探步校准) → 去参 → 整件点对点平移回位,
     让定位点与放置点重新重合。
     """
     try:
@@ -601,7 +597,7 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
                 % (fname, idx, cur))
             return tools
 
-        # ② 探向: 先移一小步(≤10mm 安全步长内), 量出"每移 1mm 总长变多少"
+        # ② 探向: 先移一小步, 量出"每移 1mm 总长变多少"(符号各件不同, 不猜)
         cum = 0.0                    # 范围内面被带走的累计量(定位点在带内=回位量)
         applied = _move(-_PROBE_STEP)
         if applied == 0.0:
@@ -621,16 +617,12 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
 
-        # ③ 按斜率补差(每步 ≤10mm), 复测, 不齐再补; 每轮用实测重校斜率
+        # ③ 按斜率**一步移到位**(用户 2026-09-19 定案: 之前失败是选择范围窄,
+        # 现在范围大了不用拆小步), 复测, 不齐再补; 每轮用实测重校斜率
         for _r in range(_MAX_STEPS):
             step = step_for(old_len, cur, slope)
             if step == 0.0:
                 break
-            if abs(step) > _MAX_STEP:
-                log("【长度对齐】%s 第 %d 处: 还差 %.4g, 这一小步先移 %.4g"
-                    % (fname, idx, old_len - cur,
-                       _MAX_STEP if step > 0 else -_MAX_STEP))
-                step = _MAX_STEP if step > 0 else -_MAX_STEP
             applied = _move(step)
             if applied == 0.0:
                 log("【长度对齐】%s 第 %d 处: 移面提交失败, 保持现状"

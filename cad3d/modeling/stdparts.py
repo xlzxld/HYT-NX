@@ -330,14 +330,14 @@ def scan_model_bodies(work_part, log=None):
 
 
 def _mark_anchor(obj, anchor, ang, uf):
-    """把**锚点的绝对坐标** + 记时的体中心 + 放置角记在体上(v3.3, 用户 2026-09-18 定案)。
+    """把「记时锚点 + 记时体中心 + 放置角」(7 个数)记在体上。
 
-    ⭐ **锚点就是图纸上那个圆心, 永远不变** —— 件被拉长/缩短多少都不该动它。
-    所以这里记的是**绝对坐标**, 不再是"锚点 − 体中心"的偏移: 偏移会随几何变,
-    实机就是这么漂的(同一个件的 6 个实例量出 −95/−75/−85 三种锚点)。
-
-    体中心只作**留档/诊断**, 反推时不用它 —— 旧格式(只有偏移)才靠它换算,
-    那是给老模型兼容的(见 _anchor_of_record)。
+    反推口径(v3.5, 用户 2026-09-19 定案): **锚点 = 当前体中心 +
+    (记时锚点 − 记时体中心)** —— 记时锚点与记时体中心一起构成一个
+    **偏移**, 件被平移(挪到模具上)后反推出的锚点会**跟着走**;
+    而锚点是在 placed_hook(移面/回位)**之后**记的, 所以长度怎么改
+    都不会漂(记时中心就是改完后的中心, 偏移当场就是准的)。
+    旧版只存偏移(4 个数)也按同口径换算(老模型兼容)。
     """
     from cad3d.modeling.mold_cut import _body_bbox
     bb = _body_bbox(uf, obj, None) if uf is not None else None
@@ -357,11 +357,11 @@ def _mark_anchor(obj, anchor, ang, uf):
 
 
 def parse_anchor_off(text):
-    """(纯逻辑) 读体上的锚点记录 → (锚点3, 记时体中心3 或 None, 角度); 坏了/空 → None。
+    """(纯逻辑) 读体上的锚点记录 → (记时锚点3, 记时体中心3 或 None, 角度); 坏了/空 → None。
 
-    v3.3 起是 **7 个数**「锚点x, y, z, 记时体中心x, y, z, 角度」—— 锚点存**绝对
-    坐标**, 件长度怎么改都不动它。
-    旧版是 4 个数「dx, dy, dz, 角度」= 锚点 − 体中心 的**偏移**(留给老模型换算)。
+    v3.3 起是 **7 个数**「锚点x, y, z, 记时体中心x, y, z, 角度」——
+    记时锚点与记时体中心一起构成偏移(见 _anchor_of_record)。
+    旧版是 4 个数「dx, dy, dz, 角度」= 锚点 − 体中心 的偏移(老模型兼容)。
     """
     try:
         parts = [float(v) for v in str(text).split(",")]
@@ -379,18 +379,23 @@ def parse_anchor_off(text):
 def _anchor_of_record(bb, rec):
     """(纯逻辑) 体记录 + 当前包围盒 → 该体的锚点 (x, y, z, 角度)。
 
-    v3.3 记录里就是**绝对锚点** → 原样返回(**件长度怎么变都不动**)。
-    旧格式(只存了偏移) → 锚点 = 当前体中心 + 偏移(老模型兼容, 会随几何漂)。
+    动态锚点(v3.5, 用户 2026-09-19 定案): **锚点 = 当前体中心 + 记时偏移**,
+    记时偏移 = 记时锚点 − 记时体中心(7 数记录); 件被平移(挪到模具上)后,
+    当前体中心跟着走 → 反推出的锚点**跟着走**。
+    旧格式(4 数, 只存偏移)同口径: 锚点 = 当前体中心 + 偏移。
+    ⚠️ 只跟平移; 旋转对位不在支持范围(记录里没有角度信息可用)。
     """
     anch, ctr, ang = rec
-    if ctr is not None:
-        return (float(anch[0]), float(anch[1]), float(anch[2]),
-                float(ang or 0.0))
     cx = (float(bb[0]) + float(bb[3])) / 2.0
     cy = (float(bb[1]) + float(bb[4])) / 2.0
     cz = (float(bb[2]) + float(bb[5])) / 2.0
-    return (cx + float(anch[0]), cy + float(anch[1]), cz + float(anch[2]),
-            float(ang or 0.0))
+    if ctr is not None:
+        ox = float(anch[0]) - float(ctr[0])
+        oy = float(anch[1]) - float(ctr[1])
+        oz = float(anch[2]) - float(ctr[2])
+    else:
+        ox, oy, oz = float(anch[0]), float(anch[1]), float(anch[2])
+    return (cx + ox, cy + oy, cz + oz, float(ang or 0.0))
 
 
 def anchors_from_offsets(items, tol=0.05):
