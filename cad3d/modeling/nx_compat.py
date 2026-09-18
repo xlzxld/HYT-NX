@@ -7,6 +7,12 @@ from cad3d.core.constants import SCRIPT_VERSION
 
 MARK_ATTR = "CAD3D"
 TYPE_ATTR = "CAD3D_TYPE"
+# 标准件体的"锚点记录"属性: 值形如 "dx,dy,dz,ang"
+#   dx,dy,dz = 放置锚点 − 该体世界包围盒中心(主脚本放置时写; 替换标准件时按
+#              "当前锚点 = 当前体中心 + 偏移" 反推 —— 记偏移不记绝对坐标, 用户
+#              把件挪走后反推出来的锚点会跟着走)
+#   ang      = 该件的放置角(压线板逐板判向用; 其余件恒 0)
+ANCHOR_ATTR = "CAD3D_ANCHOR_OFF"
 
 
 def _set_expr(expr, value_str):
@@ -33,6 +39,14 @@ def _type_of(obj):
     """读体类型标记; 无标记返回空串(旧版流水线产物)。"""
     try:
         return str(obj.GetStringAttribute(TYPE_ATTR) or "")
+    except Exception:
+        return ""
+
+
+def _anchor_of(obj):
+    """读体上的锚点记录("dx,dy,dz,ang"); 没有记录/读不到返回空串(旧版产物)。"""
+    try:
+        return str(obj.GetStringAttribute(ANCHOR_ATTR) or "")
     except Exception:
         return ""
 

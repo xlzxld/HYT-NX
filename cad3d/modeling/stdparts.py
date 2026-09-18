@@ -9,7 +9,7 @@ from cad3d.core.constants import (
     COMP_PREFIX, FEATURE_PREFIX, SCRIPT_VERSION, STD_MAX_ANCHORS
 )
 from cad3d.modeling.nx_compat import (
-    _iter, _bodies_of, _matrix3x3, _mark_type, _type_of, MARK_ATTR
+    _iter, _bodies_of, _matrix3x3, _mark_type, _type_of, ANCHOR_ATTR, MARK_ATTR
 )
 from cad3d.modeling.purge import _CREATED_FEATURES
 from cad3d.geom.topo import collect_circle_anchors
@@ -329,230 +329,70 @@ def scan_model_bodies(work_part, log=None):
     return rows
 
 
-def _snap_tol(anchors):
-    """(纯逻辑) 吸附容差 = 锚点最小间距的一半(上限 5mm); 锚点少于 2 个取 5mm。
+def _mark_anchor(obj, anchor, ang, uf):
+    """把「锚点 − 该体包围盒中心」与放置角记在体上(替换标准件时唯一的定位依据)。
 
-    取"最小间距的一半"保证一个体不会被吸到隔壁实例的锚点上; 封顶 5mm 免得
-    件距很大时容差过宽、把离图纸很远的旧件也硬吸进来。
+    记的是**偏移**不是绝对坐标: 偏移在整体平移下不变, 所以用户把标准件挪到别处
+    之后, 反推出来的锚点会跟着走(动态锚点)。量不到包围盒/写属性失败都只跳过 ——
+    替换脚本会对这种体报"无标准件锚点", 不影响本次建模。
     """
-    if len(anchors) < 2:
-        return 5.0
-    best = None
-    for i in range(len(anchors)):
-        for j in range(i + 1, len(anchors)):
-            d = math.hypot(anchors[i][0] - anchors[j][0],
-                           anchors[i][1] - anchors[j][1])
-            if best is None or d < best:
-                best = d
-    return 5.0 if best is None else min(best / 2.0, 5.0)
-
-
-def snap_bodies_to_anchors(anchors, points, tol=None):
-    """(纯逻辑) 旧件体位置 → 吸附到最近的图纸锚点, 同锚点的体归为一组。
-
-    一键替换的定位核心(2026-09-18 定案)。两个坑一起治:
-      · 重复: 一个 .prt 里若有多个实体, 每个实体都会单独成一个体且带同一个
-        STD: 标记。若按"每个体一个放置点"就会把 1 个实例放大成 N 个 ——
-        这里先归组, 一组只算一个实例。
-      · 跑偏: 件的零件原点就是图纸定位点(全部 ref 已归零), 几何中心并不在
-        原点上。所以放置点不用体中心, 而用吸附到的**图纸锚点**(精确)。
-
-    anchors: [(x, y[, 角度]), ...]  图纸锚点(DXF 圆心/线中点, 精确)
-    points : [(x, y), ...]          旧件体的位置(包围盒中心, 只是粗位置)
-    tol    : 吸附容差; None 走 _snap_tol
-
-    返回 (picked, unmatched) —— 里面的下标都是传入 points 的下标, 调用方
-    据此找回对应的是哪个体:
-      picked    : [(x, y, 角度, [体下标...]), ...] 按 anchors 原顺序, 只含吸到体的锚点
-      unmatched : [体下标, ...] 离所有锚点都超容差的位置 —— 调用方对这些体
-                  **不删也不放**(安全优先), 并告警提示图纸可能不是这张
-    """
-    out_anchors = []
-    for a in (anchors or []):
-        try:
-            ax, ay = float(a[0]), float(a[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        ang = 0.0
-        if len(a) > 2:
-            try:
-                ang = float(a[2])
-            except (TypeError, ValueError):
-                ang = 0.0
-        out_anchors.append((ax, ay, ang))
-    pts = []
-    for k, p in enumerate(points or []):
-        try:
-            pts.append((k, float(p[0]), float(p[1])))
-        except (TypeError, ValueError, IndexError):
-            pts.append((k, None, None))     # 坏点也保留下标, 免得下标错位删错体
-    if not out_anchors:
-        return [], [k for k, _x, _y in pts]
-    if tol is None:
-        tol = _snap_tol(out_anchors)
-    groups = [[] for _ in out_anchors]
-    unmatched = []
-    for k, px, py in pts:
-        if px is None or py is None:
-            unmatched.append(k)
-            continue
-        best, best_d = -1, None
-        for i, (ax, ay, _ang) in enumerate(out_anchors):
-            d = math.hypot(px - ax, py - ay)
-            if best_d is None or d < best_d:
-                best, best_d = i, d
-        if best >= 0 and best_d is not None and best_d <= tol:
-            groups[best].append(k)
-        else:
-            unmatched.append(k)
-    picked = [(out_anchors[i][0], out_anchors[i][1], out_anchors[i][2], idxs)
-              for i, idxs in enumerate(groups) if idxs]
-    return picked, unmatched
-
-
-def _ext_close(a, b, tol):
-    """(纯逻辑) 两个包围盒尺寸是否在容差内一致。"""
+    from cad3d.modeling.mold_cut import _body_bbox
+    bb = _body_bbox(uf, obj, None) if uf is not None else None
+    if not bb or len(bb) < 6:
+        return False
     try:
-        return (abs(float(a[0]) - float(b[0])) <= tol
-                and abs(float(a[1]) - float(b[1])) <= tol
-                and abs(float(a[2]) - float(b[2])) <= tol)
-    except (TypeError, ValueError, IndexError):
+        val = "%.6f,%.6f,%.6f,%.6f" % (
+            float(anchor[0]) - (float(bb[0]) + float(bb[3])) / 2.0,
+            float(anchor[1]) - (float(bb[1]) + float(bb[4])) / 2.0,
+            float(anchor[2]) - (float(bb[2]) + float(bb[5])) / 2.0,
+            float(ang or 0.0))
+        obj.SetAttribute(ANCHOR_ATTR, val)
+        return True
+    except Exception:
         return False
 
 
-def solve_placements(local_rows, world_rows, flip=False, tol=0.05):
-    """(纯逻辑) 把模型里的体对回零件里的实体, 反推放置锚点并按重合归组。
+def parse_anchor_off(text):
+    """(纯逻辑) 读体上的锚点记录 "dx,dy,dz,ang" → (dx,dy,dz,ang); 坏了/空回 None。"""
+    try:
+        parts = [float(v) for v in str(text).split(",")]
+    except (TypeError, ValueError):
+        return None
+    if len(parts) < 3:
+        return None
+    return (parts[0], parts[1], parts[2], parts[3] if len(parts) > 3 else 0.0)
 
-    原理(2026-09-18 用户拍板, 取代原来的图纸容差吸附):
-      标准件都已归零 —— **零件原点就是图纸定位点**; 放置又是纯平移
-      (ref 全 0、off 为 0 ⇒ pos = 锚点)。所以拿件里**任意一个**实体都能反推
-      同一个锚点:
-          锚点 = 该体世界中心 − R · 该体零件局部中心    (R 见 flip)
-      同一个件的多个实体各推一次, 推出来的必须是同一个点 —— 这份"互相印证"
-      既是归组的依据, 也是正确性自检(比按容差猜测可靠)。
 
-    local_rows: [(尺寸3, 中心3), ...]  零件坐标系里各实体(见 read_local_bodies)
-    world_rows: [(尺寸3, 中心3), ...]  模型里该件的各体
-    flip      : 该件当初是否 -Z 翻转插入(绕 X 180°, 局部 y/z 分量反号)
-    tol       : 尺寸匹配/位置重合的容差(mm)
+def anchors_from_offsets(items, tol=0.05):
+    """(纯逻辑) 体上的锚点记录 → 去重后的实例锚点 + 缺记录的体数。
 
-    返回 {"anchors": [锚点3, ...], "matched": [体下标, ...],
-          "unmatched": [体下标, ...], "ambiguous": bool}
-      ambiguous=True 表示**件里有两个实体包围盒尺寸完全相同**, 认不清谁是谁,
-      此时不返回锚点, 由调用方走图纸兜底 —— 宁可不用, 不能认错。
+    items: [(包围盒6, 偏移4 或 None), ...] —— 每个体一条(偏移由 _mark_anchor 写)。
+    同件的多个体各算一次, 算出来**必须重合**(纯算术), 所以按重合去重即得
+    "一个实例一个锚点" —— 不用认实体、不用图纸、也不会留下没处理的体。
+    返回 ([(x, y, z, ang), ...], 缺记录的体数)
     """
-    res = {"anchors": [], "matched": [], "unmatched": [], "ambiguous": False}
-    loc = []
-    for row in (local_rows or []):
+    out = []
+    missing = 0
+    for row in (items or []):
         try:
-            e, c = row
-            loc.append(((float(e[0]), float(e[1]), float(e[2])),
-                        (float(c[0]), float(c[1]), float(c[2]))))
-        except (TypeError, ValueError, IndexError):
-            continue
-    wr = []
-    for i, row in enumerate(world_rows or []):
-        try:
-            e, c = row
-            wr.append((i, (float(e[0]), float(e[1]), float(e[2])),
-                       (float(c[0]), float(c[1]), float(c[2]))))
-        except (TypeError, ValueError, IndexError):
-            continue
-    if not loc or not wr:
-        res["unmatched"] = [i for i, _e, _c in wr]
-        return res
-    for i in range(len(loc)):
-        for j in range(i + 1, len(loc)):
-            if _ext_close(loc[i][0], loc[j][0], tol):
-                res["ambiguous"] = True
-                res["unmatched"] = [i for i, _e, _c in wr]
-                return res
-    # 单实体件(接线盒-16针等)没法互相印证, 一个体就是一个实例
-    min_votes = 1 if len(loc) == 1 else 2
-    cands = []
-    for wi, wext, wctr in wr:
-        for lext, lctr in loc:
-            if not _ext_close(wext, lext, tol):
+            bb, off = row
+            if off is None or len(bb) < 6:
+                missing += 1
                 continue
-            ly = -lctr[1] if flip else lctr[1]
-            lz = -lctr[2] if flip else lctr[2]
-            cands.append(((wctr[0] - lctr[0], wctr[1] - ly, wctr[2] - lz), wi))
-    clusters = []                   # [(代表位置, {体下标, ...}), ...]
-    for pos, wi in cands:
-        for rep, wis in clusters:
-            if (abs(pos[0] - rep[0]) <= tol and abs(pos[1] - rep[1]) <= tol
-                    and abs(pos[2] - rep[2]) <= tol):
-                wis.add(wi)
+            a = ((float(bb[0]) + float(bb[3])) / 2.0 + off[0],
+                 (float(bb[1]) + float(bb[4])) / 2.0 + off[1],
+                 (float(bb[2]) + float(bb[5])) / 2.0 + off[2],
+                 off[3] if len(off) > 3 else 0.0)
+        except (TypeError, ValueError, IndexError):
+            missing += 1
+            continue
+        for e in out:
+            if (abs(a[0] - e[0]) <= tol and abs(a[1] - e[1]) <= tol
+                    and abs(a[2] - e[2]) <= tol):
                 break
         else:
-            clusters.append((pos, {wi}))
-    matched = set()
-    for rep, wis in clusters:
-        if len(wis) >= min_votes:
-            res["anchors"].append(rep)
-            matched |= wis
-    res["matched"] = sorted(matched)
-    res["unmatched"] = [wi for wi, _e, _c in wr if wi not in matched]
-    return res
-
-
-_PROBE_PREFIX = "CAD3D_PROBE_"
-
-
-def read_local_bodies(session, work_part, part_path, log=None):
-    """量一个标准件 prt 里各实体在**零件坐标系**下的包围盒 → [(尺寸3, 中心3)]。
-
-    做法: 临时放一个组件 → 量它"原型体"(prototype body 就在零件自己的坐标系
-    里, 量出来的自然是零件局部坐标) → 立刻把组件删掉。走的是项目里已经跑通的
-    AddComponent + 体包围盒两条路, 不引入新接口。
-    放不进去/量不到就返回 [] (调用方退回图纸定位)。
-    """
-    import NXOpen
-
-    if work_part is None or not part_path or not os.path.isfile(part_path):
-        return []
-    ca = getattr(work_part, "ComponentAssembly", None)
-    if ca is None:
-        return []
-    stem = os.path.splitext(os.path.basename(part_path))[0]
-    comp = None
-    try:
-        pos = NXOpen.Point3d(0.0, 0.0, 0.0)
-        m3 = _matrix3x3(NXOpen, False)
-        try:
-            comp, _ls = ca.AddComponent(part_path, "MODEL",
-                                        _PROBE_PREFIX + stem, pos, m3, -1)
-        except TypeError:
-            comp = ca.AddComponent(part_path, "MODEL", _PROBE_PREFIX + stem,
-                                   pos, m3, -1, False)
-    except Exception as ex:
-        if log is not None:
-            log("  量 %s 的零件局部尺寸失败(临时组件放不进去): %s" % (stem, ex))
-        return []
-    try:
-        try:
-            import NXOpen.UF
-            uf = NXOpen.UF.UFSession.GetUFSession()
-            from cad3d.modeling.mold_cut import _body_bbox
-        except Exception as ex:
-            if log is not None:
-                log("  量 %s 的零件局部尺寸失败(包围盒接口不可用): %s" % (stem, ex))
-            return []
-        out = []
-        for b in _iter(getattr(comp.Prototype, "Bodies", None)):
-            bb = _body_bbox(uf, b, None)
-            if not bb or len(bb) < 6:
-                continue
-            out.append(((float(bb[3]) - float(bb[0]),
-                         float(bb[4]) - float(bb[1]),
-                         float(bb[5]) - float(bb[2])),
-                        ((float(bb[0]) + float(bb[3])) / 2.0,
-                         (float(bb[1]) + float(bb[4])) / 2.0,
-                         (float(bb[2]) + float(bb[5])) / 2.0)))
-        return out
-    finally:
-        if comp is not None:
-            _batch_delete(session, [comp], log, "临时的探测组件")
+            out.append(a)
+    return out, missing
 
 
 def _usable_parts(rules, log):
@@ -621,9 +461,9 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                     stats=None, anchors_override=None):
     """阶段 6: 按规则放置 stdparts 标准件(独立体)并按需布尔。
 
-    anchors_override: {prt 文件名: [(x, y[, 角度]), ...]} —— 一键替换标准件时直接
-      指定放置点(位置取自被换掉的旧件), 不再去图纸里找圆; 传 None 走原逻辑
-      (按 DXF 圆锚点), 主流水线的行为不变。
+    anchors_override: {prt 文件名: [(x, y, z[, 角度]), ...]} —— 一键替换标准件时直接
+      指定放置点(取自被换掉的旧件体上记的锚点), 不去图纸找圆, z 也照给的走
+      (件被挪过 Z 也能跟上); 传 None 走原逻辑(按 DXF 圆锚点), 主流水线行为不变。
 
     (v2.4 提速) 放置与布尔解耦为两段执行, 几何结果与旧版逐锚点完全一致:
       段1 逐锚点: 装配组件 → 提升体(组件不即时删, 只登记待删清单);
@@ -648,6 +488,13 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
     no_ref = []
     log("【标准件】开始: 共 %d 个件的规则。" % len(std_rules))
     ca = work_part.ComponentAssembly
+    uf = None
+    try:
+        import NXOpen.UF
+        uf = NXOpen.UF.UFSession.GetUFSession()
+    except Exception as ex:
+        log("【标准件】拿不到 UF 会话, 体上不记锚点(%s)—— 以后替换这些件会报"
+            "“无标准件锚点”。" % ex)
     pending_comps = []          # 段2 统一批量删除的临时组件
     bool_plan = []              # 段2 合并执行的布尔计划
     bool_counts = {}            # fname -> 布尔生效锚点数(段2 结算后补日志)
@@ -667,16 +514,19 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                 % (fname, rule["layer"] or "全部", rule["r_min"], rule["r_max"]))
             continue
         if anchors_override is not None:
-            # 替换模式: 放置点由调用方给定(取自被换掉的旧件), 不去图纸找圆
+            # 替换模式: 放置点由调用方给定(取自被换掉的旧件体上记的锚点),
+            # 不去图纸找圆; z 也照给的走(件被挪过 Z 也能跟上)
             anchors = []
             for _a in (anchors_override.get(fname) or []):
                 try:
                     anchors.append((float(_a[0]), float(_a[1]),
-                                    float(_a[2]) if len(_a) > 2 else 0.0))
+                                    float(_a[2]) if len(_a) > 2 else None,
+                                    float(_a[3]) if len(_a) > 3 else 0.0))
                 except (TypeError, ValueError, IndexError) as ex:
                     log("【标准件】%s: 有个替换位置读不出来, 已跳过(%s)。" % (fname, ex))
         else:
-            anchors = collect_circle_anchors(layers, rule, log=log)
+            anchors = [(a[0], a[1], None, float(a[2]) if len(a) > 2 else 0.0)
+                       for a in collect_circle_anchors(layers, rule, log=log)]
         if not anchors:
             log("【标准件】%s: 按规则(图层=%s, 半径 %.4g~%.4g)没找到能放的位置, "
                 "跳过。" % (fname, rule["layer"] or "全部",
@@ -714,14 +564,15 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
         n_ok = n_body = 0
         for i, anch in enumerate(anchors):
             cx, cy = anch[0], anch[1]
-            ang = float(anch[2]) if auto_rot else 0.0
+            z_i = z if anch[2] is None else float(anch[2])
+            ang = float(anch[3]) if auto_rot else 0.0
             m3 = _matrix3x3(nx, flip, ang)
             name = "%s%s_%d" % (COMP_PREFIX, stem, i + 1)
             try:
                 dx, dy, dz = _place_delta((ref_xy[0], ref_xy[1], ref_z),
                                           flip, off)
                 dx, dy = _rot_xy(dx, dy, ang)
-                pos = nx.Point3d(cx + dx, cy + dy, z + dz)
+                pos = nx.Point3d(cx + dx, cy + dy, z_i + dz)
                 try:
                     comp, _ls = ca.AddComponent(path, "MODEL", name, pos, m3, -1)
                 except TypeError:
@@ -737,6 +588,9 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
             tools_all = [t for t in (tools_all or []) if t is not None]
             for _tb in tools_all:                   # 体类型标记(模具开框规则用)
                 _mark_type(_tb, "STD:" + fname)
+                # 锚点记录(一键替换用): 记「锚点 − 体中心」; 记偏移不记绝对坐标,
+                # 用户把件挪走后反推出来的锚点会跟着走
+                _mark_anchor(_tb, (cx, cy, z_i), ang, uf)
             n_body += len(tools_all)
             pending_comps.append(comp)              # (提速)延到段2 一次删
 
