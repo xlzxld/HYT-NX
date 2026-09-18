@@ -32,10 +32,13 @@ _BAND_HALF = 15.0
 # 判定"水平面"(朝上/朝下)的 Z 跨度上限: 面围盒的 zmax−zmin 小于它就算
 _FLAT_TOL = 0.1
 
-# 移面对齐的收敛控制(2026-09-18 加): 移完一次先复测, 还有残差就再移 —— NX 如何
-# 延伸相邻面、个别面没跟上, 都可能让一次移面差那么一点点。迭代几轮收到 _LEN_TOL
-# 以内, 治用户反馈的"移面之后长度总有一些差距"。
-_MAX_ROUNDS = 3
+# 移面对齐的收敛控制(2026-09-18):
+# ① 移完一次先复测, 还有残差就再移(NX 如何延伸相邻面、个别面没跟上, 都会差一点);
+# ② **单步最多移 _MAX_STEP** —— 移面带是 ±15 共 30 高, 一步拽 20mm 以上会把相邻
+#    几何扯脱(NX 报"某个面不再与先前的邻近对象相交", 实机 5/6 处全挂; 只移 2mm
+#    的那处成功)⇒ 大位移拆成小步, 步数上限给够。
+_MAX_STEP = 10.0
+_MAX_STEPS = 12
 _LEN_TOL = 0.05
 
 
@@ -554,12 +557,19 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None,
         # 不少(NX 延伸相邻面的行为、个别面没跟上), 迭代几轮就收敛了。
         moved = 0
         cur = new_len0
-        for _r in range(_MAX_ROUNDS):
+        for _r in range(_MAX_STEPS):
             if cur is None:
                 break
             step = next_step(old_len, cur, axis_sign)
             if step == 0.0:
                 break
+            # ⭐ 一次别移太多: 带才 ±15(共 30mm)高, 一步拽 22~42mm 会把相邻几何
+            # 扯脱(NX 报"某个面不再与先前的邻近对象相交", 实机 5/6 处全挂; 只移
+            # 2mm 的那处成功)。所以大位移拆成小步, 每步最多 _MAX_STEP。
+            if abs(step) > _MAX_STEP:
+                step = _MAX_STEP if step > 0 else -_MAX_STEP
+                log("【长度对齐】%s 第 %d 处: 还差 %.4g, 这一小步先移 %.4g"
+                    % (fname, idx, old_len - cur, step))
             rows = read_face_rows(uf, tools)     # 每轮重取: 移面后几何与面都变了
             # 移的面 = **定位点(_fix_z)上下 ±15 那一带**里的水平面(用户定案)
             idxs = pick_faces([r[0] for r in rows], _fix_z)
