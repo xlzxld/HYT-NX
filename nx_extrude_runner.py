@@ -79,7 +79,8 @@ from cad3d.selftest.suite import (
 
 # 2. 外部脚本与辅助工具兼容符号 (满足 test/*, batch_smoke 与 tools/nx_zero_ref.py)
 from cad3d.modeling.std_rules import (
-    guess_std_rule, sanitize_std_rule, _rule_usable, merge_std_rules
+    guess_std_rule, sanitize_std_rule, _rule_usable, merge_std_rules,
+    dk_fallback_rules
 )
 from cad3d.modeling.nx_compat import (
     _is_marked, _matrix3x3
@@ -257,6 +258,28 @@ def main():
     # 功能：若勾选了标准件，弹窗供用户逐件微调参数，点击 Apply/OK 执行完整流水线；
     #       若未选择任何标准件，直接执行纯分层拉伸流水线。
     if std_rules:
+        # 图纸没有 DK(点孔)层时, 靠 DK 定位的件(如垫片.prt)在图上找不到可定位的圆,
+        # 主脚本会整件跳过。此时本次**临时**把它的定位图层与半径换成"热咀"那套
+        # (Z 基准/布尔方式仍用件自己的), 第三页按临时值显示与执行, 保存记忆时还原
+        # —— 换回带 DK 的图纸要能自己变回来。
+        transient = ()
+        if any(str((r or {}).get("layer") or "").upper() == "DK"
+               for r in std_rules.values()):
+            has_dk = True
+            try:
+                _dk_layers, _ = parse_dxf(dxf2 or "")
+                has_dk = bool(_dk_layers.get("DK"))
+            except Exception as ex:
+                print("[CAD3D] 读取图纸图层失败(无法判断有无 DK 层), "
+                      "垫片保持原参数: %s" % ex)
+            _fb_rules = dk_fallback_rules(std_rules, has_dk)
+            if _fb_rules:
+                transient = sorted(_fb_rules)
+                std_rules = dict(std_rules)
+                std_rules.update(_fb_rules)
+                print("[CAD3D] 图纸没有 DK 图层: %s 本次临时改用热咀的定位参数"
+                      "(只影响本次, 不写记忆)。" % "、".join(transient))
+
         sdx = write_std_dlx(std_rules, params2)
         if not sdx:
             theUI.NXMessageBox.Show("CAD3D", NXOpen.NXMessageBox.DialogType.Error,
@@ -266,7 +289,7 @@ def main():
         try:
             sdlg = StdParamsDialog(sdx, std_rules, params2, jrt2, dxf2,
                                    selected, std_rules_all=std_rules_all,
-                                   jt_mode=mode2)
+                                   jt_mode=mode2, transient=transient)
             sdlg.Launch()
         except Exception as ex:
             theUI.NXMessageBox.Show("CAD3D", NXOpen.NXMessageBox.DialogType.Error,

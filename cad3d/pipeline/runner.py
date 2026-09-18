@@ -201,8 +201,13 @@ def _save_report(name, lines):
 
 def execute_pipeline(dxf, params, jrt, std_rules, session,
                      std_rules_all=None, selected=None, ui=None,
-                     jt_link_mode=None):
-    """三段式最终执行: 校验图纸 → 保存 JSON(全部规则+选中清单) → run_pipeline。"""
+                     jt_link_mode=None, transient=None):
+    """三段式最终执行: 校验图纸 → 保存 JSON(全部规则+选中清单) → run_pipeline。
+
+    transient: 本次**临时**改过的规则文件名集合(如"图纸没 DK 时垫片临时改走
+      RZ") —— 执行照临时值走, 但保存记忆时用 std_rules_all 里的原值还原,
+      临时改的不进记忆(换回有 DK 的图纸要能自己变回来)。
+    """
     import NXOpen
 
     if not dxf or not os.path.isfile(dxf):
@@ -217,9 +222,15 @@ def execute_pipeline(dxf, params, jrt, std_rules, session,
         return False
     full_rules = dict(std_rules_all or {})
     full_rules.update(std_rules or {})
+    saved_rules = dict(full_rules)
+    for _f in (transient or ()):
+        if _f in (std_rules_all or {}):
+            saved_rules[_f] = std_rules_all[_f]
+        else:
+            saved_rules.pop(_f, None)
     p_dict = params if isinstance(params, dict) else {}
     j_dict = jrt if isinstance(jrt, dict) else {}
-    save_state(dxf, {k: list(v) for k, v in p_dict.items()}, full_rules,
+    save_state(dxf, {k: list(v) for k, v in p_dict.items()}, saved_rules,
                selected=selected,
                jrt_se=[j_dict.get("start", 0.0), j_dict.get("end", 0.0)],
                jt_link_mode=jt_link_mode)

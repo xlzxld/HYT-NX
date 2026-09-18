@@ -759,7 +759,8 @@ class StdParamsDialog(_BlockDialogBase):
     """第三段"标准件参数"对话框: 每件一个可收起组, OK/Apply 执行, 取消中止。"""
 
     def __init__(self, dlx_path, std_rules, params, jrt, dxf, selected,
-                 std_rules_all=None, jt_mode=None, execute_fn=None):
+                 std_rules_all=None, jt_mode=None, execute_fn=None,
+                 transient=None):
         import NXOpen
         import NXOpen.BlockStyler
         self.nx = NXOpen
@@ -785,6 +786,9 @@ class StdParamsDialog(_BlockDialogBase):
         self.jt_mode = jt_mode
         self.dxf = dxf
         self.execute_fn = execute_fn
+        # 本次临时改过的规则(如"图纸没 DK 时垫片临时改走 RZ"): 执行照它走,
+        # 保存记忆时还原 —— 只负责往下传, 对话框自己不碰
+        self.transient = sorted(transient or ())
         self.selected = list(selected) if selected is not None else self.std_files
         self.std_rules_all = std_rules_all if std_rules_all is not None \
             else dict(std_rules)
@@ -882,11 +886,14 @@ class StdParamsDialog(_BlockDialogBase):
             if exec_fn is None:
                 from cad3d.pipeline.runner import execute_pipeline
                 exec_fn = execute_pipeline
+            extra = {}
+            if self.transient:
+                extra["transient"] = self.transient
             ok = exec_fn(self.dxf, self.params, self.jrt, rules,
                          self.theSession,
                          std_rules_all=self.std_rules_all,
                          selected=self.selected, ui=self.theUI,
-                         jt_link_mode=self.jt_mode)
+                         jt_link_mode=self.jt_mode, **extra)
             return 0 if ok else 1
         except Exception as ex:
             self.theUI.NXMessageBox.Show("CAD3D", self.nx.NXMessageBox.DialogType.Error,

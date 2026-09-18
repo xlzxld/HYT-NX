@@ -138,6 +138,36 @@ def _unusable_names(rules):
     return sorted(f for f, r in rules.items() if not _rule_usable(r))
 
 
+def dk_fallback_rules(rules, has_dk, nozzle_probe="热咀"):
+    """(纯逻辑) 图纸里没有 DK 图层时, 靠 DK 定位的件临时改用“热咀”的定位参数。
+
+    场景(2026-09-18 用户定案): 有些图纸不画 DK(点孔)层, 垫片就没有可定位的圆,
+    主脚本会直接跳过它。此时把它的**定位图层 + 半径范围**换成热咀那套(层 RZ、
+    半径 0~15, 取自 config 的“热咀”行) —— Z 基准与布尔方式仍用件自己的设置,
+    只是换个层找位置。
+
+    只对 layer=DK 的件生效; has_dk=True 时返回 {}。返回值给调用方当**临时规则**
+    用(第三页显示/本次执行), **不写记忆** —— 换回有 DK 的图纸要能自己变回来。
+    """
+    if has_dk:
+        return {}
+    base = std_part_defaults(nozzle_probe)
+    if not isinstance(base, dict):
+        return {}
+    out = {}
+    for fname, rule in (rules or {}).items():
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("layer") or "").upper() != "DK":
+            continue
+        r = dict(rule)
+        r["layer"] = base["layer"]
+        r["r_min"] = base["r_min"]
+        r["r_max"] = base["r_max"]
+        out[fname] = r
+    return out
+
+
 def discover_std_parts():
     """扫描 stdparts 目录下 .prt(目录不存在则创建) → 排序文件名列表。"""
     d = stdparts_dir()
