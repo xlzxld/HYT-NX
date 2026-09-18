@@ -259,21 +259,26 @@ def main():
     # 功能：若勾选了标准件，弹窗供用户逐件微调参数，点击 Apply/OK 执行完整流水线；
     #       若未选择任何标准件，直接执行纯分层拉伸流水线。
     if std_rules:
-        # 本次的提示行: 交给 execute_pipeline 写进**建模日志**(pipeline_report.txt
-        # + 既有那个信息窗口) —— 用户 2026-09-18 定案"放在建模日志就可以了,
-        # 不要单独弹一个窗口", 所以这里只收集, 不自己建 Log。
+        # 本次的提示行: 交给 execute_pipeline 写进**建模日志**(pipeline_report.txt).
+        # _alerts 只放"需要当面告诉用户"的, 会额外弹一个**小窗**(点确定才进第三页)
         _notes = []
+        _alerts = []
 
         # ① 针阀模式不装垫片(用户定案 2026-09-18): 选中的靠 DK 定位的件直接从
-        #    本次装配与第三页里拿掉, 只留一行日志 —— 不用用户自己去第一页取消勾选。
-        #    模式名对应 nx_std_config.py 的 JT_LINK_MODES 键。
-        if "针阀" in str(mode2 or ""):
-            _drop = dk_located_names(std_rules)
-            if _drop:
-                std_rules = {f: r for f, r in std_rules.items()
-                             if f not in _drop}
-                _notes.append("[CAD3D] 本次选的是针阀模式: %s 不装(第三页也不显示)。"
-                              % "、".join(_drop))
+        #    本次装配与第三页里拿掉, 只留一行提示 —— 不用用户自己去第一页取消勾选。
+        #    模式名对应 nx_std_config.py 的 JT_LINK_MODES 键(`result_mode` 取不到时
+        #    退回记忆里的模式)。⚠️ 这行诊断必须留着: 实机出现过"选了针阀模式但垫片
+        #    照样被放"的情况, 日志里有它才能一眼看出模式到底取到了什么
+        _dk_all = dk_located_names(std_rules)
+        _notes.append("[CAD3D] 本次联动模式: %s; 靠 DK 定位的件: %s"
+                      % (mode2 or "(没取到)", "、".join(_dk_all) or "无"))
+        if "针阀" in str(mode2 or "") and _dk_all:
+            std_rules = {f: r for f, r in std_rules.items()
+                         if f not in _dk_all}
+            _msg = ("[CAD3D] 本次选的是针阀模式: %s 不装(第三页也不显示)。"
+                    % "、".join(_dk_all))
+            _notes.append(_msg)
+            _alerts.append(_msg)
 
         # ② 图纸没有 DK(点孔)层时, 靠 DK 定位的件(如垫片.prt)在图上找不到可定位
         #    的圆, 主脚本会整件跳过。此时本次**临时**把它的定位图层与半径换成
@@ -291,16 +296,30 @@ def main():
                 has_dk = any(collect_circle_anchors(_dk_layers, std_rules[_f])
                              for _f in _dk_names)
             except Exception as ex:
-                _notes.append("[CAD3D] 读取图纸图层失败(没法判断有没有 DK), "
-                              "%s 保持原参数: %s" % ("、".join(_dk_names), ex))
+                _msg = ("[CAD3D] 读取图纸图层失败(没法判断有没有 DK), "
+                        "%s 保持原参数: %s" % ("、".join(_dk_names), ex))
+                _notes.append(_msg)
+                _alerts.append(_msg)
             _fb_rules = dk_fallback_rules(std_rules, has_dk)
             if _fb_rules:
                 transient = sorted(_fb_rules)
                 std_rules = dict(std_rules)
                 std_rules.update(_fb_rules)
-                _notes.append("[CAD3D] 图纸里按 DK 定位一个位置都找不到: %s 本次临时"
-                              "改用热咀的定位参数(只影响本次, 不写记忆)。"
-                              % "、".join(transient))
+                _msg = ("[CAD3D] 图纸里按 DK 定位一个位置都找不到: %s 本次临时改用"
+                        "热咀的定位参数(只影响本次, 不写记忆)。" % "、".join(transient))
+                _notes.append(_msg)
+                _alerts.append(_msg)
+
+        # 需要当面说的, 弹一个**小窗**(点确定才进第三页) —— 用户 2026-09-18 定案:
+        # 光写日志他看不到, 这类"本次改了什么"要当面提示一次
+        if _alerts:
+            try:
+                theUI.NXMessageBox.Show(
+                    "CAD3D · 本次调整",
+                    NXOpen.NXMessageBox.DialogType.Information,
+                    "\n\n".join(_alerts))
+            except Exception:
+                pass
 
         if not std_rules:
             # 都被剔掉了(如针阀模式下只勾了垫片) → 退化成"不装标准件"的纯拉伸
