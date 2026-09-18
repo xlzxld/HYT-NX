@@ -201,12 +201,15 @@ def _save_report(name, lines):
 
 def execute_pipeline(dxf, params, jrt, std_rules, session,
                      std_rules_all=None, selected=None, ui=None,
-                     jt_link_mode=None, transient=None):
+                     jt_link_mode=None, transient=None, notes=None):
     """三段式最终执行: 校验图纸 → 保存 JSON(全部规则+选中清单) → run_pipeline。
 
     transient: 本次**临时**改过的规则文件名集合(如"图纸没 DK 时垫片临时改走
       RZ") —— 执行照临时值走, 但保存记忆时用 std_rules_all 里的原值还原,
       临时改的不进记忆(换回有 DK 的图纸要能自己变回来)。
+    notes: 要在**建模日志**开头补写的提示行(如"针阀模式不装垫片")。复用
+      run_pipeline 那个日志对象写进 pipeline_report.txt —— **不另外建 Log**,
+      否则会多开一个 NX 信息窗口(用户 2026-09-18 明确不要"单独弹一个窗口")。
     """
     import NXOpen
 
@@ -235,6 +238,8 @@ def execute_pipeline(dxf, params, jrt, std_rules, session,
                jrt_se=[j_dict.get("start", 0.0), j_dict.get("end", 0.0)],
                jt_link_mode=jt_link_mode)
     lg = Log(session)
+    for _n in (notes or ()):        # 本次提示补在建模日志最前面
+        lg(_n)
     ok, _stats = run_pipeline(dxf, p_dict, session=session,
                               work_part=session.Parts.Work,
                               log=lg, std_rules=std_rules, jrt=j_dict)

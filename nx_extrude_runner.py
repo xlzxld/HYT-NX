@@ -55,7 +55,7 @@ from cad3d.core.config import (
     SCHEMA_VERSION, _CFG_NOTES
 )
 from cad3d.core.logging import (
-    Log
+    Log  # noqa: F401  门面兼容符号(test/test123.py 经由本模块引用)
 )
 from cad3d.core.state import (
     load_state, save_state, default_params, merge_params,
@@ -259,9 +259,10 @@ def main():
     # 功能：若勾选了标准件，弹窗供用户逐件微调参数，点击 Apply/OK 执行完整流水线；
     #       若未选择任何标准件，直接执行纯分层拉伸流水线。
     if std_rules:
-        # 给用户看的提示走 Log: 它同时写 NX 信息窗口 —— NX GUI 里播日记时
-        # stdout 是看不见的, 只 print 等于没提示(v3.2 用户反馈)
-        _note = Log(theSession)
+        # 本次的提示行: 交给 execute_pipeline 写进**建模日志**(pipeline_report.txt
+        # + 既有那个信息窗口) —— 用户 2026-09-18 定案"放在建模日志就可以了,
+        # 不要单独弹一个窗口", 所以这里只收集, 不自己建 Log。
+        _notes = []
 
         # ① 针阀模式不装垫片(用户定案 2026-09-18): 选中的靠 DK 定位的件直接从
         #    本次装配与第三页里拿掉, 只留一行日志 —— 不用用户自己去第一页取消勾选。
@@ -271,8 +272,8 @@ def main():
             if _drop:
                 std_rules = {f: r for f, r in std_rules.items()
                              if f not in _drop}
-                _note("[CAD3D] 本次选的是针阀模式: %s 不装(第三页也不显示)。"
-                      % "、".join(_drop))
+                _notes.append("[CAD3D] 本次选的是针阀模式: %s 不装(第三页也不显示)。"
+                              % "、".join(_drop))
 
         # ② 图纸没有 DK(点孔)层时, 靠 DK 定位的件(如垫片.prt)在图上找不到可定位
         #    的圆, 主脚本会整件跳过。此时本次**临时**把它的定位图层与半径换成
@@ -290,22 +291,22 @@ def main():
                 has_dk = any(collect_circle_anchors(_dk_layers, std_rules[_f])
                              for _f in _dk_names)
             except Exception as ex:
-                _note("[CAD3D] 读取图纸图层失败(没法判断有没有 DK), %s 保持原参数: %s"
-                      % ("、".join(_dk_names), ex))
+                _notes.append("[CAD3D] 读取图纸图层失败(没法判断有没有 DK), "
+                              "%s 保持原参数: %s" % ("、".join(_dk_names), ex))
             _fb_rules = dk_fallback_rules(std_rules, has_dk)
             if _fb_rules:
                 transient = sorted(_fb_rules)
                 std_rules = dict(std_rules)
                 std_rules.update(_fb_rules)
-                _note("[CAD3D] 图纸里按 DK 定位一个位置都找不到: %s 本次临时改用"
-                      "热咀的定位参数(只影响本次, 不写记忆)。"
-                      % "、".join(transient))
+                _notes.append("[CAD3D] 图纸里按 DK 定位一个位置都找不到: %s 本次临时"
+                              "改用热咀的定位参数(只影响本次, 不写记忆)。"
+                              % "、".join(transient))
 
         if not std_rules:
             # 都被剔掉了(如针阀模式下只勾了垫片) → 退化成"不装标准件"的纯拉伸
             execute_pipeline(dxf2, params2, jrt2, {}, theSession,
                              std_rules_all=std_rules_all, selected=[],
-                             jt_link_mode=mode2)
+                             jt_link_mode=mode2, notes=_notes)
             return
 
         sdx = write_std_dlx(std_rules, params2)
@@ -317,7 +318,8 @@ def main():
         try:
             sdlg = StdParamsDialog(sdx, std_rules, params2, jrt2, dxf2,
                                    selected, std_rules_all=std_rules_all,
-                                   jt_mode=mode2, transient=transient)
+                                   jt_mode=mode2, transient=transient,
+                                   notes=_notes)
             sdlg.Launch()
         except Exception as ex:
             theUI.NXMessageBox.Show("CAD3D", NXOpen.NXMessageBox.DialogType.Error,

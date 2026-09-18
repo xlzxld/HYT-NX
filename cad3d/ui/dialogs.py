@@ -760,7 +760,7 @@ class StdParamsDialog(_BlockDialogBase):
 
     def __init__(self, dlx_path, std_rules, params, jrt, dxf, selected,
                  std_rules_all=None, jt_mode=None, execute_fn=None,
-                 transient=None):
+                 transient=None, notes=None):
         import NXOpen
         import NXOpen.BlockStyler
         self.nx = NXOpen
@@ -789,6 +789,10 @@ class StdParamsDialog(_BlockDialogBase):
         # 本次临时改过的规则(如"图纸没 DK 时垫片临时改走 RZ"): 执行照它走,
         # 保存记忆时还原 —— 只负责往下传, 对话框自己不碰
         self.transient = sorted(transient or ())
+        # 要在**建模日志**开头补写的提示行(如"针阀模式不装垫片"): 同样只负责
+        # 往下传, 由 execute_pipeline 复用 run_pipeline 的日志对象写进报告文件
+        # —— 不另外建 Log, 免得开出一个多余的信息窗口
+        self.notes = [str(x) for x in (notes or ())]
         self.selected = list(selected) if selected is not None else self.std_files
         self.std_rules_all = std_rules_all if std_rules_all is not None \
             else dict(std_rules)
@@ -889,6 +893,8 @@ class StdParamsDialog(_BlockDialogBase):
             extra = {}
             if self.transient:
                 extra["transient"] = self.transient
+            if self.notes:
+                extra["notes"] = self.notes
             ok = exec_fn(self.dxf, self.params, self.jrt, rules,
                          self.theSession,
                          std_rules_all=self.std_rules_all,
