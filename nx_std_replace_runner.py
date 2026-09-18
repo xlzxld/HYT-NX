@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 日记入口 (v3.1)
+nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 日记入口 (v3.2)
 =============================================================================
 适用环境：Siemens NX 10 / NX 12 / NX 2312 及以上版本
 播放方式：NX 菜单 工具 → 日记 → 播放，选本文件。
@@ -25,11 +25,16 @@ nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 
   好处：不用认“哪个实体带锚点”、不用比尺寸、不用图纸，也不会再出现
   “对不上就留下没删”的遗留。
 
-【热咀长度自动对齐（v3.1）】换热咀族(大水口/点胶口/热咀/nozzle, 关键词可配)
-  时，新件放好后自动按**旧件的顶部到底部长度**调整新件长度：头部(顶部往下
-  30mm 这一段)不动，其余部分整体平移 —— 比旧件短就拉长、比旧件长就缩短，
-  与手动用“移动”命令选 30mm 以下范围对齐长度同口径。族关键词与保留高度在
-  nx_std_config.py 的 NOZZLE_FAMILIES / NOZZLE_KEEP_HEAD 配置。
+【热咀长度自动对齐（v3.2 起用"移动面"）】换热咀族(大水口/点胶口/热咀/nozzle,
+  关键词可配)时，新件放好后自动按**旧件的顶部到底部长度**调整新件长度：头部
+  (顶部往下 30mm 这一段)不动，**这一带以下的面就地移面** —— 比旧件短就拉长、
+  比旧件长就缩短。用同步建模「移动面」就地改面(体不重建、头身不留缝)，与手动
+  "移动面"选面做法同口径。族关键词与保留高度在 nx_std_config.py 的
+  NOZZLE_FAMILIES / NOZZLE_KEEP_HEAD 配置。
+
+【长度是怎么量的】旧件长度 = 该处实例**所有体**的世界 Z 最高减最低（包围盒
+  口径，不是件的名义高度）；新件同理。日志里会逐实例打出"几个体、Z 从哪到哪
+  → 长多少"，量得对不对可以直接对着看。
 
 【第二页 = 逐件微调】要换成的规格逐件调参数。**参数也不读记忆**，每次都从
   nx_std_config.py 出厂默认开始（Z 基准值按模型实测高度显示）。
@@ -137,10 +142,12 @@ def _derive_anchors(old_fname, olds, log):
 
 
 def _old_instance_lens(olds):
-    """(纯逻辑) 旧件体按锚点归实例 → [(实例锚点, 实例长度), ...]。
+    """(纯逻辑) 旧件体按锚点归实例 → [(实例锚点, 实例长度, 明细), ...]。
 
-    实例长度 = 该实例全部体的包围盒顶部到底部(世界 Z) —— 热咀替换
-    调长度就按这个对齐。没记录/坏记录的体不参与(与替换同口径)。
+    实例长度 = 该实例**全部体**的包围盒顶部到底部(世界 Z) —— 热咀替换调长度
+    就按这个对齐。明细("几个体, Z 从哪到哪")是给人核对的诊断串, 替换日志会
+    逐条打出来 —— 长度量得对不对一眼能对上(2026-09-18 用户问"你怎么量的")。
+    没记录/坏记录的体不参与(与替换同口径)。
     """
     items = [(bb, parse_anchor_off(_anchor_of(b))) for b, bb in olds]
     out = []
@@ -148,7 +155,10 @@ def _old_instance_lens(olds):
         zs = [olds[k][1] for k in idxs if olds[k][1] and len(olds[k][1]) >= 6]
         if not zs:
             continue
-        out.append((anch, max(z[5] for z in zs) - min(z[2] for z in zs)))
+        z_lo = min(z[2] for z in zs)
+        z_hi = max(z[5] for z in zs)
+        out.append((anch, z_hi - z_lo,
+                    "%d 个体, Z %.4g~%.4g" % (len(zs), z_lo, z_hi)))
     return out
 
 
@@ -230,9 +240,13 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         # 两个旧规格换成同一个新规格时, 锚点要合并而不是覆盖
         anchors_override.setdefault(new_fname, []).extend(anchors)
         if is_nozzle(new_fname):
-            # 热咀: 按旧件实例长度对齐新件长度(头部不动, 其余平移)
+            # 热咀: 按旧件实例长度对齐新件长度(头部不动, 其余就地移面)
             lens = _old_instance_lens(olds)
-            old_lens.extend(lens)
+            old_lens.extend((a, L) for a, L, _d in lens)
+            # 逐实例打明细: 长度是"该实例所有体的世界 Z 最高减最低", 打出体数与
+            # Z 范围, 量得准不准一眼能对上(用户 2026-09-18 反馈)
+            for _k, (_a, _L, _d) in enumerate(lens, 1):
+                log("【替换】  旧件实例 %d: %s → 长 %.4g" % (_k, _d, _L))
             if lens:
                 log("【替换】%s → %s: %d 处(从 %d 个旧件体里归出的实例数), "
                     "位置取自体上记的锚点; 这是热咀, 放好后按旧件长度对齐。"
@@ -372,7 +386,7 @@ def main():
     """两页向导: 指定替换关系 → 逐件微调 → 按体上记的锚点原位替换。"""
     import NXOpen
 
-    print_guide("nx_std_replace_runner.py")
+    print_guide("nx_std_replace_runner.py", NXOpen.Session.GetSession())
     print("【本脚本】把模型里已放好的标准件换成你指定的另一个规格，没指定的不动。")
     session = NXOpen.Session.GetSession()
     ui = NXOpen.UI.GetUI()

@@ -12,9 +12,23 @@ GUIDE_LINES = (
 )
 
 
-def print_guide(current=None):
-    """打印三个脚本分别是干啥的; current 传本脚本文件名, 会加“← 本次”标记。"""
-    print("【三个脚本分别是干啥的】")
+def print_guide(current=None, session=None):
+    """打印三个脚本分别是干啥的; current 传本脚本文件名, 会加"← 本次"标记。
+
+    ⚠️ session 一定要传: NX GUI 里播放日记时 **stdout 根本看不见**(没有控制台),
+    只 print 等于没提示 —— 所以同样内容还要写进 NX 信息窗口(ListingWindow),
+    那里才是用户看得见的地方(v3.2 用户反馈"中文提示没生效"后的修法)。
+    """
+    lines = ["【三个脚本分别是干啥的】"]
     for name, desc in GUIDE_LINES:
         mark = "  ← 本次运行" if current == name else ""
-        print("  %s — %s%s" % (name, desc, mark))
+        lines.append("  %s — %s%s" % (name, desc, mark))
+    for ln in lines:
+        print(ln)
+    if session is not None:
+        try:
+            session.ListingWindow.Open()
+            for ln in lines:
+                session.ListingWindow.WriteLine(ln)
+        except Exception:
+            pass

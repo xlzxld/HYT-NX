@@ -24,7 +24,7 @@ from cad3d.core.constants import (
     NOZZLE_LEN_TOL,
 )
 
-_EQUAL_NOTE = "新旧等长, 免调"
+_EQUAL_NOTE = "新旧等长"
 
 
 def is_nozzle(fname, families=None):
@@ -68,7 +68,8 @@ def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None):
     shift = (1.0 if axis_sign >= 0 else -1.0) * (new_len - old_len)
     cut = (top - keep_head) if axis_sign >= 0 else (bot + keep_head)
     if abs(shift) <= tol:
-        return None, None, _EQUAL_NOTE
+        # 带上实测长度: 只报"免调"看不到数字, 量得对不对没法核对
+        return None, None, "%s(都是 %.4g), 免调" % (_EQUAL_NOTE, new_len)
     return shift, cut, ""
 
 
@@ -283,7 +284,7 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
         shift, cut, note = plan_shift(old_len, bboxes, axis_sign)
         if shift is None:
             log("【长度对齐】%s 第 %d 处: %s。" % (fname, idx, note))
-            if note != _EQUAL_NOTE:
+            if not note.startswith(_EQUAL_NOTE):
                 adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
 
@@ -311,10 +312,10 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
         adj_stats["adj"] = adj_stats.get("adj", 0) + 1
-        log("【长度对齐】%s 第 %d 处: 旧件长 %.4g, 新件原长 %.4g → 移面 %.4g mm "
-            "对齐(头部 %.4g mm 一段不动, 动了 %d 块面)。"
-            % (fname, idx, old_len, now - shift, -shift, NOZZLE_KEEP_HEAD,
-               len(faces)))
+        log("【长度对齐】%s 第 %d 处: 旧件长 %.4g, 新件原长 %.4g(新件 %d 个体)"
+            " → 移面 %.4g mm 对齐(头部 %.4g mm 一段不动, 动了 %d 块面)。"
+            % (fname, idx, old_len, now - shift, len(tools), -shift,
+               NOZZLE_KEEP_HEAD, len(faces)))
         return tools
 
     return hook
