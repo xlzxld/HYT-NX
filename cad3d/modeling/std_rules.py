@@ -138,22 +138,6 @@ def _unusable_names(rules):
     return sorted(f for f, r in rules.items() if not _rule_usable(r))
 
 
-def std_family(fname):
-    """标准件家族名: 文件名去掉 .prt 与规格后缀("-" 及其后全部)。
-
-    stdparts/ 的命名约定就是 "家族-规格.prt":
-      大水口-18/-25/-35、接线盒-16针/24针/48针、螺丝-45/-50、
-      点胶口-18/-25、主进胶与中心定位垫片-30/-35;
-    没有 "-" 的(压线板、垫片)本身就是家族。
-    替换功能靠它把"新规格"和"已在模型里的旧件"认成一家人
-    (2026-09-18 用户拍板的替换口径: 同家族 = 文件名 "-" 前缀相同)。
-    """
-    s = str(fname or "").strip()
-    if s.lower().endswith(".prt"):
-        s = s[:-4]
-    return s.split("-")[0].strip()
-
-
 def discover_std_parts():
     """扫描 stdparts 目录下 .prt(目录不存在则创建) → 排序文件名列表。"""
     d = stdparts_dir()

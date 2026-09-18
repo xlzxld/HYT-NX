@@ -435,33 +435,6 @@ def build_replace_map_dlx(old_files, all_parts, mapping=None):
     )
 
 
-def build_dxf_pick_dlx(hint=""):
-    """图纸手选页: 记忆里的图纸找不到了才弹(只一个文件浏览块)。"""
-    child = _blk_filebrowser("PICKDXF", "图纸文件 (DXF / DWG)", "*.dwg;*.dxf")
-    body = _group_item("grp_pick", "选一张图纸",
-                       child + _blk_label("pick_hint", hint), columns=1)
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<Dialog ContainerItems="1" Expanded="1" NX="2312.0.0" class="" id="Dialog" '
-        'languageInfo="Language and Codeset: english 17" name="Dialog" notes="" '
-        'title="NX PickDxf" type="uicomp" version="1.0.0">'
-        + body +
-        '<PropertyList id="id" mode="0">'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Title" mask="256" name="Title" sname="Label" source="1" type="utfstring" '
-        'value="选择图纸"/>'
-        '<Property ClassID="UGS::UICOMP" group="General::" hierarchy="UGS::Styler::DialogItem" '
-        'id="Cue" mask="256" name="Cue" sname="Cue" source="1" type="utfstring" '
-        'value="替换要按图纸定位标准件的位置, 请指定这张图"/>'
-        '<Property ClassID="UGS::UICOMP" brief="0" dynamic="0" group="General::Other::" '
-        'hierarchy="UGS::Styler::DialogItem" id="NavigationStyle" mask="393472" '
-        'name="NavigationStyle" selected="0" sname="Navigation Style" source="1" type="enum">'
-        '<Option name="OK Cancel" value="0"/><Option name="Close" value="1"/>'
-        '<Option name="OK Apply Cancel" value="2"/></Property>'
-        '</PropertyList></Dialog>\n'
-    )
-
-
 def _opt_index(opts, value):
     for i, (v, _t) in enumerate(opts):
         if v == value:
@@ -631,21 +604,6 @@ def write_replace_map_dlx(old_files, all_parts, mapping=None):
     xml = build_replace_map_dlx(old_files, all_parts, mapping)
     candidates = [_fresh_dlx_path("nx_std_replace_select"),
                   _temp_dlx_path("nx_std_replace_select")]
-    for path in candidates:
-        try:
-            with io.open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(xml)
-            return path
-        except Exception:
-            continue
-    return None
-
-
-def write_dxf_pick_dlx(hint=""):
-    """生成“图纸手选”对话框 .dlx(唯一名), 失败回退 %TEMP%。"""
-    xml = build_dxf_pick_dlx(hint)
-    candidates = [_fresh_dlx_path("nx_std_replace_dxf"),
-                  _temp_dlx_path("nx_std_replace_dxf")]
     for path in candidates:
         try:
             with io.open(path, "w", encoding="utf-8", newline="\n") as f:
