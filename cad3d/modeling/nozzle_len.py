@@ -322,7 +322,13 @@ def _move_bodies_point_to_point(work_part, session, bodies, from_pt, to_pt, log)
             log("【定位补偿】点对点设置不上(%s), 这处不补偿。" % ex)
             return False
         bld.ObjectToMoveObject.Add(list(bodies))
-        bld.OnApplyPre()
+        # ⚠️ 别照搬"移面"的 OnApplyPre: MoveObjectBuilder 没有这个方法
+        # (实机报过 'no attribute OnApplyPre', 日记里也只有 Commit)。有的版本
+        # 需要就调一下, 没有直接跳过。
+        try:
+            bld.OnApplyPre()
+        except AttributeError:
+            pass
         bld.Commit()
         return True
     except Exception as ex:
