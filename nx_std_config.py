@@ -4,7 +4,7 @@ nx_std_config.py —— CAD3D 全局工程参数与标准件规则配置文件
 =============================================================================
 适用环境：Siemens NX 10 / NX 12 / NX 2312 及以上版本（兼容 Python 3.3 ~ 3.12+）
 最后更新：2026-09-18 (v2.13；RZ/DK 默认 0/0 并解除联动、热咀布尔默认“放置+减去”、
-          新增热咀替换长度对齐配置 NOZZLE_FAMILIES / NOZZLE_KEEP_HEAD)
+          新增热咀替换长度对齐配置 NOZZLE_FAMILIES / NOZZLE_BAND_UP)
 
 【配置文件概述】
   本脚本集中管理 CAD3D 分层拉伸系统的全部出厂默认配置与工程规则。
@@ -15,7 +15,7 @@ nx_std_config.py —— CAD3D 全局工程参数与标准件规则配置文件
 【配置分类索引】
   1. 架构模式与记忆门控 (CONFIG_SCHEMA_VERSION)
   2. 标准件装配规则表 (STD_PART_DEFAULTS, DEFAULT_STD_RULE, ZMODE_DEFS,
-     热咀替换长度对齐 NOZZLE_FAMILIES / NOZZLE_KEEP_HEAD)
+     热咀替换长度对齐 NOZZLE_FAMILIES / NOZZLE_BAND_UP)
   3. 分层建模与图层定义 (LAYER_DEFS, TARGET_CODE, LAYER_START_DEFAULTS)
   4. 尺寸联动推导规则 (LINK_OFFSETS, JT_LINK_MODES, CX_LINK_END_OFFSET, JRT_INTRUSION_DEFAULT)
   5. JRT 加热条工艺与配色 (JRT_*)
@@ -112,14 +112,15 @@ STD_PART_DEFAULTS = [
     ("压线板", {"layer": "YXB", "z_mode": "CX_TOP"}),
 ]
 
-# ── 热咀替换时按旧件长度调整新件长度 (v2.13, 配合 nx_std_replace_runner.py) ──
-# 口径 = 用户手动做法: 头部(顶部往下 NOZZLE_KEEP_HEAD mm 这一段)不动,
-# 其余部分整体沿轴向平移, 使新件"顶部到底部"总长对齐被换掉的旧件:
-#   新件比旧件短 → 拉长; 新件比旧件长 → 缩短(平移量=两者长度差)。
+# ── 热咀替换时按旧件长度调整新件长度 (v2.13 起引入, 配合 nx_std_replace_runner.py) ──
+# 口径 = 用户手动做法: 移面选择范围 = 热咀底面到顶面再整体上移
+# NOZZLE_BAND_UP mm(2026-09-19 定案): 一根咀底/顶面 z 是 0/100, 选择范围
+# 就是 [40,140] —— 咀尖底部 40mm 固定不动, 范围内被选中的一切面都要移动。
+# 移完若定位点被带走了, 再把整件点对点平移回放置点(定位点与放置点重合)。
 # 文件名含 NOZZLE_FAMILIES 任一关键词的标准件才算热咀; 想关掉整项功能
 # 就把 NOZZLE_FAMILIES 改成 []。
 NOZZLE_FAMILIES = ["热咀", "大水口", "点胶口", "nozzle"]
-NOZZLE_KEEP_HEAD = 30.0          # 头部保留高度 (mm, 从热咀顶部往下量)
+NOZZLE_BAND_UP = 40.0            # 移面范围整体上移量 (mm)
 
 
 # =============================================================================

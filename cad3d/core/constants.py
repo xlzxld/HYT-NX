@@ -341,14 +341,13 @@ JRT_FIELDS = [
 # 单件最大放置数量护栏
 STD_MAX_ANCHORS = _cfg_int("STD_MAX_ANCHORS", 200)
 
-# 热咀替换长度对齐(v2.13): 文件名含 NOZZLE_FAMILIES 任一关键词才算热咀;
-# NOZZLE_KEEP_HEAD = 头部保留高度(从热咀顶部往下量, mm), 头部不动、其余
-# 部分整体平移使总长对齐旧件 —— 与用户手动"移动"做法同口径。
+# 热咀替换长度对齐(v2.13): 文件名含 NOZZLE_FAMILIES 任一关键词才算热咀。
 _RAW_NOZZLE_FAMILIES = _cfg("NOZZLE_FAMILIES", None)
 if isinstance(_RAW_NOZZLE_FAMILIES, (list, tuple)):
     NOZZLE_FAMILIES = [str(k) for k in _RAW_NOZZLE_FAMILIES if str(k)]
 else:
     NOZZLE_FAMILIES = ["热咀", "大水口", "点胶口", "nozzle"]
-NOZZLE_KEEP_HEAD = _cfg_num(_cfg("NOZZLE_KEEP_HEAD", 30.0), 30.0)
-# 长度对齐判定容差(mm): 新旧总长差小于它视为等长, 不动
-NOZZLE_LEN_TOL = _cfg_num(_cfg("NOZZLE_LEN_TOL", 0.01), 0.01)
+# 移面选择范围整体上移量(用户 2026-09-19 定案): 范围 = 热咀底面到顶面再
+# 整体上移它 —— 一根咀底/顶面 z 是 0/100, 选择范围就是 [40,140], 即咀尖
+# 底部 40mm 固定不动, 范围内被选中的一切面都要移动。
+NOZZLE_BAND_UP = _cfg_num(_cfg("NOZZLE_BAND_UP", 40.0), 40.0)

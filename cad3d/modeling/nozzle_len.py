@@ -6,43 +6,43 @@
 旧件长度 = 该处实例所有体的"主平面口径"顶减底(朝上平面里最高的减朝下平面里
 最低的; 顶上的曲面小凸起天然不算, 点胶口-18 实测 95.9673 与用户手量一致)。
 
-做法(v3.3, 完全照用户录制的日记 logs/journal.py / journal-1.py):
-  1. 新件**先原位摆正**(place_std_parts 按锚点放置, 定位点=旧件锚点) ——
-     位置从头就是对的, 后面移面成不成都不影响位置;
-  2. **去掉建模参数**(RemoveParameters, 变成哑体) —— 两份日记里移面的对象
-     都是 UNPARAMETERIZED 哑体; 之前实机"大面积移面失败(面不再与先前的
-     邻近对象相交)"就发生在还没去参的 Wave 链接提升体上;
-  3. 用同步建模「移动面」(AdmMoveFace, 运动参数照日记逐条设全)在**定位点
-     上下各 15mm(共 NOZZLE_KEEP_HEAD=30)的带内**移面, 把总长补到旧件长度;
-  4. 移面方向**现场校准**, 不猜符号: 先探一小步(−2mm)复测, 量出"每移 1mm
-     总长变多少"(带内含不含咀尖决定了正负, 各件不同 —— 用户两份日记里就
-     有相反的例子), 再按斜率一步补齐, 移完复测、不齐再补(有轮数上限)。
+做法(v3.4, 用户 2026-09-19 定案):
+  1. 新件**先原位摆正**(place_std_parts 按锚点放置, 定位点=旧件锚点);
+  2. **移面选择范围 = 热咀底面到顶面再整体上移 NOZZLE_BAND_UP(40mm)** ——
+     一根咀底/顶面 z 是 0/100 的咀, 选择范围就是 [40,140]: 咀尖底部 40mm
+     固定不动, **范围内被选中的一切面都要移动**; **所有被选中实体的带内面
+     合成一份、一次「移动面」一起移**(有多少实体被选中, 就移多少实体中被
+     选中的面, 不能只移一个实体的); 单步 ≤10mm(大了相邻几何会被扯脱,
+     实机验证过);
+  3. 移多移少、往哪边移**现场校准**, 不猜符号: 先探一小步(−2mm)复测, 量出
+     "每移 1mm 总长变多少"(符号各件不同), 再按斜率补齐, 复测、不齐再补
+     (有轮数上限);
+  4. **定位点回位(2026-09-19 定案)**: 若定位点落在选择范围内, 移面会把它
+     带走 cum, 件的定位点就落在 放置点+cum 上了 —— 照日记的「移动对象-
+     点对点」把**整个新件**平移 −cum, 让定位点与放置点重新重合(journal-1:
+     From (0,0,−20) → To 锚点)。整件平移不改长度, 长度照旧对齐。回位前先
+     **去掉建模参数**(日记顺序: 移面→去参→移动对象; 提升体是 Wave 链接,
+     NX 不许整体移动)。定位点不在选择范围内(咀底部 40mm 以内)时它根本
+     不会被带走, 无需回位。
 
-失败兜底: 移面做不成/收敛不了时, **位置保持正确**, 只是保持新件原长,
-日志写明差多少 —— 绝不出现"为对长度把位置搭进去"(v3.2 A 方案的教训:
-放置先预偏移、赌移面把定位点带回来, 移面一失败件就整体偏 Δ)。
+失败兜底: 移面做不成/收敛不了时, 位置也不会偏(没移成就没有 cum, 或回位
+把已移的搬回来), 日志写明长度差多少 —— 不出现"为对长度把位置搭进去"。
 """
 
-import math
-
 from cad3d.core.constants import (
+    NOZZLE_BAND_UP,
     NOZZLE_FAMILIES,
-    NOZZLE_KEEP_HEAD,
 )
 
-# 移面"那一带"半宽 = 定位点上下各 KEEP_HEAD/2(默认 30/2=15mm, 共 30) ——
-# 用户录制的两份日记里, 移的面(−15/0/+13/+6.5 与 −72/−78.5/−85/−100)全落
-# 在定位点 ±15 的带里; 带外的(顶尖、头背)不动。
-_BAND_HALF = NOZZLE_KEEP_HEAD / 2.0
-# 判定"水平面"(朝上/朝下)的 Z 跨度上限: 面围盒的 zmax−zmin 小于它就算
-_FLAT_TOL = 0.1
 # 方向校准探步(mm): 先移这一小步, 复测出"每移 1mm 总长变多少"
 _PROBE_STEP = 2.0
-# 斜率下限: |斜率| 低于它 = 移了面长度也不跟变(带内面不控制总长), 放弃
+# 斜率下限: |斜率| 低于它 = 移了面长度也不跟变(范围内面不控制总长), 放弃
 _SLOPE_MIN = 0.2
-# 补差主循环轮数(每轮: 按当前斜率补齐 → 复测)
-_MAX_STEPS = 6
-# 整步提交失败后的子步上限(mm) —— 拆小步只是兜底, 正常一次到位
+# 补差主循环轮数(每轮: 按当前斜率补 ≤10mm → 复测; 与 v3.2 实机验证过的预算一致)
+_MAX_STEPS = 12
+# 单步移面上限(mm) —— 一步拽 20mm 以上会把相邻几何扯脱(NX 报"某个面不再
+# 与先前的邻近对象相交", 实机 5/6 处全挂); v3.3 改成整量一步移后又翻车
+# (用户 2026-09-19: "在你没改之前至少移动面是正确的"), 恢复 ≤10mm 小步。
 _MAX_STEP = 10.0
 # 长度对齐判定容差(mm)
 _LEN_TOL = 0.05
@@ -55,28 +55,20 @@ def is_nozzle(fname, families=None):
     return any(str(k).lower() in low for k in (fams or []))
 
 
-def pick_faces(face_boxes, center_z, half=None, flat_only=True, tol=0.01):
-    """(纯逻辑) 挑出要移的面 —— **定位点上下 half 那一带里的水平面**。
+def pick_faces(face_boxes, z_lo, z_hi, tol=0.01):
+    """(纯逻辑) 挑出要移的面 —— **选择范围内的所有面, 一切面都要**。
 
-    center_z = 定位点所在高度(= 放置点 Z, 件上那个定位面放置后就在这儿)。
-    只选 Z 落在这个带里的**水平面**(朝上/朝下): 移它们就等于"把件在定位点
-    这一段挪一挪", 拉长/缩短都从这一段出 —— 带外的(顶尖、头背)一律不动。
-
-    ⭐ 用户 2026-09-18 两份录制日记佐证: 移的面 Z = −15/0/+13/+6.5(在原点
-    调长)与 −72/−78.5/−85/−100(在模型里调, 定位点 −85), 全落在定位点 ±15
-    带内; 头背与咀尖的端面都没动。
-    侧面(圆柱外圆等)不选 —— 沿轴向平移侧壁没有几何意义。
-    flat_only=False 时连侧面一起要(极端形状保底)。
+    范围 = 热咀底面到顶面再整体上移 NOZZLE_BAND_UP(用户 2026-09-19 定案):
+    一根咀底/顶面 z 是 0/100 的咀, 选择范围就是 [40,140] —— 咀尖底部 40mm
+    固定不动(不在范围内), 范围内的**一切面**(平面/侧面/曲面都要)都移。
+    z_lo/z_hi 由调用方按 [底+40, 顶+40] 传入; 按面围盒**中心**的 Z 判定。
     """
-    half = _BAND_HALF if half is None else float(half)
     out = []
     for i, b in enumerate(face_boxes or []):
         if not b or len(b) < 6:
             continue
-        z_lo, z_hi = float(b[2]), float(b[5])
-        if flat_only and (z_hi - z_lo) > _FLAT_TOL:
-            continue
-        if abs((z_lo + z_hi) / 2.0 - float(center_z)) <= half + tol:
+        zc = (float(b[2]) + float(b[5])) / 2.0
+        if (float(z_lo) - tol) <= zc <= (float(z_hi) + tol):
             out.append(i)
     return out
 
@@ -259,11 +251,11 @@ def _tune_motion(mo, nx):
 
 
 def _deparameterize_bodies(work_part, bodies, log):
-    """去掉一组体的建模参数(变成哑体) —— 日记口径: 移面前先去参。
+    """去掉一组体的建模参数(变成哑体) —— 日记顺序: 移面之后、移动对象之前。
 
-    两份录制日记里移面的对象全是 UNPARAMETERIZED 哑体; 提升体是 Wave 链接,
-    不去参直接移面, 实机就报"面不再与先前的邻近对象相交"(大面积移面全挂的
-    根因)。只处理传入的这几个体, 不动全局登记表(主流水线收尾还会统一去参)。
+    「移动对象」只对哑体可用 —— 提升体是 Wave 链接, NX 不许整体移动
+    (实机报"属于 Wave 链接特征")。只处理传入的这几个体, 不动全局登记表
+    (主流水线收尾还会统一去参)。
     """
     bld = None
     try:
@@ -284,6 +276,77 @@ def _deparameterize_bodies(work_part, bodies, log):
                 bld.Destroy()
             except Exception:
                 pass
+
+
+def _move_bodies_point_to_point(work_part, session, bodies, from_pt, to_pt, log):
+    """把一组体整体平移, 使 from_pt 落到 to_pt —— 日记(logs/journal-1.py)的
+    「移动对象 + 点对点」: CreateMoveObjectBuilder → Option=PointToPoint →
+    FromPoint/ToPoint → ObjectToMoveObject.Add(体) → Commit。
+
+    用途: **定位点回位**(用户 2026-09-19 定案) —— 移面把带内的面(含定位面)
+    带走了 cum, 件的定位点落在 放置点+cum 上; 用它把整个新件平移 −cum, 让
+    定位点与放置点重新重合。整件平移不改长度, 长度照旧对齐。
+    ⚠️ 只对哑体可用 —— 提升体是 Wave 链接, NX 不许整体移动(实机报过
+    "属于 Wave 链接特征"); 调用方必须先 _deparameterize_bodies(日记顺序:
+    移面 → 去参 → 移动对象)。
+    """
+    import NXOpen
+    import NXOpen.Features
+    import NXOpen.GeometricUtilities
+
+    bld = None
+    p_from = p_to = None
+    try:
+        try:
+            bld = work_part.BaseFeatures.CreateMoveObjectBuilder(
+                NXOpen.Features.MoveObject.Null)
+        except Exception as ex:
+            log("【定位点回位】本 NX 建不出移动对象(%s), 定位点没搬回。" % ex)
+            return False
+        mo = bld.TransformMotion
+        _tune_motion(mo, NXOpen)          # 同款: 运动参数不设全 NX 会沿用别的模式
+        try:
+            mo.DeltaEnum = \
+                NXOpen.GeometricUtilities.ModlMotion.Delta.ReferenceAcsWorkPart
+            mo.Option = \
+                NXOpen.GeometricUtilities.ModlMotion.Options.PointToPoint
+            p_from = work_part.Points.CreatePoint(
+                NXOpen.Point3d(float(from_pt[0]), float(from_pt[1]),
+                               float(from_pt[2])))
+            p_to = work_part.Points.CreatePoint(
+                NXOpen.Point3d(float(to_pt[0]), float(to_pt[1]),
+                               float(to_pt[2])))
+            mo.FromPoint = p_from
+            mo.ToPoint = p_to
+        except Exception as ex:
+            log("【定位点回位】点对点设置不上(%s), 定位点没搬回。" % ex)
+            return False
+        bld.ObjectToMoveObject.Add(list(bodies))
+        # ⚠️ 别照搬"移面"的 OnApplyPre: MoveObjectBuilder 没有这个方法
+        # (实机报过 'no attribute OnApplyPre', 日记里也只有 Commit)。
+        try:
+            bld.OnApplyPre()
+        except AttributeError:
+            pass
+        bld.Commit()
+        return True
+    except Exception as ex:
+        log("【定位点回位】移动对象失败(%s), 定位点还差手搬。" % ex)
+        return False
+    finally:
+        for _p in (p_from, p_to):
+            # 临时点用完撤参数、去掉视图依赖(日记同款); 只是基准点, 不影响几何
+            try:
+                if _p is not None:
+                    _p.RemoveParameters()
+                    _p.RemoveViewDependency()
+            except Exception:
+                pass
+        try:
+            if bld is not None:
+                bld.Destroy()
+        except Exception:
+            pass
 
 
 def _move_faces_z(work_part, session, faces, shift, log):
@@ -425,8 +488,10 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
     old_lens: [(锚点(x,y,z,..), 旧件实例长度), ...] —— 替换入口按旧件体
     分组算好传入; adj_stats: 可变 dict, 回填 adj/skip 计数供报告。
     hook 签名 (fname, 序号, 锚点, 规则, 体列表, 待删组件列表) → 新体列表
-    (移面就地改, 体列表原样返回)。锚点就是**真实放置点**(没有预偏移):
-    位置在放置那一刻就正确, 本钩子只管长度, 失败也不碰位置。
+    (移面就地改 + 定位点回位, 体列表原样返回)。
+    流程 = 用户 2026-09-19 定案: 摆正(放置时已做) → 带内移面(所有被选实体
+    的面一起移, 单步 ≤10mm, 方向探步校准) → 去参 → 整件点对点平移回位,
+    让定位点与放置点重新重合。
     """
     try:
         import NXOpen.UF
@@ -452,9 +517,13 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
         try:
-            _fix_z = float(anch[2])     # 定位点高度 = 放置点 Z(移面带的中心)
+            # 定位点 = 放置点(锚点): 移面带的中心、回位的目标点都用它
+            _cx, _cy, _fix_z = float(anch[0]), float(anch[1]), float(anch[2])
         except (TypeError, ValueError, IndexError):
-            _fix_z = None
+            log("【长度对齐】%s 第 %d 处: 锚点读不出来, 不调。"
+                % (fname, idx))
+            adj_stats["skip"] = adj_stats.get("skip", 0) + 1
+            return tools
 
         def _measure():
             bbs = [_body_bbox(uf, t) for t in tools]
@@ -464,110 +533,141 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             return (t - b), how, t, b
 
         def _band_faces():
+            """按"范围=[当前底+40, 当前顶+40]"挑出**一切被选中的面**。
+
+            所有体的面合成一份、一次「移动面」一起移(用户定案: 有多少实体
+            被选中, 就移多少实体中被选中的面, 不能只移一个实体的)。
+            每轮按当前跨度重算: 咀尖底部 40mm 固定不动 → 下缘不变;
+            顶端随件走 → 上缘跟着抬, 已移的面仍在范围内。
+            """
+            _t, _b, _h2 = _measure()
+            if _b is None or _t is None:
+                return []
             rows = read_face_rows(uf, tools)
-            idxs = pick_faces([r[0] for r in rows], _fix_z)
-            if not idxs:
-                # 极端形状(这一带里一个水平面都没有) → 退回宽口径, 至少能动
-                idxs = pick_faces([r[0] for r in rows], _fix_z, flat_only=False)
+            idxs = pick_faces([r[0] for r in rows],
+                              _b + NOZZLE_BAND_UP, _t + NOZZLE_BAND_UP)
             return [rows[i][3] for i in idxs]
 
         def _move(amount):
-            """移 amount(带符号)。整步失败且量大时拆 ≤_MAX_STEP 小步兜底。"""
+            """把范围内一切被选中的面一起沿 Z 移 amount; 返回实际移了的量。"""
             fs = _band_faces()
             if not fs:
-                log("【长度对齐】%s 第 %d 处: 定位点±%.4g 那一带里没有可移的面。"
-                    % (fname, idx, _BAND_HALF))
-                return False
+                log("【长度对齐】%s 第 %d 处: 选择范围(底+%.4g 以上)里没有可移"
+                    "的面。" % (fname, idx, NOZZLE_BAND_UP))
+                return 0.0
             if _move_faces_z(work_part, session, fs, amount, log):
+                return amount
+            return 0.0
+
+        def _restore(cum):
+            """定位点回位(用户 2026-09-19 定案): 整件平移 −cum, 让定位点
+            (被移面带走了 cum)重新落到放置点上 —— 日记「移动对象-点对点」。
+            先去参(提升体是 Wave 链接, 不许整体移动; 日记顺序:
+            移面 → 去参 → 移动对象)。整件平移不改长度。"""
+            if abs(cum) <= 1e-9:
                 return True
-            if abs(amount) <= _MAX_STEP:
-                return False
-            log("【长度对齐】%s 第 %d 处: 一步移 %.4g 没成, 拆成 ≤%.4g 小步重试。"
-                % (fname, idx, amount, _MAX_STEP))
-            n = math.ceil(abs(amount) / _MAX_STEP)
-            small = amount / n
-            for _k in range(n):
-                fs2 = _band_faces()
-                if not fs2 or not _move_faces_z(work_part, session, fs2,
-                                                small, log):
-                    return False
-            return True
+            _deparameterize_bodies(work_part, tools, log)
+            ok = _move_bodies_point_to_point(
+                work_part, session, tools,
+                (_cx, _cy, _fix_z + cum), (_cx, _cy, _fix_z), log)
+            if ok:
+                log("【定位点回位】%s 第 %d 处: 整件平移 %.4g mm, 定位点回到"
+                    "放置点(%.3f, %.3f, %.3f)。"
+                    % (fname, idx, -cum, _cx, _cy, _fix_z))
+            return ok
 
-        # ① 去参数(日记口径: 移面只对哑体做; 链接体移面会报"面不再相交")
-        _deparameterize_bodies(work_part, tools, log)
-
-        # ② 量当前长度
+        # ① 量当前长度与跨度; 选择范围 = [底+40, 顶+40](用户定案)
         cur, how, t0, b0 = _measure()
-        if cur is None:
+        if cur is None or b0 is None or t0 is None:
             log("【长度对齐】%s 第 %d 处: 新件长度量不到, 保持原样(位置正确)。"
                 % (fname, idx))
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
+        datum_moves = _fix_z >= (b0 + NOZZLE_BAND_UP - 0.05)
         log("【长度对齐】%s 第 %d 处: 新件 %d 个体, 按%s量 Z %.4g~%.4g → 长 %.4g"
-            " (旧件 %.4g)" % (fname, idx, len(tools), how,
-                              b0 if b0 is not None else float("nan"),
-                              t0 if t0 is not None else float("nan"),
-                              cur, old_len))
+            " (旧件 %.4g); 移面选择范围 Z %.4g~%.4g(底+%.4g~顶+%.4g), "
+            "定位点(%s)在范围内%s。"
+            % (fname, idx, len(tools), how, b0, t0, cur, old_len,
+               b0 + NOZZLE_BAND_UP, t0 + NOZZLE_BAND_UP,
+               NOZZLE_BAND_UP, NOZZLE_BAND_UP, _fix_z,
+               "→ 会被带走, 移完回位" if datum_moves else "→ 固定端, 不会动"))
         if abs(old_len - cur) <= _LEN_TOL:
             log("【长度对齐】%s 第 %d 处: 新旧等长(都是 %.4g), 免调。"
                 % (fname, idx, cur))
             return tools
 
-        # ③ 探向: 先移一小步, 量出"每移 1mm 总长变多少"(符号各件不同, 不猜)
-        if not _move(-_PROBE_STEP):
+        # ② 探向: 先移一小步(≤10mm 安全步长内), 量出"每移 1mm 总长变多少"
+        cum = 0.0                    # 范围内面被带走的累计量(定位点在带内=回位量)
+        applied = _move(-_PROBE_STEP)
+        if applied == 0.0:
             log("【长度对齐】%s 第 %d 处: 探步就移不动, 保持新件原长 %.4g"
                 "(位置正确, 与旧件差 %.4g)。"
                 % (fname, idx, cur, old_len - cur))
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
+        cum += applied
         prev, cur = cur, _measure()[0]
-        slope = calib_slope(prev, cur, -_PROBE_STEP)
+        slope = calib_slope(prev, cur, applied)
         if cur is None or abs(slope) < _SLOPE_MIN:
-            log("【长度对齐】%s 第 %d 处: 移了面总长没跟变(带内面不控制总长), "
-                "已撤销不了, 保持现状(位置正确, 长度 %.4g, 旧件 %.4g)。"
-                % (fname, idx, cur if cur is not None else float("nan"),
-                   old_len))
+            log("【长度对齐】%s 第 %d 处: 移了面总长没跟变(范围内面不控制总长), "
+                "保持现状(长度 %.4g, 旧件 %.4g)。" % (fname, idx, cur, old_len))
+            if datum_moves:
+                _restore(cum)
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
 
-        # ④ 按斜率补差 → 复测 → 不齐再补(每轮用上一轮实测重校斜率)
-        done = False
-        moved_total = -_PROBE_STEP
+        # ③ 按斜率补差(每步 ≤10mm), 复测, 不齐再补; 每轮用实测重校斜率
         for _r in range(_MAX_STEPS):
             step = step_for(old_len, cur, slope)
             if step == 0.0:
-                done = True
                 break
-            if not _move(step):
-                log("【长度对齐】%s 第 %d 处: 移面提交失败, 保持现状(位置正确, "
-                    "长 %.4g, 旧件 %.4g, 还差 %.4g)。"
+            if abs(step) > _MAX_STEP:
+                log("【长度对齐】%s 第 %d 处: 还差 %.4g, 这一小步先移 %.4g"
+                    % (fname, idx, old_len - cur,
+                       _MAX_STEP if step > 0 else -_MAX_STEP))
+                step = _MAX_STEP if step > 0 else -_MAX_STEP
+            applied = _move(step)
+            if applied == 0.0:
+                log("【长度对齐】%s 第 %d 处: 移面提交失败, 保持现状"
+                    "(长 %.4g, 旧件 %.4g, 还差 %.4g)。"
                     % (fname, idx, cur, old_len, old_len - cur))
                 break
-            moved_total += step
+            cum += applied
             prev, cur = cur, _measure()[0]
             if cur is None:
                 break
-            _s2 = calib_slope(prev, cur, step)
+            _s2 = calib_slope(prev, cur, applied)
             if abs(_s2) >= _SLOPE_MIN:
                 slope = _s2
-            if abs(old_len - cur) <= _LEN_TOL:
-                done = True
-                break
 
-        if done and cur is not None and abs(old_len - cur) <= _LEN_TOL:
-            adj_stats["adj"] = adj_stats.get("adj", 0) + 1
-            log("【长度对齐】%s 第 %d 处: 对齐完成 —— 总长 %.4g = 旧件 %.4g"
-                "(带内共移 %.4g mm, 方向斜率 %.4g)。"
-                % (fname, idx, cur, old_len, moved_total, slope))
+        # ④ 定位点回位(只有定位点在范围内、被移面带走时才需要)
+        restored = True
+        if datum_moves:
+            restored = _restore(cum)
+
+        # ⑤ 结论
+        if cur is not None and abs(old_len - cur) <= _LEN_TOL:
+            if restored:
+                adj_stats["adj"] = adj_stats.get("adj", 0) + 1
+                log("【长度对齐】%s 第 %d 处: 对齐完成 —— 总长 %.4g = 旧件 %.4g,"
+                    " 定位点在放置点上(范围内共移 %.4g mm, 方向斜率 %.4g)。"
+                    % (fname, idx, cur, old_len, cum, slope))
+            else:
+                adj_stats["skip"] = adj_stats.get("skip", 0) + 1
+                log("【长度对齐】%s 第 %d 处: 长度已对齐(%.4g)但定位点没搬回, "
+                    "整件还差 %.4g mm, 请手动移动。"
+                    % (fname, idx, cur, -cum))
         else:
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             log("【长度对齐】%s 第 %d 处: 没收敛 —— 现在 %.4g, 旧件 %.4g, "
-                "还差 %.4g。位置是正确的, 长度请按日志数字手动收尾"
-                "(移动面选定位点±%.4g 带内的面)。"
+                "还差 %.4g。%s, 长度请按日志数字手动收尾(移动面选 底+%.4g"
+                "~顶+%.4g 范围内的面)。"
                 % (fname, idx, cur if cur is not None else float("nan"),
                    old_len,
                    (old_len - cur) if cur is not None else float("nan"),
-                   _BAND_HALF))
+                   "位置已回正(定位点在放置点上)" if restored
+                   else "定位点没搬回, 整件差 %.4g mm" % (-cum),
+                   NOZZLE_BAND_UP, NOZZLE_BAND_UP))
         return tools
 
     return hook
