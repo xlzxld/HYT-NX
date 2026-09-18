@@ -511,17 +511,12 @@ def _group_bool_plan(plan):
 
 
 def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, log,
-                    stats=None, anchors_override=None, placed_hook=None,
-                    anchor_record=None):
+                    stats=None, anchors_override=None, placed_hook=None):
     """阶段 6: 按规则放置 stdparts 标准件(独立体)并按需布尔。
 
     anchors_override: {prt 文件名: [(x, y, z[, 角度]), ...]} —— 一键替换标准件时直接
       指定放置点(取自被换掉的旧件体上记的锚点), 不去图纸找圆, z 也照给的走
       (件被挪过 Z 也能跟上); 传 None 走原逻辑(按 DXF 圆锚点), 主流水线行为不变。
-    anchor_record: {prt 文件名: [(x, y, z[, 角度]), ...]} —— **体上的锚点记什么**。
-      热咀走"预偏移"(A 方案, 2026-09-18)时, 放置位置是「放置点 − (0,0,Δ)」,
-      但**锚点必须记真实放置点**, 否则下次替换会把偏移累积下去。
-      给 None 就按放置位置记(主流水线行为不变)。
     placed_hook: 可选钩子 (fname, 序号(1起), 锚点, 规则, 体列表, 待删组件列表)
       → 新体列表 —— 每处实例放好并提升后、**打类型标记与记锚点之前**调用
       (钩子可能改几何, 锚点必须按改完后的体中心记, 否则记下的偏移当场过期);
@@ -660,15 +655,10 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                                    pending_comps)
                 if _adj:
                     tools_all = _adj
-            # 锚点记录(一键替换用): 默认记放置位置; 走"预偏移"时记**真实放置点**
-            _rec = None
-            if anchor_record:
-                _lst = anchor_record.get(fname) or ()
-                if i < len(_lst):
-                    _rec = _lst[i]
+            # 锚点记录(一键替换用): 记放置位置(= 锚点, 无预偏移)
             for _tb in tools_all:                   # 体类型标记(模具开框规则用)
                 _mark_type(_tb, "STD:" + fname)
-                _mark_anchor(_tb, _rec or (cx, cy, z_i), ang, uf)
+                _mark_anchor(_tb, (cx, cy, z_i), ang, uf)
             n_body += len(tools_all)
             pending_comps.append(comp)              # (提速)延到段2 一次删
 

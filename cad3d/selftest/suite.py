@@ -60,8 +60,8 @@ from cad3d.modeling.stdparts import (
     group_anchor_instances
 )
 from cad3d.modeling.nozzle_len import (
-    is_nozzle, plan_shift, pick_faces, next_step, nearest_anchor_len,
-    plane_span
+    is_nozzle, pick_faces, nearest_anchor_len,
+    plane_span, calib_slope, step_for
 )
 from cad3d.core.guide import GUIDE_LINES, print_guide
 from cad3d.modeling.nx_compat import _matrix3x3
@@ -541,44 +541,31 @@ def selftest(dxf_path=None):
           "Dialog" in build_replace_map_dlx([], ["a.prt"], None)
           and "当前模型里没有标准件" in build_replace_map_dlx([], [], None))
 
-    # 7d-4. 热咀替换长度对齐(v3.2): 按高度选面 + 就地移面, 总长=旧件
+    # 7d-4. 热咀替换长度对齐(v3.3): 原位摆正 → 去参 → 定位点带内移面 → 探向自校准
     check("热咀族判定: 大水口/点胶口/热咀/nozzle 命中, 其余不命中",
           is_nozzle("大水口-25.prt") and is_nozzle("点胶口-18.prt")
           and is_nozzle("热咀x.prt") and is_nozzle("Nozzle-30.prt")
           and not is_nozzle("螺丝-45.prt") and not is_nozzle("接线盒-24针.prt")
           and not is_nozzle("") and not is_nozzle(None))
-    # 两体件: 头部 -60..-30(顶带30), 咀身 -100..-61(全在头部带以下)
-    _nz_head = (0.0, 0.0, -60.0, 10.0, 10.0, -30.0)
-    _nz_tip = (0.0, 0.0, -100.0, 8.0, 8.0, -61.0)
-    _nsh, _cut, _nt = plan_shift(60.0, [_nz_head, _nz_tip], 1)
-    check("长度对齐: 新件长70旧件60 → 沿 Z +10(缩短), 分界在 -60",
-          abs(_nsh - 10.0) < 1e-9 and abs(_cut + 60.0) < 1e-9 and _nt == "",
-          "%r %r %r" % (_nsh, _cut, _nt))
-    _nsh2, _cut2, _nt2 = plan_shift(80.0, [_nz_head, _nz_tip], 1)
-    check("长度对齐: 新件比旧件短 → 沿 Z -10(往下拉长)",
-          abs(_nsh2 + 10.0) < 1e-9 and abs(_cut2 + 60.0) < 1e-9)
-    _nsh3, _cut3, _nt3 = plan_shift(70.0, [_nz_head, _nz_tip], 1)
-    check("长度对齐: 新旧等长免调", _nsh3 is None and "等长" in _nt3)
-    # 短头(5mm)两体件: 咀身伸进顶部带 → 只带以下的面入选
-    _nz_sh_head = (0.0, 0.0, -35.0, 10.0, 10.0, -30.0)
-    _nz_sh_tip = (0.0, 0.0, -60.0, 8.0, 8.0, -34.0)
-    _nsh4, _cut4, _nt4 = plan_shift(40.0, [_nz_sh_head, _nz_sh_tip], 1)
-    check("长度对齐: 头很短时照旧给得出移面量(不再需要手动)",
-          abs(_nsh4 + 10.0) < 1e-9 and abs(_cut4 + 60.0) < 1e-9 and _nt4 == "",
-          "%r %r %r" % (_nsh4, _cut4, _nt4))
-    # -Z 干净路径: 头 -100..-70(底带30), 咀身 -60..-40
-    _nz_head_f = (0.0, 0.0, -100.0, 10.0, 10.0, -70.0)
-    _nz_tip_f = (0.0, 0.0, -60.0, 8.0, 8.0, -40.0)
-    _nsh5, _cut5, _nt5 = plan_shift(70.0, [_nz_head_f, _nz_tip_f], -1)
-    check("长度对齐: -Z 新件短10 → 沿 Z +10(往上提), 分界在 -70",
-          abs(_nsh5 - 10.0) < 1e-9 and abs(_cut5 + 70.0) < 1e-9 and _nt5 == "")
-    _nsh6, _cut6, _nt6 = plan_shift(60.0, [_nz_head], 1)
-    check("长度对齐: 单实体也能拉长(移它的底面), 不再束手无策",
-          abs(_nsh6 + 30.0) < 1e-9 and abs(_cut6 + 60.0) < 1e-9 and _nt6 == "")
-    _nsh7, _cut7, _nt7 = plan_shift(None, [_nz_head, _nz_tip], 1)
-    check("长度对齐: 旧件长度缺 → 不调", _nsh7 is None and "没找到" in _nt7)
-    _nsh8, _cut8, _nt8 = plan_shift(60.0, [_nz_head, _nz_tip, None], 1)
-    check("长度对齐: 包围盒读不到 → 不调", _nsh8 is None and "包围盒" in _nt8)
+    # 移面方向**现场校准**(v3.3): 各件"移 1mm 总长变多少"符号不同(带内含不含
+    # 咀尖, 用户两份日记里就有相反的例子), 不许写死 —— 先探一小步量斜率,
+    # 再按斜率补差。写死符号的旧版实机上演过"越移越远"。
+    check("移面校准: 探步-2 让总长-2 → 斜率+1(移多少长多少)",
+          calib_slope(70.0, 68.0, -2.0) == 1.0)
+    check("移面校准: 探步-2 让总长+2 → 斜率-1(反向件)",
+          calib_slope(70.0, 72.0, -2.0) == -1.0)
+    check("移面校准: 零步/坏输入 → 0(视为移面带不动长度)",
+          calib_slope(70.0, 68.0, 0.0) == 0.0
+          and calib_slope(None, 68.0, -2.0) == 0.0
+          and calib_slope(70.0, None, -2.0) == 0.0)
+    check("移面步长: 残差/斜率 = 该移的量(斜率-1 时反向)",
+          step_for(60.0, 70.0, -1.0) == 10.0
+          and step_for(80.0, 70.0, -1.0) == -10.0)
+    check("移面步长: 已够准/斜率0/坏输入 → 0(停止迭代)",
+          step_for(70.0, 70.03, -1.0) == 0.0
+          and step_for(60.0, 70.0, 0.0) == 0.0
+          and step_for(None, 70.0, -1.0) == 0.0
+          and step_for(60.0, 70.0, None) == 0.0)
 
     # 选面范围(用户 2026-09-18 定案 + 录制日记): **只取"定位点 ±15"那一带里的
     # 水平面**。他移的是 Z=−15/0/+13/+6.5, 全落在带里; 带外的(顶尖、身部)不动。
@@ -596,13 +583,6 @@ def selftest(dxf_path=None):
     check("选面: 空/坏输入安全",
           pick_faces([], -60.0) == [] and pick_faces(None, -60.0) == []
           and pick_faces([None], -60.0) == [])
-    # 迭代步长: 用用户例子校准(他移 −20 ⇒ 总长短 20) ⇒ **总长变化 = +Δ**
-    # ⇒ 想从 cur 变成 old, 该移 Δ = old − cur。符号反了会"越移越远"。
-    check("移面步长: 件短了要给正(变长)、长了要给负(缩短)",
-          next_step(100.0, 80.0) == 20.0 and next_step(100.0, 120.0) == -20.0)
-    check("移面步长: 够准/坏输入都返回 0(停止迭代)",
-          next_step(100.0, 100.03) == 0.0 and next_step(None, 80.0) == 0.0
-          and next_step(100.0, None) == 0.0)
     # 长度口径(用户 2026-09-18 定案): 顶/底取**主平面** —— 朝上的平面里 z 最高的、
     # 朝下的平面里 z 最低的; 顶上的小凸起若是曲面, 天然落不进"平面"。
     # 真实数据(NX2312 实测): 点胶口-18 顶面是 13.0000 的平面, 但几何最高点是
@@ -637,27 +617,6 @@ def selftest(dxf_path=None):
           plane_span([], None)[0] is None
           and plane_span(None, None)[0] is None
           and plane_span([None], None)[0] is None)
-    _sh_sp, _cut_sp, _nt_sp = plan_shift(
-        95.9673, [(0.0, 0.0, -100.0, 1.0, 1.0, 13.2043)], 1, span=(13.0, -95.0))
-    check("长度口径: plan_shift 认 span(新件 108 → 缩短 12.0327, 分界 -17)",
-          abs(_sh_sp - 12.0327) < 1e-3 and abs(_cut_sp + 17.0) < 1e-9
-          and _nt_sp == "", "%r %r %r" % (_sh_sp, _cut_sp, _nt_sp))
-    check("长度口径: 不传 span 仍是旧行为(包围盒)",
-          plan_shift(96.1716, [(0.0, 0.0, -82.9673, 1.0, 1.0, 13.2043)],
-                     1)[2].startswith("新旧等长"))
-
-    # 定位点守恒(用户 2026-09-18 定案): 件上"定位点"= 某个面的圆心, 必须永远落在
-    # 放置点上 ⇒ 那个高度绝不能进移面范围。分界取"头部带"与它之间更严的那个。
-    _pb = [(0.0, 0.0, -120.0, 1.0, 1.0, 10.0)]      # top=10 → 头部带底 = -20
-    check("定位点守恒: 放置点高度比头部带更靠上时, 取头部带(不变)",
-          plan_shift(100.0, _pb, 1, fix_z=5.0)[1] == -20.0)
-    check("定位点守恒: 放置点高度更低时, 分界收窄到它(定位面以上一律不动)",
-          plan_shift(100.0, _pb, 1, fix_z=-40.0)[1] == -40.0)
-    check("定位点守恒: -Z 翻转时取更高的那个分界",
-          plan_shift(100.0, [(0.0, 0.0, -30.0, 1.0, 1.0, 60.0)], -1,
-                     fix_z=20.0)[1] == 20.0)
-    check("定位点守恒: 不给 fix_z 仍是旧行为(只看头部带)",
-          plan_shift(100.0, _pb, 1, fix_z=None)[1] == -20.0)
 
     # 回归(2026-09-18): 实机"移完异形"的根因是**运动参数没照日记设全** ——
     # 只设 DeltaXyz 三项不够, NX 会沿用方向/曲线模式, 移出来不是纯平移。

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 日记入口 (v3.2)
+nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 日记入口 (v3.3)
 =============================================================================
 适用环境：Siemens NX 10 / NX 12 / NX 2312 及以上版本
 播放方式：NX 菜单 工具 → 日记 → 播放，选本文件。
@@ -25,16 +25,21 @@ nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 
   好处：不用认“哪个实体带锚点”、不用比尺寸、不用图纸，也不会再出现
   “对不上就留下没删”的遗留。
 
-【热咀长度自动对齐（v3.2 起用"移动面"）】换热咀族(大水口/点胶口/热咀/nozzle,
-  关键词可配)时，新件放好后自动按**旧件的顶部到底部长度**调整新件长度：头部
-  (顶部往下 30mm 这一段)不动，**这一带以下的面就地移面** —— 比旧件短就拉长、
-  比旧件长就缩短。用同步建模「移动面」就地改面(体不重建、头身不留缝)，与手动
-  "移动面"选面做法同口径。族关键词与保留高度在 nx_std_config.py 的
-  NOZZLE_FAMILIES / NOZZLE_KEEP_HEAD 配置。
+【热咀长度自动对齐（v3.3 = 完全照你手动的做法）】换热咀族(大水口/点胶口/热咀/
+  nozzle, 关键词可配)时：
+  ① 新件**先按锚点原位摆正**（定位点 = 旧件锚点）—— 位置从放置那一刻就正确；
+  ② **去掉建模参数**变成哑体（你手动也是粘贴出的哑体才移的面）；
+  ③ 用同步建模「移动面」在**定位点上下各 15mm（共 30mm）的带内**移面，
+     把总长对齐旧件 —— 比旧件短就拉长、比旧件长就缩短；
+  ④ 移多移少、往哪边移**不靠猜**：先移一小步量出"移 1mm 总长变多少"，
+     再按这个斜率一步补齐，移完复测、不齐再补。
+  移面对不齐时**位置也不会偏**（件已在正确位置，只是保持新件原长，日志写明
+  差多少）。族关键词与带高在 nx_std_config.py 的 NOZZLE_FAMILIES /
+  NOZZLE_KEEP_HEAD 配置。
 
-【长度是怎么量的】旧件长度 = 该处实例**所有体**的世界 Z 最高减最低（包围盒
-  口径，不是件的名义高度）；新件同理。日志里会逐实例打出"几个体、Z 从哪到哪
-  → 长多少"，量得对不对可以直接对着看。
+【长度是怎么量的】旧件长度 = 该处实例所有体按**主平面口径**的顶减底（顶取
+  朝上平面里最高的、底取朝下平面里最低的；顶上曲面小凸起不算）；新件同口径。
+  日志里会逐实例打出"几个体、Z 从哪到哪 → 长多少"，量得对不对可以直接对着看。
 
 【第二页 = 逐件微调】要换成的规格逐件调参数。**参数也不读记忆**，每次都从
   nx_std_config.py 出厂默认开始（Z 基准值按模型实测高度显示）。
@@ -73,7 +78,6 @@ from cad3d.modeling.display import _refresh_display
 from cad3d.modeling.nozzle_len import (
     is_nozzle,
     make_nozzle_hook,
-    nearest_anchor_len,
 )
 from cad3d.modeling.nx_compat import _anchor_of
 from cad3d.modeling.std_rules import (
@@ -225,48 +229,6 @@ def _measured_params(rows, log=None):
     return params
 
 
-def _probe_prt_len(session, work_part, fname, uf, log):
-    """放一个临时件量出它的**原始长度**(还没被改过), 量完删掉 —— 给"预偏移"用。
-
-    同一个 prt 的每个实例原始长度都一样 ⇒ **每个规格只探一次**, 不是每根都探。
-    """
-    import NXOpen
-    from cad3d.core.paths import stdparts_dir
-    from cad3d.modeling.stdparts import _promote_body, _batch_delete
-    from cad3d.modeling.mold_cut import _body_bbox
-    from cad3d.modeling.nozzle_len import (plane_span, read_face_rows,
-                                           _union_bbox)
-    path = os.path.join(stdparts_dir(), fname)
-    if uf is None or not os.path.isfile(path):
-        return None
-    comp = None
-    bodies = []
-    try:
-        ca = work_part.ComponentAssembly
-        m3 = NXOpen.Matrix3x3()
-        m3.Xx = 1.0
-        m3.Yy = 1.0
-        m3.Zz = 1.0
-        comp, _ls = ca.AddComponent(path, "MODEL", "PROBE_" + fname,
-                                    NXOpen.Point3d(0.0, 0.0, 0.0), m3, -1)
-        bodies = _promote_body(work_part, comp, "PROBE_BODY_%s" % fname,
-                               lambda m: None, None)
-        bodies = [b for b in (bodies or []) if b is not None]
-        if not bodies:
-            return None
-        bbs = [_body_bbox(uf, b, None) for b in bodies]
-        t, bo, _how = plane_span(read_face_rows(uf, bodies), _union_bbox(bbs))
-        return (t - bo) if (t is not None and bo is not None) else None
-    except Exception as ex:
-        log("【替换】%s: 探原始长度失败(%s), 这件不预偏移。" % (fname, ex))
-        return None
-    finally:
-        try:
-            _batch_delete(session, list(bodies) + ([comp] if comp else []),
-                          lambda m: None, "探长度的临时件")
-        except Exception:
-            pass
-
 
 def _do_replace(session, work_part, mapping, rules, params, log):
     """核心: 按用户指定的映射把旧规格换成新规格。返回结果字典(不抛异常)。
@@ -275,11 +237,6 @@ def _do_replace(session, work_part, mapping, rules, params, log):
     定位全靠体上记的锚点, 不读图纸。
     """
     import NXOpen
-    try:
-        import NXOpen.UF
-        uf = NXOpen.UF.UFSession.GetUFSession()
-    except Exception:
-        uf = None
 
     st = {"ok": False, "pairs": 0, "old": 0, "new": 0, "skip": 0,
           "no_anchor": 0, "adj": 0, "adj_skip": 0}
@@ -299,8 +256,6 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         log("【替换】没找到分流板(FLB)实体: 需要挖孔的件只会放置、不挖孔。")
 
     to_place, anchors_override, to_delete, old_lens = {}, {}, [], []
-    anchor_record = {}          # 体上要记的**真实放置点**(放置位置是偏过的)
-    shift_map = {}              # {(规格, 第几处): 预偏移量 Δ} 给 hook 还原锚点用
     for old_fname in sorted(mapping):
         new_fname = mapping[old_fname]
         olds = existing.get(old_fname) or []
@@ -326,7 +281,11 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         to_delete.extend(matched)
         to_place[new_fname] = rule
 
-        # 热咀: 先按"主平面口径"量出每根旧件的长度(对齐 + 预偏移都要用)
+        # 热咀: 先按"主平面口径"量出每根旧件的长度(对齐用)。
+        # ⭐ v3.3 定案(照录制日记): **不做预偏移** —— 新件先按锚点原位摆正
+        # (定位点=旧件锚点, 位置从头就正确), hook 里去参后再移面对齐长度;
+        # 移面不成也只是长度没调, 位置绝不偏(v3.2 A 方案"预偏移摆放赌移面
+        # 把定位点带回来"的教训: 移面一失败, 件就整体停在偏了 Δ 的位置)。
         lens = []
         if is_nozzle(new_fname):
             lens = _old_instance_lens(olds, _body_spans([b for b, _bb in olds]))
@@ -337,36 +296,12 @@ def _do_replace(session, work_part, mapping, rules, params, log):
                 log("【替换】  旧件实例 %d: %s → 长 %.4g; 锚点 (%.3f, %.3f, %.3f)"
                     % (_k, _d, _L, _a[0], _a[1], _a[2]))
 
-        # ⭐ A 方案(用户 2026-09-18 定案): **放置位置 = 放置点 − (0,0,Δ)**,
-        # Δ = 旧件长 − 新件原长(新件原长每个规格只探一次, 不是每根都探)。
-        # 移面之后定位点自然回到放置点 ⇒ **不用事后挪件** —— 提升体是链接体,
-        # NX 不许整体移动(实机报"属于 Wave 链接特征")。
-        if is_nozzle(new_fname) and lens:
-            _prt_len = _probe_prt_len(session, work_part, new_fname, uf, log)
-            if _prt_len:
-                shifted = []
-                for _a in anchors:
-                    _L = nearest_anchor_len(_a, [(a, L) for a, L, _d in lens])
-                    _d = (_L - _prt_len) if _L is not None else 0.0
-                    shifted.append((_a[0], _a[1], _a[2] - _d,
-                                    _a[3] if len(_a) > 3 else 0.0))
-                log("【替换】%s: 新件原长 %.4g → 各处预偏移 %s 放置"
-                    "(移面后定位点回到放置点)。"
-                    % (new_fname, _prt_len,
-                       "、".join("%.4g" % (_a[2] - _s[2])
-                                 for _a, _s in zip(anchors, shifted))))
-                anchor_record.setdefault(new_fname, []).extend(anchors)
-                # 记下每处偏了多少, 好让 hook 把锚点还原回真实放置点去匹配
-                for _n, (_a, _s) in enumerate(zip(anchors, shifted), 1):
-                    shift_map[(new_fname, _n)] = _a[2] - _s[2]
-                anchors = shifted
-
         # 两个旧规格换成同一个新规格时, 锚点要合并而不是覆盖
         anchors_override.setdefault(new_fname, []).extend(anchors)
         if is_nozzle(new_fname):
             if lens:
                 log("【替换】%s → %s: %d 处(从 %d 个旧件体里归出的实例数), "
-                    "位置取自体上记的锚点; 这是热咀, 放好后按旧件长度对齐。"
+                    "位置取自体上记的锚点; 这是热咀, 原位摆正后按旧件长度移面对齐。"
                     % (old_fname, new_fname, len(anchors), len(olds)))
             else:
                 log("【替换】%s → %s: %d 处, 位置取自体上记的锚点; 这是热咀, "
@@ -392,12 +327,11 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         placed_hook = None
         if old_lens:
             placed_hook = make_nozzle_hook(session, work_part, old_lens, log,
-                                           adj_stats, shift_map=shift_map)
+                                           adj_stats)
         place_std_parts(session, work_part, None, flb_regions, params,
                         to_place, log, stats=stats,
                         anchors_override=anchors_override,
-                        placed_hook=placed_hook,
-                        anchor_record=anchor_record)
+                        placed_hook=placed_hook)
         st["adj"] = adj_stats.get("adj", 0)
         st["adj_skip"] = adj_stats.get("skip", 0)
         # 与主脚本同款收尾: 清掉建模步骤 → 用户要的是实体, 不是提升体
