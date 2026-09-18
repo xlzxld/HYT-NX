@@ -51,7 +51,8 @@ from cad3d.geom.eval import (
 )
 from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
-    _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow
+    _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow,
+    dk_fallback_rules
 )
 from cad3d.modeling.stdparts import (
     _bool_feature, _place_delta, _rot_xy, _batch_delete, _group_bool_plan,
@@ -59,7 +60,7 @@ from cad3d.modeling.stdparts import (
     group_anchor_instances
 )
 from cad3d.modeling.nozzle_len import (
-    is_nozzle, plan_shift, nearest_anchor_len
+    is_nozzle, plan_shift, pick_faces, nearest_anchor_len
 )
 from cad3d.core.guide import GUIDE_LINES, print_guide
 from cad3d.modeling.nx_compat import _matrix3x3
@@ -510,7 +511,7 @@ def selftest(dxf_path=None):
           "Dialog" in build_replace_map_dlx([], ["a.prt"], None)
           and "当前模型里没有标准件" in build_replace_map_dlx([], [], None))
 
-    # 7d-4. 热咀替换长度对齐(v2.13): 头部不动、其余平移, 总长=旧件
+    # 7d-4. 热咀替换长度对齐(v3.2): 按高度选面 + 就地移面, 总长=旧件
     check("热咀族判定: 大水口/点胶口/热咀/nozzle 命中, 其余不命中",
           is_nozzle("大水口-25.prt") and is_nozzle("点胶口-18.prt")
           and is_nozzle("热咀x.prt") and is_nozzle("Nozzle-30.prt")
@@ -519,35 +520,49 @@ def selftest(dxf_path=None):
     # 两体件: 头部 -60..-30(顶带30), 咀身 -100..-61(全在头部带以下)
     _nz_head = (0.0, 0.0, -60.0, 10.0, 10.0, -30.0)
     _nz_tip = (0.0, 0.0, -100.0, 8.0, 8.0, -61.0)
-    _nsh, _kp, _mv, _nt = plan_shift(60.0, [_nz_head, _nz_tip], 1)
-    check("长度对齐: 新件长70旧件60 → 平移+10, 只动咀身",
-          abs(_nsh - 10.0) < 1e-9 and _kp == [0] and _mv == [1] and _nt == "",
-          "%r %r %r %r" % (_nsh, _kp, _mv, _nt))
-    _nsh2, _kp2, _mv2, _nt2 = plan_shift(80.0, [_nz_head, _nz_tip], 1)
-    check("长度对齐: 新件比旧件短 → 平移-10(咀身往下拉长)",
-          abs(_nsh2 + 10.0) < 1e-9 and _kp2 == [0] and _mv2 == [1])
-    _nsh3, _kp3, _mv3, _nt3 = plan_shift(70.0, [_nz_head, _nz_tip], 1)
+    _nsh, _cut, _nt = plan_shift(60.0, [_nz_head, _nz_tip], 1)
+    check("长度对齐: 新件长70旧件60 → 沿 Z +10(缩短), 分界在 -60",
+          abs(_nsh - 10.0) < 1e-9 and abs(_cut + 60.0) < 1e-9 and _nt == "",
+          "%r %r %r" % (_nsh, _cut, _nt))
+    _nsh2, _cut2, _nt2 = plan_shift(80.0, [_nz_head, _nz_tip], 1)
+    check("长度对齐: 新件比旧件短 → 沿 Z -10(往下拉长)",
+          abs(_nsh2 + 10.0) < 1e-9 and abs(_cut2 + 60.0) < 1e-9)
+    _nsh3, _cut3, _nt3 = plan_shift(70.0, [_nz_head, _nz_tip], 1)
     check("长度对齐: 新旧等长免调", _nsh3 is None and "等长" in _nt3)
-    # 短头(5mm)两体件: 咀身也伸进顶部 30mm 带 → 退化"只留头端体平移其余"
+    # 短头(5mm)两体件: 咀身伸进顶部带 → 只带以下的面入选
     _nz_sh_head = (0.0, 0.0, -35.0, 10.0, 10.0, -30.0)
     _nz_sh_tip = (0.0, 0.0, -60.0, 8.0, 8.0, -34.0)
-    _nsh4, _kp4, _mv4, _nt4 = plan_shift(40.0, [_nz_sh_head, _nz_sh_tip], 1)
-    check("长度对齐: 各体都伸进头部带 → 只留头端体平移其余",
-          abs(_nsh4 + 10.0) < 1e-9 and _kp4 == [0] and _mv4 == [1]
-          and "头端体" in _nt4,
-          "%r %r %r %r" % (_nsh4, _kp4, _mv4, _nt4))
+    _nsh4, _cut4, _nt4 = plan_shift(40.0, [_nz_sh_head, _nz_sh_tip], 1)
+    check("长度对齐: 头很短时照旧给得出移面量(不再需要手动)",
+          abs(_nsh4 + 10.0) < 1e-9 and abs(_cut4 + 60.0) < 1e-9 and _nt4 == "",
+          "%r %r %r" % (_nsh4, _cut4, _nt4))
     # -Z 干净路径: 头 -100..-70(底带30), 咀身 -60..-40
     _nz_head_f = (0.0, 0.0, -100.0, 10.0, 10.0, -70.0)
     _nz_tip_f = (0.0, 0.0, -60.0, 8.0, 8.0, -40.0)
-    _nsh5, _kp5, _mv5, _nt5 = plan_shift(70.0, [_nz_head_f, _nz_tip_f], -1)
-    check("长度对齐: -Z 新件短10 → 平移+10(咀尖往上提)",
-          abs(_nsh5 - 10.0) < 1e-9 and _kp5 == [0] and _mv5 == [1] and _nt5 == "")
-    _nsh6, _kp6, _mv6, _nt6 = plan_shift(60.0, [_nz_head], 1)
-    check("长度对齐: 单实体没法体级平移 → 提示手动", _nsh6 is None and "手动" in _nt6)
-    _nsh7, _kp7, _mv7, _nt7 = plan_shift(None, [_nz_head, _nz_tip], 1)
-    check("长度对齐: 旧件长度缺 → 不调", _nsh7 is None and _mv7 == [])
-    _nsh8, _kp8, _mv8, _nt8 = plan_shift(60.0, [_nz_head, _nz_tip, None], 1)
-    check("长度对齐: 包围盒读不到 → 不调", _nsh8 is None)
+    _nsh5, _cut5, _nt5 = plan_shift(70.0, [_nz_head_f, _nz_tip_f], -1)
+    check("长度对齐: -Z 新件短10 → 沿 Z +10(往上提), 分界在 -70",
+          abs(_nsh5 - 10.0) < 1e-9 and abs(_cut5 + 70.0) < 1e-9 and _nt5 == "")
+    _nsh6, _cut6, _nt6 = plan_shift(60.0, [_nz_head], 1)
+    check("长度对齐: 单实体也能拉长(移它的底面), 不再束手无策",
+          abs(_nsh6 + 30.0) < 1e-9 and abs(_cut6 + 60.0) < 1e-9 and _nt6 == "")
+    _nsh7, _cut7, _nt7 = plan_shift(None, [_nz_head, _nz_tip], 1)
+    check("长度对齐: 旧件长度缺 → 不调", _nsh7 is None and "没找到" in _nt7)
+    _nsh8, _cut8, _nt8 = plan_shift(60.0, [_nz_head, _nz_tip, None], 1)
+    check("长度对齐: 包围盒读不到 → 不调", _nsh8 is None and "包围盒" in _nt8)
+
+    # 选面: 整块面都在头部带以下才动; 跨带的侧面不动(否则平移圆柱侧面没意义)
+    _fb = [(0.0, 0.0, -100.0, 8.0, 8.0, -100.0),    # 咀尖底面
+           (0.0, 0.0, -100.0, 8.0, 8.0, -61.0),     # 咀尖侧面(整块在带下)
+           (0.0, 0.0, -60.0, 10.0, 10.0, -60.0),    # 头部底面(恰在分界)
+           (0.0, 0.0, -60.0, 10.0, 10.0, -30.0)]    # 头部侧面(跨带→不动)
+    check("选面: 头部带以下的面全要, 跨带的侧面不要",
+          pick_faces(_fb, -60.0, 1) == [0, 1, 2], str(pick_faces(_fb, -60.0, 1)))
+    check("选面: -Z 翻转按底带判(Z 低端在界以上的才动)",
+          pick_faces([(0.0, 0.0, -70.0, 1.0, 1.0, -70.0),
+                      (0.0, 0.0, -100.0, 1.0, 1.0, -60.0)], -70.0, -1) == [0])
+    check("选面: 空/坏输入安全",
+          pick_faces([], -60.0, 1) == [] and pick_faces(None, -60.0, 1) == []
+          and pick_faces([None], -60.0, 1) == [])
     check("长度对齐: 按锚点找旧件长度(容差内命中/miss回None)",
           nearest_anchor_len((100.0, 50.0, -85.0),
                              [((100.0, 50.0, -85.0, 0.0), 60.0)]) == 60.0
@@ -1131,6 +1146,38 @@ def selftest(dxf_path=None):
     _hit2 = std_part_defaults("大水口-18.prt", table=_two)
     check("两级匹配: 落关键词行(无ref)",
           _hit2 is not None and _hit2.get("ref") is None)
+    # 垫片兜底(2026-09-18 定案): 图纸没有 DK 层 → layer=DK 的件本次临时改走热咀的
+    # 定位层与半径; Z 基准/布尔方式仍用件自己的; 有 DK 或没选 DK 件时一律不动。
+    _dk_rules = {"垫片.prt": {"layer": "DK", "r_min": 0.0, "r_max": 5.0,
+                            "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT",
+                            "ref": [0.0, 0.0, 0.0]},
+                 "大水口-25.prt": {"layer": "RZ", "r_min": 0.0, "r_max": 15.0,
+                                 "z_mode": "FLB_BOTTOM", "ref": [0.0, 0.0, 0.0]}}
+    _dk_fb = dk_fallback_rules(_dk_rules, has_dk=False)
+    _nz_def = std_part_defaults("热咀")
+    check("DK兜底: 没DK层时只有DK件入选",
+          list(_dk_fb) == ["垫片.prt"],
+          str(list(_dk_fb)))
+    check("DK兜底: 定位层与半径换成热咀那套",
+          _nz_def is not None
+          and _dk_fb["垫片.prt"]["layer"] == _nz_def["layer"]
+          and _dk_fb["垫片.prt"]["r_min"] == _nz_def["r_min"]
+          and _dk_fb["垫片.prt"]["r_max"] == _nz_def["r_max"],
+          "%r vs %r" % (_dk_fb.get("垫片.prt"), _nz_def))
+    check("DK兜底: Z基准与布尔方式仍用件自己的",
+          _dk_fb["垫片.prt"]["z_mode"] == "FLB_TOP"
+          and _dk_fb["垫片.prt"]["bool_mode"] == "PLACE_SUBTRACT")
+    check("DK兜底: 有DK层时一律不动",
+          dk_fallback_rules(_dk_rules, has_dk=True) == {})
+    check("DK兜底: 没选DK件→空",
+          dk_fallback_rules({"a.prt": {"layer": "RZ"}}, False) == {})
+    check("DK兜底: 坏输入安全",
+          dk_fallback_rules(None, False) == {}
+          and dk_fallback_rules({"x": None}, False) == {}
+          and dk_fallback_rules({"x": 3}, False) == {})
+    check("DK兜底: 不改传入的原表(记忆靠它还原)",
+          _dk_rules["垫片.prt"]["layer"] == "DK"
+          and _dk_rules["垫片.prt"]["r_max"] == 5.0)
     _old = sanitize_std_rule({"bool_mode": "OFF", "z_mode": "ABS"})
     check("sanitize: 旧OFF/ABS回默认",
           _old["bool_mode"] == "PLACE" and _old["z_mode"] == "FLB_TOP")
