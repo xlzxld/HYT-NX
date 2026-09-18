@@ -40,13 +40,19 @@ def is_nozzle(fname, families=None):
     return any(str(k).lower() in low for k in (fams or []))
 
 
-def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None, span=None):
+def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None, span=None,
+               fix_z=None):
     """(纯逻辑) 旧件长度 + 新件各体世界包围盒 + 头端朝向 → 移面量与分界高度。
 
     axis_sign: +1 = 头在顶端(+Z 插入), -1 = 头在底端(-Z 翻转插入)。
     span: (top, bot) —— 按 plane_span 量出来的"主平面口径"顶/底(用户 2026-09-18
       定案: 小凸起不算)。传了就用它算新件长度与分界高度; 不传就从 bboxes 取
       (旧行为)。**旧件长度必须是同一个口径量出来的**, 否则两边口径不同, 白对齐。
+    fix_z: **移面必须不动**的那个高度 = **放置点的 Z**(也就是件上"定位点"——
+      那个 Z=0 面的圆心 —— 所落的高度)。用户 2026-09-18 定案: 定位点是件上某个
+      面的圆心, **它必须永远与放置点重合**; 一旦被移面带走, 件就"Z 轴偏移"。
+      所以分界高度取"头部带"与它之间**更严**的那个(头在顶时取更低的):
+      cut = min(top - keep_head, fix_z)。不传则只用头部带(旧行为)。
     返回 (shift, cut, note):
       shift = None → 不用/不能调(note 说原因);
       否则 shift = 沿世界 Z 要移动的量(mm), cut = 头部带的分界高度 ——
@@ -79,6 +85,13 @@ def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None, span=None):
     new_len = top - bot
     shift = (1.0 if axis_sign >= 0 else -1.0) * (new_len - old_len)
     cut = (top - keep_head) if axis_sign >= 0 else (bot + keep_head)
+    if fix_z is not None:
+        # 定位面(放置点高度)绝不能进移面范围 —— 取更严的那个分界
+        try:
+            _fz = float(fix_z)
+            cut = min(cut, _fz) if axis_sign >= 0 else max(cut, _fz)
+        except (TypeError, ValueError):
+            pass
     if abs(shift) <= tol:
         # 带上实测长度: 只报"免调"看不到数字, 量得对不对没法核对
         return None, None, "%s(都是 %.4g), 免调" % (_EQUAL_NOTE, new_len)
@@ -431,7 +444,15 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
         span0 = (top0, bot0) if top0 is not None and bot0 is not None else None
         new_len0 = (top0 - bot0) if span0 else _len_of(bboxes)
         axis_sign = -1.0 if rule.get("dir") == "-Z" else 1.0
-        shift, cut, note = plan_shift(old_len, bboxes, axis_sign, span=span0)
+        # fix_z = 放置点的高度(anch[2]): 件上"定位点"(那个 Z=0 面的圆心)必须永远
+        # 落在放置点上 —— 它的高度就是放置点高度, 绝不能进移面范围, 否则一拉长
+        # 定位点就被带走、件就 Z 轴偏移(用户 2026-09-18 定案)
+        try:
+            _fix_z = float(anch[2])
+        except (TypeError, ValueError, IndexError):
+            _fix_z = None
+        shift, cut, note = plan_shift(old_len, bboxes, axis_sign, span=span0,
+                                      fix_z=_fix_z)
         if shift is None:
             log("【长度对齐】%s 第 %d 处: %s。" % (fname, idx, note))
             if not note.startswith(_EQUAL_NOTE):
