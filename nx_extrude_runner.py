@@ -80,7 +80,7 @@ from cad3d.selftest.suite import (
 # 2. 外部脚本与辅助工具兼容符号 (满足 test/*, batch_smoke 与 tools/nx_zero_ref.py)
 from cad3d.modeling.std_rules import (
     guess_std_rule, sanitize_std_rule, _rule_usable, merge_std_rules,
-    dk_fallback_rules
+    dk_fallback_rules, dk_located_names
 )
 from cad3d.modeling.nx_compat import (
     _is_marked, _matrix3x3
@@ -139,7 +139,7 @@ def main():
               "或使用 --selftest / --make-sample-dxf 进行离线验证。")
         return
 
-    print_guide("nx_extrude_runner.py")
+    print_guide("nx_extrude_runner.py", NXOpen.Session.GetSession())
     print("【本脚本】选图纸、定各层高度、放标准件、建分流板模型，一条龙。")
 
     if "--batch" in argv:
@@ -258,27 +258,54 @@ def main():
     # 功能：若勾选了标准件，弹窗供用户逐件微调参数，点击 Apply/OK 执行完整流水线；
     #       若未选择任何标准件，直接执行纯分层拉伸流水线。
     if std_rules:
-        # 图纸没有 DK(点孔)层时, 靠 DK 定位的件(如垫片.prt)在图上找不到可定位的圆,
-        # 主脚本会整件跳过。此时本次**临时**把它的定位图层与半径换成"热咀"那套
-        # (Z 基准/布尔方式仍用件自己的), 第三页按临时值显示与执行, 保存记忆时还原
-        # —— 换回带 DK 的图纸要能自己变回来。
+        # 给用户看的提示走 Log: 它同时写 NX 信息窗口 —— NX GUI 里播日记时
+        # stdout 是看不见的, 只 print 等于没提示(v3.2 用户反馈)
+        _note = Log(theSession)
+
+        # ① 针阀模式不装垫片(用户定案 2026-09-18): 选中的靠 DK 定位的件直接从
+        #    本次装配与第三页里拿掉, 只留一行日志 —— 不用用户自己去第一页取消勾选。
+        #    模式名对应 nx_std_config.py 的 JT_LINK_MODES 键。
+        if "针阀" in str(mode2 or ""):
+            _drop = dk_located_names(std_rules)
+            if _drop:
+                std_rules = {f: r for f, r in std_rules.items()
+                             if f not in _drop}
+                _note("[CAD3D] 本次选的是针阀模式: %s 不装(第三页也不显示)。"
+                      % "、".join(_drop))
+
+        # ② 图纸没有 DK(点孔)层时, 靠 DK 定位的件(如垫片.prt)在图上找不到可定位
+        #    的圆, 主脚本会整件跳过。此时本次**临时**把它的定位图层与半径换成
+        #    "热咀"那套(Z 基准/布尔方式仍用件自己的), 第三页按临时值显示与执行,
+        #    保存记忆时还原 —— 换回带 DK 的图纸要能自己变回来。
         transient = ()
-        if any(str((r or {}).get("layer") or "").upper() == "DK"
-               for r in std_rules.values()):
+        _dk_names = dk_located_names(std_rules)
+        if _dk_names:
             has_dk = True
             try:
                 _dk_layers, _ = parse_dxf(dxf2 or "")
-                has_dk = bool(_dk_layers.get("DK"))
+                # 判据(用户定案 2026-09-18): 拿这件**自己的图层与半径**去筛, 一个
+                # 能放的位置都筛不出来才算"没 DK" —— 光看 DK 层存不存在不够,
+                # DK 层可能有图形、却没有一个半径落在垫片的范围里。
+                has_dk = any(collect_circle_anchors(_dk_layers, std_rules[_f])
+                             for _f in _dk_names)
             except Exception as ex:
-                print("[CAD3D] 读取图纸图层失败(无法判断有无 DK 层), "
-                      "垫片保持原参数: %s" % ex)
+                _note("[CAD3D] 读取图纸图层失败(没法判断有没有 DK), %s 保持原参数: %s"
+                      % ("、".join(_dk_names), ex))
             _fb_rules = dk_fallback_rules(std_rules, has_dk)
             if _fb_rules:
                 transient = sorted(_fb_rules)
                 std_rules = dict(std_rules)
                 std_rules.update(_fb_rules)
-                print("[CAD3D] 图纸没有 DK 图层: %s 本次临时改用热咀的定位参数"
-                      "(只影响本次, 不写记忆)。" % "、".join(transient))
+                _note("[CAD3D] 图纸里按 DK 定位一个位置都找不到: %s 本次临时改用"
+                      "热咀的定位参数(只影响本次, 不写记忆)。"
+                      % "、".join(transient))
+
+        if not std_rules:
+            # 都被剔掉了(如针阀模式下只勾了垫片) → 退化成"不装标准件"的纯拉伸
+            execute_pipeline(dxf2, params2, jrt2, {}, theSession,
+                             std_rules_all=std_rules_all, selected=[],
+                             jt_link_mode=mode2)
+            return
 
         sdx = write_std_dlx(std_rules, params2)
         if not sdx:

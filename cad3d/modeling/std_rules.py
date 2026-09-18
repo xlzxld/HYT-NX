@@ -138,6 +138,18 @@ def _unusable_names(rules):
     return sorted(f for f, r in rules.items() if not _rule_usable(r))
 
 
+def dk_located_names(rules):
+    """(纯逻辑) 挑出靠 DK(点孔)层定位的件名(排序)。
+
+    就一个判据、三处在用(主脚本判要不要兜底 / 针阀模式下不装这些件 /
+    兜底时改哪些件), 所以抽出来放一处: 图纸没有 DK 层时这些件在图上找不到
+    可定位的圆, 主脚本会整件跳过。
+    """
+    return sorted(f for f, r in (rules or {}).items()
+                  if isinstance(r, dict)
+                  and str(r.get("layer") or "").upper() == "DK")
+
+
 def dk_fallback_rules(rules, has_dk, nozzle_probe="热咀"):
     """(纯逻辑) 图纸里没有 DK 图层时, 靠 DK 定位的件临时改用“热咀”的定位参数。
 
@@ -155,12 +167,8 @@ def dk_fallback_rules(rules, has_dk, nozzle_probe="热咀"):
     if not isinstance(base, dict):
         return {}
     out = {}
-    for fname, rule in (rules or {}).items():
-        if not isinstance(rule, dict):
-            continue
-        if str(rule.get("layer") or "").upper() != "DK":
-            continue
-        r = dict(rule)
+    for fname in dk_located_names(rules):
+        r = dict(rules[fname])
         r["layer"] = base["layer"]
         r["r_min"] = base["r_min"]
         r["r_max"] = base["r_max"]
