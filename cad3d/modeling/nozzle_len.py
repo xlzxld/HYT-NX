@@ -320,6 +320,13 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
                 adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
         new_len0 = _len_of(bboxes)
+        # 逐根打"这一根是怎么量出来的": 每个体自己的 Z 范围 + 合出来的总长。
+        # 每根热咀长度都可能不同, 长度对不上时先看这行就知道是哪个体不对
+        log("【长度对齐】%s 第 %d 处: 新件 %d 个体, Z=%s → 总长 %.4g"
+            % (fname, idx, len(tools),
+               " / ".join("%.4g~%.4g" % (b[2], b[5])
+                          for b in bboxes if b and len(b) >= 6),
+               new_len0 if new_len0 is not None else float("nan")))
 
         # 移面 → 复测 → 还有残差就再移(最多 _MAX_ROUNDS 轮)。一轮移不干净的原因
         # 不少(NX 延伸相邻面的行为、个别面没跟上), 迭代几轮就收敛了。
