@@ -494,9 +494,10 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
       指定放置点(取自被换掉的旧件体上记的锚点), 不去图纸找圆, z 也照给的走
       (件被挪过 Z 也能跟上); 传 None 走原逻辑(按 DXF 圆锚点), 主流水线行为不变。
     placed_hook: 可选钩子 (fname, 序号(1起), 锚点, 规则, 体列表, 待删组件列表)
-      → 新体列表 —— 每处实例放好并提升打标后、进布尔计划前调用; 返回的列表
-      替换原体列表(热咀替换调长度用: 就地移面对齐旧件长度, 体列表原样返回)。
-      主流水线不传(默认 None), 行为零变化。
+      → 新体列表 —— 每处实例放好并提升后、**打类型标记与记锚点之前**调用
+      (钩子可能改几何, 锚点必须按改完后的体中心记, 否则记下的偏移当场过期);
+      返回的列表替换原体列表(热咀替换调长度用: 就地移面对齐旧件长度, 体列表
+      原样返回)。主流水线不传(默认 None), 行为零变化。
 
     (v2.4 提速) 放置与布尔解耦为两段执行, 几何结果与旧版逐锚点完全一致:
       段1 逐锚点: 装配组件 → 提升体(组件不即时删, 只登记待删清单);
@@ -619,18 +620,22 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                                       "%sBODY_%s_%d" % (FEATURE_PREFIX, stem, i + 1),
                                       log, body_index=None)
             tools_all = [t for t in (tools_all or []) if t is not None]
+            if placed_hook is not None:
+                # ⚠️ 顺序不能反(2026-09-18 修): 钩子会**改几何**(热咀替换调长度 =
+                # 就地移面), 而锚点记的是「锚点 − 该体包围盒**中心**」—— 必须在
+                # 几何定下来之后才记。若先记后移面, 记下的偏移当场就过期, 下次
+                # 替换按「当前体中心 + 偏移」反推出来的锚点就偏了(体中心变了、
+                # 偏移没跟着变), 同件的多个体还会因此算出不重合的锚点、归组散架
+                # → 表现为"多替换几次后 Z 轴越换越偏、旧件长度也量得忽长忽短"。
+                _adj = placed_hook(fname, i + 1, anch, rule, tools_all,
+                                   pending_comps)
+                if _adj:
+                    tools_all = _adj
             for _tb in tools_all:                   # 体类型标记(模具开框规则用)
                 _mark_type(_tb, "STD:" + fname)
                 # 锚点记录(一键替换用): 记「锚点 − 体中心」; 记偏移不记绝对坐标,
                 # 用户把件挪走后反推出来的锚点会跟着走
                 _mark_anchor(_tb, (cx, cy, z_i), ang, uf)
-            if placed_hook is not None:
-                # 每处实例打标后、进布尔计划前的钩子(热咀替换调长度用):
-                # 钩子可换掉部分体(头部不动、咀身平移), 布尔/统计用换后的
-                _adj = placed_hook(fname, i + 1, anch, rule, tools_all,
-                                   pending_comps)
-                if _adj:
-                    tools_all = _adj
             n_body += len(tools_all)
             pending_comps.append(comp)              # (提速)延到段2 一次删
 

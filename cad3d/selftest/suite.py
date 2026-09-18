@@ -52,7 +52,7 @@ from cad3d.geom.eval import (
 from cad3d.modeling.std_rules import (
     _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
     _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow,
-    dk_fallback_rules
+    dk_fallback_rules, dk_located_names
 )
 from cad3d.modeling.stdparts import (
     _bool_feature, _place_delta, _rot_xy, _batch_delete, _group_bool_plan,
@@ -587,6 +587,34 @@ def selftest(dxf_path=None):
           and _grp[0][0][:3] == (100.0, 50.0, -85.0), str(_grp))
     check("旧件分实例: 空输入安全", group_anchor_instances([]) == []
           and group_anchor_instances(None) == [])
+
+    # 回归(2026-09-18): 放置钩子(会改几何 = 移面对齐)必须跑在记锚点**之前**。
+    # 锚点记的是「锚点 − 体中心」, 先记后移面 == 记下的偏移当场过期: 下次替换按
+    # 「当前体中心 + 偏移」反推出来的锚点就偏了, 同件的多个体还会算出不重合的锚点
+    # 而让归组散架 —— 用户看到的就是"多替换几次后 Z 轴越换越偏、旧件长度也量得
+    # 忽长忽短"。顺序靠源码守门, 不能只写在注释里。
+    with io.open(sys.modules["cad3d.modeling.stdparts"].__file__,
+                 encoding="utf-8") as _sp_f:
+        _sp_src = _sp_f.read()
+    _sp_seq = []
+    for _nd in ast.walk(ast.parse(_sp_src)):
+        if isinstance(_nd, ast.Call):
+            _nm = getattr(_nd.func, "id", None) or getattr(_nd.func, "attr", None)
+            if _nm in ("placed_hook", "_mark_anchor"):
+                _sp_seq.append((_nd.lineno, _nm))
+    _sp_names = [n for _l, n in sorted(_sp_seq)]
+    check("回归: 放置钩子先跑、锚点后记(顺序反了锚点当场过期)",
+          _sp_names == ["placed_hook", "_mark_anchor"], str(_sp_names))
+    # 同一件事的算术说明: 体中心因移面下移 20, 偏移若按移面前的中心记 → 反推偏 20
+    _c_before = (0.0, 0.0, -100.0)
+    _c_after = (0.0, 0.0, -120.0)
+    _want = (10.0, 5.0, -85.0)
+    _off_after = tuple(_want[i] - _c_after[i] for i in range(3))
+    _off_before = tuple(_want[i] - _c_before[i] for i in range(3))
+    check("回归: 锚点按移面后的体中心记才对(按移面前记会偏 20)",
+          tuple(_c_after[i] + _off_after[i] for i in range(3)) == _want
+          and tuple(_c_after[i] + _off_before[i] for i in range(3))
+          == (10.0, 5.0, -105.0))
 
     # 三个主入口的大白话说明(v2.13): 每个脚本名真实存在且说明非空
     check("脚本指南: 三个入口都有大白话说明且文件真实存在",
@@ -1155,6 +1183,13 @@ def selftest(dxf_path=None):
                                  "z_mode": "FLB_BOTTOM", "ref": [0.0, 0.0, 0.0]}}
     _dk_fb = dk_fallback_rules(_dk_rules, has_dk=False)
     _nz_def = std_part_defaults("热咀")
+    check("DK 定位件判定: 只认 layer=DK(大小写无关), 坏输入安全",
+          dk_located_names(_dk_rules) == ["垫片.prt"]
+          and dk_located_names({"a.prt": {"layer": "dk"}}) == ["a.prt"]
+          and dk_located_names(None) == []
+          and dk_located_names({"x": None}) == []
+          and dk_located_names({"y": 3}) == [],
+          str(dk_located_names(_dk_rules)))
     check("DK兜底: 没DK层时只有DK件入选",
           list(_dk_fb) == ["垫片.prt"],
           str(list(_dk_fb)))
