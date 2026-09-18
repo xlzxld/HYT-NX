@@ -260,8 +260,8 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         adj_stats = {}
         placed_hook = None
         if old_lens:
-            placed_hook = make_nozzle_hook(session, work_part, params,
-                                           old_lens, log, adj_stats)
+            placed_hook = make_nozzle_hook(session, work_part, old_lens, log,
+                                           adj_stats)
         place_std_parts(session, work_part, None, flb_regions, params,
                         to_place, log, stats=stats,
                         anchors_override=anchors_override,

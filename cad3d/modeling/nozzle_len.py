@@ -1,27 +1,28 @@
 # -*- coding: utf-8 -*-
 """cad3d.modeling.nozzle_len —— 热咀替换时按旧件长度调整新件长度。
 
-口径 = 用户手动做法(2026-09-18 定案): 替换热咀时, 头部(顶部往下
-NOZZLE_KEEP_HEAD mm 这一段)不动, 其余部分用"移动"整体平移, 让新件
-"顶部到底部"的总长对齐被换掉的旧件 —— 新件比旧件短就拉长, 比旧件长
-就缩短。旧件长度 = 旧件标准件体的顶部到底部(世界 Z, 包围盒口径)。
+口径(2026-09-18 用户定案): 替换热咀族(大水口/点胶口/热咀/nozzle)时, 新件
+"顶部到底部"的总长要对齐被换掉的旧件 —— 新件比旧件短就拉长、比旧件长就缩短。
+旧件长度 = 该处实例**所有体**的世界 Z 最高与最低之差(不看几个实体, 只看最高
+面和最低面)。
 
-实现: 热咀 .prt 每处实例常为多实体(头部体 + 咀身/咀尖体)。对"完全落在
-头部带以下"的体, 用同款 .prt 组件在平移后的位置再装一次 → 只提升对应
-序号的体 → 校验包围盒恰好 = 原体 + 平移量 → 换掉原体。全部用主流水线
-已在用的接口(装组件/提升/批量删), 不依赖同步建模等跨版本不可用 API。
+做法 = 用户手动做法(见其录制日记 logs/journal.py): 用同步建模「移动面」
+(`AdmMoveFace`) 把"顶部往下 NOZZLE_KEEP_HEAD mm"这一段**以下的面**沿世界 Z
+平移差值 —— 就地改面, 体不重建、头与身之间不会留缝:
+
+  · 头与身是**分开的体**时, 这些体的面整块都在带以下 → 等价于随动平移;
+  · 头与身是**同一个体**时, 只有该体带以下的面(含头底那圈)被移 → 体被拉伸。
+
+**不是**把实体整体搬走(v2.13 的做法): 那样头和身之间会断开, 几何对不上。
+选面错不了: 判据是"整块面都在带以下"(金字塔底面/端面), 侧面只要伸进头部带
+就不动, 与日记里手选的面一致。
 """
 
-import os
-
 from cad3d.core.constants import (
-    COMP_PREFIX,
-    FEATURE_PREFIX,
     NOZZLE_FAMILIES,
     NOZZLE_KEEP_HEAD,
     NOZZLE_LEN_TOL,
 )
-from cad3d.core.paths import stdparts_dir
 
 _EQUAL_NOTE = "新旧等长, 免调"
 
@@ -34,59 +35,62 @@ def is_nozzle(fname, families=None):
 
 
 def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None):
-    """(纯逻辑) 旧件长度 + 新件实例各体世界包围盒 + 头端朝向 → 平移计划。
+    """(纯逻辑) 旧件长度 + 新件各体世界包围盒 + 头端朝向 → 移面量与分界高度。
 
-    返回 (shift, keep, move, note):
-      shift = None → 不用/不能调(note 说原因), 此时 keep/move 为空;
-      否则 shift 为沿世界 Z 的平移量(mm), keep 里的体(头部段)不动,
-      move 里的体整体平移 shift —— 平移后实例总长 = old_len。
     axis_sign: +1 = 头在顶端(+Z 插入), -1 = 头在底端(-Z 翻转插入)。
-    头部段定义: 伸进"头端起 keep_head 高度带"的体都算头部(手动选区同款:
-    顶部往下 30mm 范围不动); 没有体完全落在头部带以下时退化为"只留头端
-    体"(体含全局顶/底极值者), 其余平移。
+    返回 (shift, cut, note):
+      shift = None → 不用/不能调(note 说原因);
+      否则 shift = 沿世界 Z 要移动的量(mm), cut = 头部带的分界高度 ——
+      调用方把"整块都在 cut 以下(axis_sign<0 时以上)的面"移 shift。
+    拉伸方向: 头在顶端时把下半段往下移就变长(shift<0), 头在底端时反之。
     """
     keep_head = NOZZLE_KEEP_HEAD if keep_head is None else float(keep_head)
     tol = NOZZLE_LEN_TOL if tol is None else float(tol)
     if old_len is None:
-        return None, [], [], "旧件长度没找到, 不调长度"
+        return None, None, "旧件长度没找到, 不调长度"
     try:
         old_len = float(old_len)
     except (TypeError, ValueError):
-        return None, [], [], "旧件长度读不出来, 不调长度"
+        return None, None, "旧件长度读不出来, 不调长度"
     if old_len <= 0:
-        return None, [], [], "旧件长度不是正数, 不调长度"
+        return None, None, "旧件长度不是正数, 不调长度"
     vals = []
     for b in (bboxes or []):
         if not b or len(b) < 6:
-            return None, [], [], "新件有体的包围盒读不到, 不调长度"
+            return None, None, "新件有体的包围盒读不到, 不调长度"
         vals.append((float(b[0]), float(b[1]), float(b[2]),
                      float(b[3]), float(b[4]), float(b[5])))
     if not vals:
-        return None, [], [], "新件没有实体, 不调长度"
+        return None, None, "新件没有实体, 不调长度"
     top = max(b[5] for b in vals)
     bot = min(b[2] for b in vals)
     new_len = top - bot
     shift = (1.0 if axis_sign >= 0 else -1.0) * (new_len - old_len)
+    cut = (top - keep_head) if axis_sign >= 0 else (bot + keep_head)
     if abs(shift) <= tol:
-        return None, [], [], _EQUAL_NOTE
-    if len(vals) < 2:
-        return (None, [], [],
-                ("单实体没法只动下半段, 请手动: 头部往下 30mm 以下用移动命令"
-                 "对齐旧件长度"))
-    if axis_sign >= 0:
-        cut = top - keep_head
-        keep = [i for i, b in enumerate(vals) if b[5] > cut + tol]
-    else:
-        cut = bot + keep_head
-        keep = [i for i, b in enumerate(vals) if b[2] < cut - tol]
-    if keep and len(keep) < len(vals):
-        move = [i for i in range(len(vals)) if i not in keep]
-        return shift, keep, move, ""
-    # 没有体完全落在头部带以下(头很短/全部跨界): 只留头端体, 其余平移
-    head = (max(range(len(vals)), key=lambda i: vals[i][5]) if axis_sign >= 0
-            else min(range(len(vals)), key=lambda i: vals[i][2]))
-    move = [i for i in range(len(vals)) if i != head]
-    return shift, [head], move, "各体都伸进头部带, 按只留头端体平移其余"
+        return None, None, _EQUAL_NOTE
+    return shift, cut, ""
+
+
+def pick_faces(face_boxes, cut, axis_sign, tol=0.01):
+    """(纯逻辑) 挑出要跟着平移的面下标: **整块**都落在头部带以下的那些。
+
+    face_boxes: [(xmin, ymin, zmin, xmax, ymax, zmax), ...] 每个面一个。
+    "整块在带以下" = 面的 Z 高端 ≤ cut(头在顶) / Z 低端 ≥ cut(头在底):
+      · 完全在带以下的体, 它的面(含侧面)全部入选 → 随头部一起动;
+      · 头底那圈端面(zmax≈cut)也入选 → 头体被拉伸着贴上去, 不留缝;
+      · 跨越头部带的侧面(比如整根圆柱的外圆面)不入选 —— 沿轴向平移它没有意义。
+    """
+    out = []
+    for i, b in enumerate(face_boxes or []):
+        if not b or len(b) < 6:
+            continue
+        if axis_sign >= 0:
+            if float(b[5]) <= cut + tol:
+                out.append(i)
+        elif float(b[2]) >= cut - tol:
+            out.append(i)
+    return out
 
 
 def nearest_anchor_len(anchor, old_lens, tol=0.05):
@@ -105,25 +109,157 @@ def nearest_anchor_len(anchor, old_lens, tol=0.05):
     return None
 
 
-def make_nozzle_hook(session, work_part, params, old_lens, log, adj_stats=None):
-    """造一个 place_std_parts 的 placed_hook: 放好的热咀按旧件长度对齐。
+def _face_boxes(uf, tool):
+    """一个体的全部面 → [(面对象, 面包围盒6), ...](读不到的跳过)。"""
+    from cad3d.modeling.jrt import _uf_face_data
+    out = []
+    try:
+        faces = list(tool.GetFaces())
+    except Exception:
+        return out
+    for f in faces:
+        try:
+            bb = _uf_face_data(uf, f)[3]
+            if bb and len(bb) >= 6:
+                out.append((f, bb))
+        except Exception:
+            continue
+    return out
+
+
+def _move_faces_z(work_part, session, faces, shift, log):
+    """用同步建模「移动面」把给定面沿世界 Z 平移 shift。成功 True。
+
+    API 序列照用户 2026-09-18 录制的日记(logs/journal.py):
+      Create*MoveFaceBuilder → Motion=DeltaXyz(世界 Z) → FaceCollector.ReplaceRules
+      → OnApplyPre → Commit。
+    构造器按名字**探测**(不同版本方法名可能不同), 拿不到就跳过并记日志 ——
+    绝不猜 API 名。同时把 Coplanar/Coaxial/Tangent 等"自动找同族面"开关全关掉,
+    防止 NX 把不在带以下的侧面顺手选进来(与日记一致)。
+    """
+    import NXOpen
+    import NXOpen.Features
+    import NXOpen.GeometricUtilities
+
+    from cad3d.modeling.extrude import _sc_rule_options
+
+    feats = work_part.Features
+    maker = None
+    maker_name = ""
+    for name in sorted(dir(feats)):
+        if name.startswith("Create") and "MoveFace" in name:
+            maker = getattr(feats, name)
+            maker_name = name
+            break
+    if maker is None:
+        log("【长度对齐】本 NX 没有「移动面」接口(Create*MoveFace*), 这处保持原长。")
+        return False
+    null_tok = None
+    for cls_name in ("AdmMoveFace", "MoveFace"):
+        cls = getattr(NXOpen.Features, cls_name, None)
+        if cls is not None and hasattr(cls, "Null"):
+            null_tok = cls.Null
+            break
+    if null_tok is None:
+        null_tok = getattr(NXOpen.Features.Feature, "Null", None)
+    if null_tok is None:
+        log("【长度对齐】拿不到移动面的空令牌, 这处保持原长。")
+        return False
+    try:
+        bld = maker(null_tok)
+    except Exception as ex:
+        log("【长度对齐】%s 建不出来(%s), 这处保持原长。" % (maker_name, ex))
+        return False
+    try:
+        try:
+            bld.Motion.Option = \
+                NXOpen.GeometricUtilities.ModlMotion.Options.DeltaXyz
+            bld.Motion.DeltaEnum = \
+                NXOpen.GeometricUtilities.ModlMotion.Delta.ReferenceAcsWorkPart
+            bld.Motion.DeltaXc.SetFormula("0")
+            bld.Motion.DeltaYc.SetFormula("0")
+            bld.Motion.DeltaZc.SetFormula("%.6f" % float(shift))
+        except Exception as ex:
+            log("【长度对齐】本 NX 的移动面没有 DeltaXyz 运动选项(%s), 这处保持原长。"
+                % ex)
+            return False
+        for attr, val in (("RelationScope", 1023), ("CloneScope", 511),
+                          ("UseFindClone", True), ("UseFindRelated", True),
+                          ("UseFaceBrowse", True),
+                          ("CoplanarEnabled", False),
+                          ("CoplanarAxesEnabled", False),
+                          ("CoaxialEnabled", False),
+                          ("SameOrbitEnabled", False),
+                          ("EqualDiameterEnabled", False),
+                          ("TangentEnabled", False),
+                          ("SymmetricEnabled", False),
+                          ("OffsetEnabled", False),
+                          ("RigidBodyFaceEnabled", False)):
+            try:
+                setattr(bld.FaceToMove, attr, val)
+            except Exception:
+                continue
+        for attr, val in (("HealOption", False), ("PasteOption", True)):
+            try:
+                setattr(bld, attr, val)
+            except Exception:
+                continue
+        opts = _sc_rule_options(work_part)
+        try:
+            if opts is not None:
+                try:
+                    rule = work_part.ScRuleFactory.CreateRuleFaceDumb(
+                        list(faces), opts)
+                except TypeError:
+                    rule = work_part.ScRuleFactory.CreateRuleFaceDumb(list(faces))
+            else:
+                rule = work_part.ScRuleFactory.CreateRuleFaceDumb(list(faces))
+        finally:
+            if opts is not None:
+                try:
+                    opts.Dispose()
+                except Exception:
+                    pass
+        bld.FaceToMove.FaceCollector.ReplaceRules([rule], False)
+        bld.OnApplyPre()
+        mark = None
+        try:
+            mark = session.SetUndoMark(NXOpen.Session.MarkVisibility.Invisible,
+                                       "CAD3D 热咀长度对齐")
+        except Exception:
+            mark = None
+        try:
+            bld.Commit()
+        except Exception as ex:
+            log("【长度对齐】移动面提交失败(%s), 这处保持原长。" % ex)
+            if mark is not None:
+                try:
+                    session.UndoToMark(mark, None)
+                except Exception:
+                    pass
+            return False
+        finally:
+            if mark is not None:
+                try:
+                    session.DeleteUndoMark(mark, None)
+                except Exception:
+                    pass
+        return True
+    finally:
+        try:
+            bld.Destroy()
+        except Exception:
+            pass
+
+
+def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
+    """造一个 place_std_parts 的 placed_hook: 放好的热咀按旧件长度移面对齐。
 
     old_lens: [(锚点(x,y,z,..), 旧件实例长度), ...] —— 替换入口按旧件体
     分组算好传入; adj_stats: 可变 dict, 回填 adj/skip 计数供报告。
-    hook 签名 (fname, 序号, 锚点, 规则, 体列表, 待删组件列表) → 新体列表;
-    出错时本处实例保持原样不动(临时组件由 place_std_parts 段2 统一清理)。
+    hook 签名 (fname, 序号, 锚点, 规则, 体列表, 待删组件列表) → 新体列表
+    (移面就地改, **体列表原样返回**); 出错/不可用则本处保持原长不动。
     """
-    import NXOpen as nx
-
-    from cad3d.modeling.nx_compat import _mark_type, _matrix3x3
-    from cad3d.modeling.std_rules import _std_z
-    from cad3d.modeling.stdparts import (
-        _batch_delete,
-        _mark_anchor,
-        _place_delta,
-        _promote_body,
-    )
-
     try:
         import NXOpen.UF
         uf = NXOpen.UF.UFSession.GetUFSession()
@@ -136,15 +272,6 @@ def make_nozzle_hook(session, work_part, params, old_lens, log, adj_stats=None):
     if adj_stats is None:
         adj_stats = {}
 
-    def _bbox_pair_ok(bb_new, bb_old, shift_z):
-        if not bb_new or not bb_old or len(bb_new) < 6 or len(bb_old) < 6:
-            return False
-        for k2 in range(6):
-            want = float(bb_old[k2]) + (shift_z if k2 in (2, 5) else 0.0)
-            if abs(float(bb_new[k2]) - want) > 0.05:
-                return False
-        return True
-
     def hook(fname, idx, anch, rule, tools, pending_comps):
         if uf is None or _body_bbox is None or not tools:
             return tools
@@ -153,72 +280,49 @@ def make_nozzle_hook(session, work_part, params, old_lens, log, adj_stats=None):
         old_len = nearest_anchor_len(anch, old_lens)
         bboxes = [_body_bbox(uf, t) for t in tools]
         axis_sign = -1.0 if rule.get("dir") == "-Z" else 1.0
-        shift, _keep, move, note = plan_shift(old_len, bboxes, axis_sign)
+        shift, cut, note = plan_shift(old_len, bboxes, axis_sign)
         if shift is None:
             log("【长度对齐】%s 第 %d 处: %s。" % (fname, idx, note))
             if note != _EQUAL_NOTE:
                 adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
-        if note:
-            log("【长度对齐】%s 第 %d 处: %s。" % (fname, idx, note))
 
-        # 与 place_std_parts 同口径重算本实例的放置位姿, 再沿世界 Z 平移 shift
-        ca = work_part.ComponentAssembly
-        flip = (rule["dir"] == "-Z")
-        z_rule = _std_z(params, rule)
-        try:
-            z_i = z_rule if anch[2] is None else float(anch[2])
-        except (TypeError, ValueError, IndexError):
-            z_i = z_rule
-        cx, cy = float(anch[0]), float(anch[1])
-        m3 = _matrix3x3(nx, flip, 0.0)      # 热咀非 YXB 逐板判向件, 角度恒 0
-        dx, dy, dz = _place_delta(rule.get("ref"), flip,
-                                  (float(rule.get("off_x", 0.0)),
-                                   float(rule.get("off_y", 0.0)),
-                                   float(rule.get("off_z", 0.0))))
-        path = os.path.join(stdparts_dir(), fname)
-        stem = os.path.splitext(fname)[0]
-        comp_name = "%s%s_%d_LEN" % (COMP_PREFIX, stem, idx)
-        replaced, to_del = {}, []
-        try:
-            pos2 = nx.Point3d(cx + dx, cy + dy, z_i + dz + shift)
-            try:
-                comp2, _ls = ca.AddComponent(path, "MODEL", comp_name,
-                                             pos2, m3, -1)
-            except TypeError:
-                comp2 = ca.AddComponent(path, "MODEL", comp_name,
-                                        pos2, m3, -1, False)
-            pending_comps.append(comp2)     # 临时组件随段2 一次删
-            for j in move:
-                nb = _promote_body(work_part, comp2,
-                                   "%sBODY_%s_%d_LEN%d" % (FEATURE_PREFIX, stem,
-                                                           idx, j + 1),
-                                   log, body_index=j)
-                if nb is None:
-                    raise RuntimeError("第 %d 个体提升失败" % (j + 1))
-                if not _bbox_pair_ok(_body_bbox(uf, nb), bboxes[j], shift):
-                    raise RuntimeError("平移后的包围盒对不上(体序号 %d)" % (j + 1))
-                _mark_type(nb, "STD:" + fname)
-                _mark_anchor(nb, (cx, cy, z_i), 0.0, uf)
-                replaced[j] = nb
-                to_del.append(tools[j])
-        except Exception as ex:
-            # 本实例回滚: 换上的新体删掉, 原体保持原样(组件交由段2 清理)
-            log("【长度对齐】%s 第 %d 处失败(%s), 这一处保持原长不动。"
-                % (fname, idx, ex))
-            _batch_delete(session, list(replaced.values()), log, "长度对齐失败体")
+        # 收集体上"整块在头部带以下"的面
+        pairs = []
+        for t in tools:
+            pairs.extend(_face_boxes(uf, t))
+        idxs = pick_faces([bb for _f, bb in pairs], cut, axis_sign)
+        faces = [pairs[i][0] for i in idxs]
+        if not faces:
+            log("【长度对齐】%s 第 %d 处: 头部带以下没有可移的面(旧件长 %.4g, "
+                "新件长 %.4g), 这处保持原长。" % (fname, idx, old_len,
+                                             _len_of(bboxes)))
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
-        out = list(tools)
-        for j, nb in replaced.items():
-            out[j] = nb
-        _batch_delete(session, to_del, log, "长度对齐换下的原体")
+
+        if not _move_faces_z(work_part, session, faces, shift, log):
+            adj_stats["skip"] = adj_stats.get("skip", 0) + 1
+            return tools
+        now = _len_of([_body_bbox(uf, t) for t in tools])
+        if now is None or abs(now - old_len) > max(0.05, abs(shift) * 0.02):
+            log("【长度对齐】%s 第 %d 处: 移面后长 %.4g ≠ 旧件 %.4g, 已留下改动"
+                "供你核对(体没换, 只动了几块面)。"
+                % (fname, idx, now if now is not None else float("nan"), old_len))
+            adj_stats["skip"] = adj_stats.get("skip", 0) + 1
+            return tools
         adj_stats["adj"] = adj_stats.get("adj", 0) + 1
-        new_len = (max(b[5] for b in bboxes if b) - min(b[2] for b in bboxes if b)
-                   if all(b for b in bboxes) else 0.0)
-        log("【长度对齐】%s 第 %d 处: 旧件长 %.4g, 新件原长 %.4g → 咀身平移"
-            " %.4g mm 对齐(头部 %.4g mm 一段不动)。"
-            % (fname, idx, old_len, new_len, -shift, NOZZLE_KEEP_HEAD))
-        return out
+        log("【长度对齐】%s 第 %d 处: 旧件长 %.4g, 新件原长 %.4g → 移面 %.4g mm "
+            "对齐(头部 %.4g mm 一段不动, 动了 %d 块面)。"
+            % (fname, idx, old_len, now - shift, -shift, NOZZLE_KEEP_HEAD,
+               len(faces)))
+        return tools
 
     return hook
+
+
+def _len_of(bboxes):
+    """[(包围盒6)] → 世界 Z 总高; 缺盒/空 → None。"""
+    vals = [b for b in (bboxes or []) if b and len(b) >= 6]
+    if not vals:
+        return None
+    return max(float(b[5]) for b in vals) - min(float(b[2]) for b in vals)
