@@ -330,25 +330,26 @@ def scan_model_bodies(work_part, log=None):
 
 
 def _mark_anchor(obj, anchor, ang, uf):
-    """把「记时锚点 + 记时体中心 + 放置角」(7 个数)记在体上。
+    """把「记时锚点 + 记时体中心 + 记时跨度顶/底 + 放置角」(9 个数)记在体上。
 
-    反推口径(v3.5, 用户 2026-09-19 定案): **锚点 = 当前体中心 +
-    (记时锚点 − 记时体中心)** —— 记时锚点与记时体中心一起构成一个
-    **偏移**, 件被平移(挪到模具上)后反推出的锚点会**跟着走**;
-    而锚点是在 placed_hook(移面/回位)**之后**记的, 所以长度怎么改
-    都不会漂(记时中心就是改完后的中心, 偏移当场就是准的)。
-    旧版只存偏移(4 个数)也按同口径换算(老模型兼容)。
+    反推口径(v3.5, 用户 2026-09-19 定案, 详见 _anchor_of_record):
+      XY = 当前体中心 + (记时锚点 − 记时体中心)     —— 平移跟随;
+      Z  = 记时锚点Z + δ, δ 按"哪端动了"判定 —— **中心会因调长移动一半,
+      不能作 Z 的参照物**(实机: 只动咀尖段 ±40, 锚点漂 ±20 一案);
+      跨度端点不会说谎: 底端动=咀尖段调长(定位点是固定端, δ=0),
+      两端同动=整体平移(δ=平移量), 顶端独动=顶段调长(δ=顶的位移)。
     """
     from cad3d.modeling.mold_cut import _body_bbox
     bb = _body_bbox(uf, obj, None) if uf is not None else None
     if not bb or len(bb) < 6:
         return False
     try:
-        val = "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f" % (
+        val = "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f" % (
             float(anchor[0]), float(anchor[1]), float(anchor[2]),
             (float(bb[0]) + float(bb[3])) / 2.0,
             (float(bb[1]) + float(bb[4])) / 2.0,
             (float(bb[2]) + float(bb[5])) / 2.0,
+            float(bb[5]), float(bb[2]),
             float(ang or 0.0))
         obj.SetAttribute(ANCHOR_ATTR, val)
         return True
@@ -357,21 +358,26 @@ def _mark_anchor(obj, anchor, ang, uf):
 
 
 def parse_anchor_off(text):
-    """(纯逻辑) 读体上的锚点记录 → (记时锚点3, 记时体中心3 或 None, 角度); 坏了/空 → None。
+    """(纯逻辑) 读体上的锚点记录 → (记时锚点3, 记时体中心3 或 None,
+    (记时跨度顶, 底) 或 None, 角度); 坏了/空 → None。
 
-    v3.3 起是 **7 个数**「锚点x, y, z, 记时体中心x, y, z, 角度」——
-    记时锚点与记时体中心一起构成偏移(见 _anchor_of_record)。
-    旧版是 4 个数「dx, dy, dz, 角度」= 锚点 − 体中心 的偏移(老模型兼容)。
+    v3.5 起是 **9 个数**「锚点x, y, z, 记时体中心x, y, z, 记时跨度顶, 底, 角度」。
+    7 个数(无跨度, v3.3~v3.4): Z 退回中心偏移口径。旧版 4 个数「dx, dy, dz,
+    角度」= 锚点 − 体中心 的偏移(老模型兼容)。
     """
     try:
         parts = [float(v) for v in str(text).split(",")]
     except (TypeError, ValueError):
         return None
+    if len(parts) >= 9:
+        return ((parts[0], parts[1], parts[2]),
+                (parts[3], parts[4], parts[5]),
+                (parts[6], parts[7]), parts[8])
     if len(parts) >= 7:
         return ((parts[0], parts[1], parts[2]),
-                (parts[3], parts[4], parts[5]), parts[6])
+                (parts[3], parts[4], parts[5]), None, parts[6])
     if len(parts) >= 3:
-        return ((parts[0], parts[1], parts[2]), None,
+        return ((parts[0], parts[1], parts[2]), None, None,
                 parts[3] if len(parts) > 3 else 0.0)
     return None
 
@@ -379,23 +385,47 @@ def parse_anchor_off(text):
 def _anchor_of_record(bb, rec):
     """(纯逻辑) 体记录 + 当前包围盒 → 该体的锚点 (x, y, z, 角度)。
 
-    动态锚点(v3.5, 用户 2026-09-19 定案): **锚点 = 当前体中心 + 记时偏移**,
-    记时偏移 = 记时锚点 − 记时体中心(7 数记录); 件被平移(挪到模具上)后,
-    当前体中心跟着走 → 反推出的锚点**跟着走**。
-    旧格式(4 数, 只存偏移)同口径: 锚点 = 当前体中心 + 偏移。
+    XY = 当前体中心 + (记时锚点 − 记时体中心) —— 平移跟随。
+    Z(有记时跨度时)按"哪端动了"判 δ(定位点位移), 容差 0.05:
+      两端都没动               → 0   (没动过 / 脚本移面+回位后的状态)
+      两端动的一样             → dt  (整体平移, 锚点跟着走 —— 挪模具场景)
+      只有底端动(咀尖段调长)   → 0   (定位点是固定端, 没被带走 —— 用户手动
+                                  调长度场景, 治"调长后锚点漂一半")
+      只有顶端动(顶段调长)     → dt  (定位点随顶段走)
+      两端都动但量不一样       → dt  (混合, 尽力而为)
+    Z(无跨度: 7 数/4 数旧记录)退回中心偏移口径。
     ⚠️ 只跟平移; 旋转对位不在支持范围(记录里没有角度信息可用)。
     """
-    anch, ctr, ang = rec
+    anch, ctr, span, ang = rec
     cx = (float(bb[0]) + float(bb[3])) / 2.0
     cy = (float(bb[1]) + float(bb[4])) / 2.0
     cz = (float(bb[2]) + float(bb[5])) / 2.0
     if ctr is not None:
         ox = float(anch[0]) - float(ctr[0])
         oy = float(anch[1]) - float(ctr[1])
-        oz = float(anch[2]) - float(ctr[2])
     else:
-        ox, oy, oz = float(anch[0]), float(anch[1]), float(anch[2])
-    return (cx + ox, cy + oy, cz + oz, float(ang or 0.0))
+        ox, oy = float(anch[0]), float(anch[1])
+    if span is not None:
+        dt = float(bb[5]) - float(span[0])
+        db = float(bb[2]) - float(span[1])
+        tol = 0.05
+        if abs(dt) <= tol and abs(db) <= tol:
+            dz = 0.0
+        elif abs(dt - db) <= tol:
+            dz = dt
+        elif abs(dt) <= tol:
+            dz = 0.0
+        elif abs(db) <= tol:
+            dz = dt
+        else:
+            dz = dt
+        az = float(anch[2]) + dz          # 记时锚点Z + 定位点位移
+    else:
+        # 旧格式(7 数无跨度 / 4 数偏移): Z = 当前体中心 + 记时偏移
+        oz = (float(anch[2]) - float(ctr[2])) if ctr is not None \
+            else float(anch[2])
+        az = cz + oz
+    return (cx + ox, cy + oy, az, float(ang or 0.0))
 
 
 def anchors_from_offsets(items, tol=0.05):
