@@ -70,7 +70,11 @@ from cad3d.core.logging import Log
 from cad3d.core.paths import _logs_dir
 from cad3d.core.state import default_params, load_state
 from cad3d.modeling.display import _refresh_display
-from cad3d.modeling.nozzle_len import is_nozzle, make_nozzle_hook
+from cad3d.modeling.nozzle_len import (
+    is_nozzle,
+    make_nozzle_hook,
+    nearest_anchor_len,
+)
 from cad3d.modeling.nx_compat import _anchor_of
 from cad3d.modeling.std_rules import (
     _rule_usable,
@@ -221,6 +225,49 @@ def _measured_params(rows, log=None):
     return params
 
 
+def _probe_prt_len(session, work_part, fname, uf, log):
+    """放一个临时件量出它的**原始长度**(还没被改过), 量完删掉 —— 给"预偏移"用。
+
+    同一个 prt 的每个实例原始长度都一样 ⇒ **每个规格只探一次**, 不是每根都探。
+    """
+    import NXOpen
+    from cad3d.core.paths import stdparts_dir
+    from cad3d.modeling.stdparts import _promote_body, _batch_delete
+    from cad3d.modeling.mold_cut import _body_bbox
+    from cad3d.modeling.nozzle_len import (plane_span, read_face_rows,
+                                           _union_bbox)
+    path = os.path.join(stdparts_dir(), fname)
+    if uf is None or not os.path.isfile(path):
+        return None
+    comp = None
+    bodies = []
+    try:
+        ca = work_part.ComponentAssembly
+        m3 = NXOpen.Matrix3x3()
+        m3.Xx = 1.0
+        m3.Yy = 1.0
+        m3.Zz = 1.0
+        comp, _ls = ca.AddComponent(path, "MODEL", "PROBE_" + fname,
+                                    NXOpen.Point3d(0.0, 0.0, 0.0), m3, -1)
+        bodies = _promote_body(work_part, comp, "PROBE_BODY_%s" % fname,
+                               lambda m: None, None)
+        bodies = [b for b in (bodies or []) if b is not None]
+        if not bodies:
+            return None
+        bbs = [_body_bbox(uf, b, None) for b in bodies]
+        t, bo, _how = plane_span(read_face_rows(uf, bodies), _union_bbox(bbs))
+        return (t - bo) if (t is not None and bo is not None) else None
+    except Exception as ex:
+        log("【替换】%s: 探原始长度失败(%s), 这件不预偏移。" % (fname, ex))
+        return None
+    finally:
+        try:
+            _batch_delete(session, list(bodies) + ([comp] if comp else []),
+                          lambda m: None, "探长度的临时件")
+        except Exception:
+            pass
+
+
 def _do_replace(session, work_part, mapping, rules, params, log):
     """核心: 按用户指定的映射把旧规格换成新规格。返回结果字典(不抛异常)。
 
@@ -228,6 +275,11 @@ def _do_replace(session, work_part, mapping, rules, params, log):
     定位全靠体上记的锚点, 不读图纸。
     """
     import NXOpen
+    try:
+        import NXOpen.UF
+        uf = NXOpen.UF.UFSession.GetUFSession()
+    except Exception:
+        uf = None
 
     st = {"ok": False, "pairs": 0, "old": 0, "new": 0, "skip": 0,
           "no_anchor": 0, "adj": 0, "adj_skip": 0}
@@ -247,6 +299,7 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         log("【替换】没找到分流板(FLB)实体: 需要挖孔的件只会放置、不挖孔。")
 
     to_place, anchors_override, to_delete, old_lens = {}, {}, [], []
+    anchor_record = {}          # 体上要记的**真实放置点**(放置位置是偏过的)
     for old_fname in sorted(mapping):
         new_fname = mapping[old_fname]
         olds = existing.get(old_fname) or []
@@ -271,20 +324,42 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         matched = [olds[k][0] for k in use_idx]
         to_delete.extend(matched)
         to_place[new_fname] = rule
-        # 两个旧规格换成同一个新规格时, 锚点要合并而不是覆盖
-        anchors_override.setdefault(new_fname, []).extend(anchors)
+
+        # 热咀: 先按"主平面口径"量出每根旧件的长度(对齐 + 预偏移都要用)
+        lens = []
         if is_nozzle(new_fname):
-            # 热咀: 按旧件实例长度对齐新件长度(头部不动, 其余就地移面)
-            # 长度按"主平面口径"量旧件 —— 和新件同一口径, 见 _body_spans
             lens = _old_instance_lens(olds, _body_spans([b for b, _bb in olds]))
             old_lens.extend((a, L) for a, L, _d in lens)
-            # 逐实例打明细: 长度是"该实例所有体的世界 Z 最高减最低", 打出体数与
-            # Z 范围, 量得准不准一眼能对上; 锚点坐标也打出来 —— 它就是主脚本
-            # 放置时记下的那个定位点(图纸圆心), 拿它跟模型里的实际位置对一下就
-            # 知道锚点有没有漂(用户 2026-09-18 反馈"Z 轴偏移"要的就是这个证据)
+            # 逐实例打明细: 长度 + 锚点坐标(拿它跟模型里的实际位置对一下,
+            # 就知道锚点有没有漂 —— 用户 2026-09-18 反馈"Z 轴偏移"要的证据)
             for _k, (_a, _L, _d) in enumerate(lens, 1):
                 log("【替换】  旧件实例 %d: %s → 长 %.4g; 锚点 (%.3f, %.3f, %.3f)"
                     % (_k, _d, _L, _a[0], _a[1], _a[2]))
+
+        # ⭐ A 方案(用户 2026-09-18 定案): **放置位置 = 放置点 − (0,0,Δ)**,
+        # Δ = 旧件长 − 新件原长(新件原长每个规格只探一次, 不是每根都探)。
+        # 移面之后定位点自然回到放置点 ⇒ **不用事后挪件** —— 提升体是链接体,
+        # NX 不许整体移动(实机报"属于 Wave 链接特征")。
+        if is_nozzle(new_fname) and lens:
+            _prt_len = _probe_prt_len(session, work_part, new_fname, uf, log)
+            if _prt_len:
+                shifted = []
+                for _a in anchors:
+                    _L = nearest_anchor_len(_a, [(a, L) for a, L, _d in lens])
+                    _d = (_L - _prt_len) if _L is not None else 0.0
+                    shifted.append((_a[0], _a[1], _a[2] - _d,
+                                    _a[3] if len(_a) > 3 else 0.0))
+                log("【替换】%s: 新件原长 %.4g → 各处预偏移 %s 放置"
+                    "(移面后定位点回到放置点)。"
+                    % (new_fname, _prt_len,
+                       "、".join("%.4g" % (_a[2] - _s[2])
+                                 for _a, _s in zip(anchors, shifted))))
+                anchor_record.setdefault(new_fname, []).extend(anchors)
+                anchors = shifted
+
+        # 两个旧规格换成同一个新规格时, 锚点要合并而不是覆盖
+        anchors_override.setdefault(new_fname, []).extend(anchors)
+        if is_nozzle(new_fname):
             if lens:
                 log("【替换】%s → %s: %d 处(从 %d 个旧件体里归出的实例数), "
                     "位置取自体上记的锚点; 这是热咀, 放好后按旧件长度对齐。"
@@ -317,7 +392,8 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         place_std_parts(session, work_part, None, flb_regions, params,
                         to_place, log, stats=stats,
                         anchors_override=anchors_override,
-                        placed_hook=placed_hook)
+                        placed_hook=placed_hook,
+                        anchor_record=anchor_record)
         st["adj"] = adj_stats.get("adj", 0)
         st["adj_skip"] = adj_stats.get("skip", 0)
         # 与主脚本同款收尾: 清掉建模步骤 → 用户要的是实体, 不是提升体

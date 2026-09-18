@@ -577,21 +577,11 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
 
-        # ⭐ 定位点补偿(用户 2026-09-18 定案): 移面把件上"定位点"(那个 Z=0 面的
-        # 圆心)带走了, 用「移动对象 + 点对点」把它搬回**放置点** —— 让"动态的
-        # 定位点"永远与"绝对的放置点"重合。换算关系也用他给的:
-        #   换算关系(用他给的例子校准): **总长变化 = +Δ**(移多少就长多少) ⇒
-        #   Δ = 旧件长 − 新件原长; 移面后定位点在世界里的位置 = 放置点 + (0,0,Δ)。
-        real_delta = old_len - new_len0
-        if _fix_z is not None and abs(real_delta) > 1e-9:
-            _from = (float(anch[0]), float(anch[1]), float(_fix_z) + real_delta)
-            _to = (float(anch[0]), float(anch[1]), float(_fix_z))
-            if _move_bodies_point_to_point(work_part, session, tools,
-                                           _from, _to, log):
-                log("【定位补偿】%s 第 %d 处: 定位点 (%.4g,%.4g,%.4g) → 放置点 "
-                    "(%.4g,%.4g,%.4g), 件已整体平移回位。"
-                    % (fname, idx, _from[0], _from[1], _from[2],
-                       _to[0], _to[1], _to[2]))
+        # 定位点守恒: 走了"预偏移"(A 方案)之后, 放置位置本来就是
+        # 「放置点 − (0,0,Δ)」, 移面 Δ 之后定位点**自然回到放置点** ⇒
+        # **这里不需要事后挪件**。而且提升体是链接体, NX 不许整体移动
+        # (实机报"属于 Wave 链接特征"), 事后补偿本来就走不通。
+        # 若将来改走复制粘贴路线(体独立), 再用 _move_bodies_point_to_point 补偿。
 
         adj_stats["adj"] = adj_stats.get("adj", 0) + 1
         log("【长度对齐】%s 第 %d 处: 旧件长 %.4g, 新件原长 %.4g(新件 %d 个体)"
