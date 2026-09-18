@@ -44,10 +44,11 @@ EXPECT_XT = 14
 
 # ── 白名单：老旧机器最小运行集 ────────────────────────────────────────────
 WHITELIST_FILES = [
-    "nx_extrude_runner.py",     # NX 日记主入口
-    "nx_mold_cut_runner.py",    # 模具开框入口
-    "nx_std_config.py",         # 业务配置（exec 加载，缺了会整体回退内置默认）
-    "batch_smoke.py",           # 端到端冒烟（验收用）
+    "nx_extrude_runner.py",         # NX 日记主入口
+    "nx_mold_cut_runner.py",        # 模具开框入口
+    "nx_std_replace_runner.py",     # 一键替换标准件入口
+    "nx_std_config.py",             # 业务配置（exec 加载，缺了会整体回退内置默认）
+    "batch_smoke.py",               # 端到端冒烟（验收用）
 ]
 WHITELIST_DIRS = [
     "cad3d",                    # 全部核心代码
@@ -251,6 +252,8 @@ def _write_manifest(dst):
         "          最后一行应为：BATCH RESULT run1=True run2=True",
         "",
         "【日常使用】NX 里 工具 → 日记 → 播放，选 nx_extrude_runner.py。",
+        "          只换标准件规格时选 nx_std_replace_runner.py：左边是模型里现有的件、",
+        "          右边挑要换成哪个规格，没指定的件一个都不会动（它只动标准件）。",
         "",
         "详细说明见 docs\\移植手册.md（完整移植流程）与 docs\\使用手册.md（日常操作）。",
         "",

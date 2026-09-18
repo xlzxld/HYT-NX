@@ -2,6 +2,7 @@
 """
 nx_mold_cut_runner.py —— 模具自动开框 NX 日记入口 (v1.3)
 =============================================================================
+【本脚本】按分流板/加热条/标准件的位置给模具自动开框挖孔，不做建模。
 适用环境：Siemens NX 10 / NX 12 / NX 2312 及以上版本
 播放方式与 batch_smoke 相同：NX 菜单 工具 → 日记 → 播放，选本文件。
 
@@ -168,6 +169,7 @@ def main():
     if MODE == "api":
         api_probe()
         return
+    print("【本脚本】按分流板/加热条/标准件的位置给模具自动开框挖孔，不做建模。")
     session = NXOpen.Session.GetSession()
     work_part = session.Parts.Work
     if work_part is None:
