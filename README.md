@@ -3,7 +3,7 @@
 > Siemens NX 二次开发：AutoCAD 2D 图纸（DWG / DXF）一键转 3D 热流道分流板、孔系布尔、标准件装配与 JRT 加热条闭环建模。
 >
 > **支持环境**：Siemens NX 10 / NX 12 / NX 2312 及以上（Python 3.3 ~ 3.12+）
-> **当前版本**：v2.13（CAD3D 流水线）/ v1.4（模具自动开框）/ v3.2（一键替换标准件）
+> **当前版本**：v2.13（CAD3D 流水线）/ v1.4（模具自动开框）/ v3.5（一键替换标准件）
 
 ---
 
@@ -148,7 +148,7 @@ make verify
 make verify CHANGED="$(git diff --name-only)"
 ```
 
-门禁命令定义在 `Makefile`，与 `AGENTS.md` §2 登记保持一致。lint 走 ruff，存量 321 条历史豁免条目（F401 / I001 等 NX10/12 旧版 Python 风格）按增量仅查本次改动文件，**新增代码必须 0 问题**。test 走 `--selftest`（当前 350 项断言全绿）。
+门禁命令定义在 `Makefile`，与 `AGENTS.md` §2 登记保持一致。lint 走 ruff，存量 183 条历史豁免条目（F401 为主，系 NX10/12 旧版 Python 风格；另有少量刻意保留项：NaN 守卫的自比较、配置加载梯的 exec、保 Py3.3 兼容不升级的写法）按增量仅查本次改动文件，**新增代码必须 0 问题**。test 走 `--selftest`（当前 350 项断言全绿）。
 
 > 主干保护（`main`）强制 PR 合入 + `gate` CI 必须通过，**禁止未经 PR 直接 push 主干**（见 `AGENTS.md` §2 与 `enforcement/gate.yml`）。
 
