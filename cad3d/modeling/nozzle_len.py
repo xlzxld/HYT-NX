@@ -539,13 +539,18 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             被选中, 就移多少实体中被选中的面, 不能只移一个实体的)。
             每轮按当前跨度重算: 咀尖底部 40mm 固定不动 → 下缘不变;
             顶端随件走 → 上缘跟着抬, 已移的面仍在范围内。
+            (这里直接调 plane_span 拿跨度 —— _measure() 返回 4 元组, 曾被
+            按 3 个解包, 实机探步第一步就 "too many values to unpack" 整批
+            回滚, 2026-09-19。)
             """
-            _t, _b, _h2 = _measure()
-            if _b is None or _t is None:
+            bbs = [_body_bbox(uf, t) for t in tools]
+            t2, b2, _h2 = plane_span(read_face_rows(uf, tools),
+                                     _union_bbox(bbs))
+            if b2 is None or t2 is None:
                 return []
             rows = read_face_rows(uf, tools)
             idxs = pick_faces([r[0] for r in rows],
-                              _b + NOZZLE_BAND_UP, _t + NOZZLE_BAND_UP)
+                              b2 + NOZZLE_BAND_UP, t2 + NOZZLE_BAND_UP)
             return [rows[i][3] for i in idxs]
 
         def _move(amount):

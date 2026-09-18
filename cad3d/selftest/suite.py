@@ -639,6 +639,12 @@ def selftest(dxf_path=None):
           and "_move_bodies_point_to_point(" in _nl_src
           and "_deparameterize_bodies(work_part, tools, log)" in _nl_src
           and "datum_moves" in _nl_src)
+    # 回归(2026-09-19 实机): _measure() 返回 4 元组, _band_faces 曾按 3 个
+    # 解包 → 探步第一步 "too many values to unpack" 整批回滚。守门: 坏解包
+    # 不得回潮, _band_faces 必须直接用 plane_span(3 元组)拿跨度。
+    check("长度对齐: _band_faces 直接调 plane_span(3 元组), 坏解包不回潮",
+          "t2, b2, _h2 = plane_span" in _nl_src
+          and ", _h2 = _measure()" not in _nl_src)
 
     check("长度对齐: 按锚点找旧件长度(容差内命中/miss回None)",
           nearest_anchor_len((100.0, 50.0, -85.0),
