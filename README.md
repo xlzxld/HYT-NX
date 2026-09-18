@@ -148,7 +148,7 @@ make verify
 make verify CHANGED="$(git diff --name-only)"
 ```
 
-门禁命令定义在 `Makefile`，与 `AGENTS.md` §2 登记保持一致。lint 走 ruff，存量 321 条历史豁免条目（F401 / I001 等 NX10/12 旧版 Python 风格）按增量仅查本次改动文件，**新增代码必须 0 问题**。test 走 `--selftest`（当前 339 项断言全绿）。
+门禁命令定义在 `Makefile`，与 `AGENTS.md` §2 登记保持一致。lint 走 ruff，存量 321 条历史豁免条目（F401 / I001 等 NX10/12 旧版 Python 风格）按增量仅查本次改动文件，**新增代码必须 0 问题**。test 走 `--selftest`（当前 343 项断言全绿）。
 
 > 主干保护（`main`）强制 PR 合入 + `gate` CI 必须通过，**禁止未经 PR 直接 push 主干**（见 `AGENTS.md` §2 与 `enforcement/gate.yml`）。
 
