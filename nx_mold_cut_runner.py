@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-nx_mold_cut_runner.py —— 模具自动开框 NX 日记入口 (v1.3)
+nx_mold_cut_runner.py —— 模具自动开框 NX 日记入口 (v1.4)
 =============================================================================
 【本脚本】按分流板/加热条/标准件的位置给模具自动开框挖孔，不做建模。
 适用环境：Siemens NX 10 / NX 12 / NX 2312 及以上版本
@@ -46,6 +46,7 @@ for _mod in list(sys.modules.keys()):
     if _mod == "cad3d" or _mod.startswith("cad3d."):
         del sys.modules[_mod]
 
+from cad3d.core.guide import print_guide
 from cad3d.core.paths import _logs_dir
 
 MODE = "cut"             # "cut"=执行自动开框; "api"=只读探测本NX可用API
@@ -169,6 +170,7 @@ def main():
     if MODE == "api":
         api_probe()
         return
+    print_guide("nx_mold_cut_runner.py")
     print("【本脚本】按分流板/加热条/标准件的位置给模具自动开框挖孔，不做建模。")
     session = NXOpen.Session.GetSession()
     work_part = session.Parts.Work

@@ -395,6 +395,35 @@ def anchors_from_offsets(items, tol=0.05):
     return out, missing
 
 
+def group_anchor_instances(items, tol=0.05):
+    """(纯逻辑) [(包围盒6, 偏移4|None)] → [((x,y,z,ang), [体下标...]), ...]。
+
+    与 anchors_from_offsets 同一"锚点重合即同实例"口径, 但保留分组信息
+    (哪些体属于哪一处实例) —— 热咀替换调长度要按实例算旧件长度用。
+    没记录/坏记录的体不进任何组。
+    """
+    groups = []
+    for k, row in enumerate(items or []):
+        try:
+            bb, off = row
+            if off is None or len(bb) < 6:
+                continue
+            a = ((float(bb[0]) + float(bb[3])) / 2.0 + off[0],
+                 (float(bb[1]) + float(bb[4])) / 2.0 + off[1],
+                 (float(bb[2]) + float(bb[5])) / 2.0 + off[2],
+                 off[3] if len(off) > 3 else 0.0)
+        except (TypeError, ValueError, IndexError):
+            continue
+        for g in groups:
+            if (abs(a[0] - g[0][0]) <= tol and abs(a[1] - g[0][1]) <= tol
+                    and abs(a[2] - g[0][2]) <= tol):
+                g[1].append(k)
+                break
+        else:
+            groups.append((a, [k]))
+    return groups
+
+
 def _usable_parts(rules, log):
     """(v1.30) 过滤出已配置参考点的可用规则; 未配置的收集并写日志。"""
     unusable = _unusable_names(rules)
@@ -458,12 +487,16 @@ def _group_bool_plan(plan):
 
 
 def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, log,
-                    stats=None, anchors_override=None):
+                    stats=None, anchors_override=None, placed_hook=None):
     """阶段 6: 按规则放置 stdparts 标准件(独立体)并按需布尔。
 
     anchors_override: {prt 文件名: [(x, y, z[, 角度]), ...]} —— 一键替换标准件时直接
       指定放置点(取自被换掉的旧件体上记的锚点), 不去图纸找圆, z 也照给的走
       (件被挪过 Z 也能跟上); 传 None 走原逻辑(按 DXF 圆锚点), 主流水线行为不变。
+    placed_hook: 可选钩子 (fname, 序号(1起), 锚点, 规则, 体列表, 待删组件列表)
+      → 新体列表 —— 每处实例放好并提升打标后、进布尔计划前调用; 返回的列表
+      替换原体列表(热咀替换调长度用: 头部不动、咀身平移对齐旧件长度)。
+      主流水线不传(默认 None), 行为零变化。
 
     (v2.4 提速) 放置与布尔解耦为两段执行, 几何结果与旧版逐锚点完全一致:
       段1 逐锚点: 装配组件 → 提升体(组件不即时删, 只登记待删清单);
@@ -591,6 +624,13 @@ def place_std_parts(session, work_part, layers, flb_regions, params, std_rules, 
                 # 锚点记录(一键替换用): 记「锚点 − 体中心」; 记偏移不记绝对坐标,
                 # 用户把件挪走后反推出来的锚点会跟着走
                 _mark_anchor(_tb, (cx, cy, z_i), ang, uf)
+            if placed_hook is not None:
+                # 每处实例打标后、进布尔计划前的钩子(热咀替换调长度用):
+                # 钩子可换掉部分体(头部不动、咀身平移), 布尔/统计用换后的
+                _adj = placed_hook(fname, i + 1, anch, rule, tools_all,
+                                   pending_comps)
+                if _adj:
+                    tools_all = _adj
             n_body += len(tools_all)
             pending_comps.append(comp)              # (提速)延到段2 一次删
 

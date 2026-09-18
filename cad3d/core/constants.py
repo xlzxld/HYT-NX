@@ -7,7 +7,7 @@ from cad3d.core.config import (
 )
 
 # 脚本与系统版本标识
-SCRIPT_VERSION = "2.12"
+SCRIPT_VERSION = "2.13"
 
 # 命名空间前缀配置（支持在 nx_std_config.py 中自定义）
 FEATURE_PREFIX = str(_cfg("FEATURE_PREFIX", "CAD3D_"))
@@ -189,9 +189,9 @@ if TARGET_CODE not in LAYER_CODES:
 
 # 对话框拉伸参数分组定义
 _DEFAULT_DIALOG_GROUPS = [
-    ("grp_flb",   "FLB 分流板（基准体；改动两项后 LS/RZ/DK/DP/JRT 自动联动）", ["FLB"]),
+    ("grp_flb",   "FLB 分流板（基准体；改动两项后 LS/DP/JRT 自动联动）", ["FLB"]),
     ("grp_plain", "普通拉伸图层（JT 随 FLB 联动；起始=结束=0 则跳过）", ["JT", "CX"]),
-    ("grp_sub",   "拉伸并从 FLB 减去（随 FLB 联动，可单独改）", ["LS", "RZ", "DK", "DP"]),
+    ("grp_sub",   "拉伸并从 FLB 减去（LS/DP 随 FLB 联动；RZ/DK 默认 0=不做，可单独改）", ["LS", "RZ", "DK", "DP"]),
 ]
 _RAW_DIALOG_GROUPS = _cfg("DIALOG_GROUPS", _DEFAULT_DIALOG_GROUPS)
 DIALOG_GROUPS = []
@@ -214,15 +214,15 @@ if not DIALOG_GROUPS:
     DIALOG_GROUPS = list(_DEFAULT_DIALOG_GROUPS)
 
 # FLB 尺寸联动规则与推导偏移
+# v2.13: RZ(热咀孔)/DK(点孔) 解除联动 —— 默认 0/0 整层不做, 改 FLB 不再
+# 带动它们(热咀让位孔改由热咀标准件按"放置+减去"自己挖)。
 _LINK_OFFSETS_RAW = _cfg("LINK_OFFSETS", {})
 if not isinstance(_LINK_OFFSETS_RAW, dict):
     _LINK_OFFSETS_RAW = {}
 _LINK_OFFSETS = {_k: _cfg_num(_LINK_OFFSETS_RAW.get(_k, _d), _d)
-                 for _k, _d in (("RZ", 13.0), ("DK", 3.0), ("DP", 6.7023))}
+                 for _k, _d in (("DP", 6.7023),)}
 LINK_RULES = {
     "LS":  lambda top, bottom: (top, bottom),
-    "RZ":  lambda top, bottom: (bottom + _LINK_OFFSETS["RZ"], bottom),
-    "DK":  lambda top, bottom: (top, top - _LINK_OFFSETS["DK"]),
     "DP":  lambda top, bottom: (bottom + _LINK_OFFSETS["DP"], bottom),
 }
 JRT_FROM_TOP = _cfg_num(_cfg("JRT_INTRUSION_DEFAULT", 7.5), 7.5)
@@ -340,3 +340,15 @@ JRT_FIELDS = [
 
 # 单件最大放置数量护栏
 STD_MAX_ANCHORS = _cfg_int("STD_MAX_ANCHORS", 200)
+
+# 热咀替换长度对齐(v2.13): 文件名含 NOZZLE_FAMILIES 任一关键词才算热咀;
+# NOZZLE_KEEP_HEAD = 头部保留高度(从热咀顶部往下量, mm), 头部不动、其余
+# 部分整体平移使总长对齐旧件 —— 与用户手动"移动"做法同口径。
+_RAW_NOZZLE_FAMILIES = _cfg("NOZZLE_FAMILIES", None)
+if isinstance(_RAW_NOZZLE_FAMILIES, (list, tuple)):
+    NOZZLE_FAMILIES = [str(k) for k in _RAW_NOZZLE_FAMILIES if str(k)]
+else:
+    NOZZLE_FAMILIES = ["热咀", "大水口", "点胶口", "nozzle"]
+NOZZLE_KEEP_HEAD = _cfg_num(_cfg("NOZZLE_KEEP_HEAD", 30.0), 30.0)
+# 长度对齐判定容差(mm): 新旧总长差小于它视为等长, 不动
+NOZZLE_LEN_TOL = _cfg_num(_cfg("NOZZLE_LEN_TOL", 0.01), 0.01)

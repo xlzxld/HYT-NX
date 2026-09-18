@@ -55,8 +55,13 @@ from cad3d.modeling.std_rules import (
 )
 from cad3d.modeling.stdparts import (
     _bool_feature, _place_delta, _rot_xy, _batch_delete, _group_bool_plan,
-    scan_model_bodies, anchors_from_offsets, parse_anchor_off
+    scan_model_bodies, anchors_from_offsets, parse_anchor_off,
+    group_anchor_instances
 )
+from cad3d.modeling.nozzle_len import (
+    is_nozzle, plan_shift, nearest_anchor_len
+)
+from cad3d.core.guide import GUIDE_LINES, print_guide
 from cad3d.modeling.nx_compat import _matrix3x3
 from cad3d.modeling.mold_cut import (
     _any_point_inside, _bbox_overlap, _body_matches_bbox, _broken_holes,
@@ -251,10 +256,9 @@ def selftest(dxf_path=None):
     _lo_cfg = _cfg("LINK_OFFSETS", {})
     if not isinstance(_lo_cfg, dict):
         _lo_cfg = {}
-    check("联动/JRT建模/图层号均来自 config(v1.33)",
+    check("联动/JRT建模/图层号均来自 config(v1.33; v2.13 RZ/DK 出联)",
           _LINK_OFFSETS == {k: _cfg_num(_lo_cfg.get(k), d)
-                            for k, d in (("RZ", 13.0), ("DK", 3.0),
-                                         ("DP", 6.7023))}
+                            for k, d in (("DP", 6.7023),)}
           and JRT_FROM_TOP == _cfg_num(_cfg("JRT_INTRUSION_DEFAULT", 7.5), 7.5)
           and DEFAULT_JRT["offset"] == _cfg_num(_cfg("JRT_OFFSET", 5.0), 5.0)
           and DEFAULT_JRT["draft"] == _cfg_num(_cfg("JRT_DRAFT", 2.0), 2.0)
@@ -290,14 +294,14 @@ def selftest(dxf_path=None):
     # 7b. FLB 联动推导
     d = derive_linked(-40.0, -90.0)
     check("联动推导 FLB(-40,-90)",
-          d["LS"] == (-40.0, -90.0) and d["RZ"] == (-77.0, -90.0)
-          and d["DK"] == (-40.0, -43.0)
+          d["LS"] == (-40.0, -90.0)
           and abs(d["DP"][0] - -83.2977) < 1e-9 and d["DP"][1] == -90.0
           and d["JRT"] == (-40.0, -47.5), str(d))
     d2 = derive_linked(45.0, 0.0)
     check("联动推导 正 Z 参数",
-          d2["RZ"] == (13.0, 0.0) and d2["DK"] == (45.0, 42.0)
-          and d2["DP"] == (6.7023, 0.0) and d2["JRT"] == (45.0, 37.5))
+          d2["DP"] == (6.7023, 0.0) and d2["JRT"] == (45.0, 37.5))
+    check("RZ/DK 已解除联动(v2.13): derive_linked 不再输出",
+          "RZ" not in d and "DK" not in d and "RZ" not in d2 and "DK" not in d2)
 
     # 7b-2. JT 联动模式(v1.37)
     check("derive_linked 默认不含 JT",
@@ -317,8 +321,10 @@ def selftest(dxf_path=None):
     check("兜底 FLB -40/-85", dp["FLB"] == (-40.0, -85.0))
     check("兜底联动层推导(普通模式)",
           dp["JT"] == (-30.0, -100.0) and dp["CX"] == (-30.0, -65.0)
-          and dp["RZ"] == (-72.0, -85.0) and dp["DK"] == (-40.0, -43.0)
+          and dp["RZ"] == (0.0, 0.0) and dp["DK"] == (0.0, 0.0)
           and dp["LS"] == (-40.0, -85.0) and dp["DP"][0] == -78.2977)
+    check("RZ/DK 默认 0/0 = 不做(v2.13)",
+          dp["RZ"] == (0.0, 0.0) and dp["DK"] == (0.0, 0.0))
     check("jt 模式记忆恢复", jt_mode_with_memory(
         {"jt_link_mode": "针阀模式"}) == "针阀模式")
     check("jt 模式记忆无效回默认",
@@ -336,8 +342,8 @@ def selftest(dxf_path=None):
     _mt, _mb = 85.0, 40.0                  # 翻转后 FLB(40,85) 的 max/min
     _mlink = derive_linked(_mt, _mb, jt_mode="普通模式")
     check("镜像口径: FLB 翻 40/85 后常规联动(=手输等效)",
-          _mlink["LS"] == (85.0, 40.0) and _mlink["RZ"] == (53.0, 40.0)
-          and _mlink["DK"] == (85.0, 82.0) and _mlink["DP"] == (46.7023, 40.0)
+          _mlink["LS"] == (85.0, 40.0)
+          and _mlink["DP"] == (46.7023, 40.0)
           and _mlink["JT"] == (95.0, 25.0) and _mlink["JRT"] == (85.0, 77.5)
           and _cx_link_values(_mlink["JT"][0]) == (95.0, 60.0))
     _sides_p = _jrt_sides(_mlink["JRT"][0], _mlink["JRT"][1], _mb)
@@ -380,8 +386,13 @@ def selftest(dxf_path=None):
     check("猜测: 垫片→DK/FLB顶/放置+减去", g1["layer"] == "DK"
           and g1["z_mode"] == "FLB_TOP" and g1["bool_mode"] == "PLACE_SUBTRACT")
     g2 = guess_std_rule("大水口-25.prt")
-    check("猜测: 大水口→RZ/FLB底", g2["layer"] == "RZ"
-          and g2["z_mode"] == "FLB_BOTTOM")
+    check("猜测: 大水口→RZ/FLB底/放置+减去(v2.13)", g2["layer"] == "RZ"
+          and g2["z_mode"] == "FLB_BOTTOM"
+          and g2["bool_mode"] == "PLACE_SUBTRACT")
+    check("猜测: 热咀族布尔默认放置+减去(v2.13)",
+          guess_std_rule("点胶口-18.prt")["bool_mode"] == "PLACE_SUBTRACT"
+          and guess_std_rule("热咀big.prt")["bool_mode"] == "PLACE_SUBTRACT"
+          and guess_std_rule("Nozzle-30.prt")["bool_mode"] == "PLACE_SUBTRACT")
     g3 = guess_std_rule("LS-45.prt")
     check("猜测: LS-→LS/FLB顶/放置+减去", g3["layer"] == "LS"
           and g3["z_mode"] == "FLB_TOP"
@@ -498,6 +509,87 @@ def selftest(dxf_path=None):
     check("映射页: 空旧件列表也生成良构 XML",
           "Dialog" in build_replace_map_dlx([], ["a.prt"], None)
           and "当前模型里没有标准件" in build_replace_map_dlx([], [], None))
+
+    # 7d-4. 热咀替换长度对齐(v2.13): 头部不动、其余平移, 总长=旧件
+    check("热咀族判定: 大水口/点胶口/热咀/nozzle 命中, 其余不命中",
+          is_nozzle("大水口-25.prt") and is_nozzle("点胶口-18.prt")
+          and is_nozzle("热咀x.prt") and is_nozzle("Nozzle-30.prt")
+          and not is_nozzle("螺丝-45.prt") and not is_nozzle("接线盒-24针.prt")
+          and not is_nozzle("") and not is_nozzle(None))
+    # 两体件: 头部 -60..-30(顶带30), 咀身 -100..-61(全在头部带以下)
+    _nz_head = (0.0, 0.0, -60.0, 10.0, 10.0, -30.0)
+    _nz_tip = (0.0, 0.0, -100.0, 8.0, 8.0, -61.0)
+    _nsh, _kp, _mv, _nt = plan_shift(60.0, [_nz_head, _nz_tip], 1)
+    check("长度对齐: 新件长70旧件60 → 平移+10, 只动咀身",
+          abs(_nsh - 10.0) < 1e-9 and _kp == [0] and _mv == [1] and _nt == "",
+          "%r %r %r %r" % (_nsh, _kp, _mv, _nt))
+    _nsh2, _kp2, _mv2, _nt2 = plan_shift(80.0, [_nz_head, _nz_tip], 1)
+    check("长度对齐: 新件比旧件短 → 平移-10(咀身往下拉长)",
+          abs(_nsh2 + 10.0) < 1e-9 and _kp2 == [0] and _mv2 == [1])
+    _nsh3, _kp3, _mv3, _nt3 = plan_shift(70.0, [_nz_head, _nz_tip], 1)
+    check("长度对齐: 新旧等长免调", _nsh3 is None and "等长" in _nt3)
+    # 短头(5mm)两体件: 咀身也伸进顶部 30mm 带 → 退化"只留头端体平移其余"
+    _nz_sh_head = (0.0, 0.0, -35.0, 10.0, 10.0, -30.0)
+    _nz_sh_tip = (0.0, 0.0, -60.0, 8.0, 8.0, -34.0)
+    _nsh4, _kp4, _mv4, _nt4 = plan_shift(40.0, [_nz_sh_head, _nz_sh_tip], 1)
+    check("长度对齐: 各体都伸进头部带 → 只留头端体平移其余",
+          abs(_nsh4 + 10.0) < 1e-9 and _kp4 == [0] and _mv4 == [1]
+          and "头端体" in _nt4,
+          "%r %r %r %r" % (_nsh4, _kp4, _mv4, _nt4))
+    # -Z 干净路径: 头 -100..-70(底带30), 咀身 -60..-40
+    _nz_head_f = (0.0, 0.0, -100.0, 10.0, 10.0, -70.0)
+    _nz_tip_f = (0.0, 0.0, -60.0, 8.0, 8.0, -40.0)
+    _nsh5, _kp5, _mv5, _nt5 = plan_shift(70.0, [_nz_head_f, _nz_tip_f], -1)
+    check("长度对齐: -Z 新件短10 → 平移+10(咀尖往上提)",
+          abs(_nsh5 - 10.0) < 1e-9 and _kp5 == [0] and _mv5 == [1] and _nt5 == "")
+    _nsh6, _kp6, _mv6, _nt6 = plan_shift(60.0, [_nz_head], 1)
+    check("长度对齐: 单实体没法体级平移 → 提示手动", _nsh6 is None and "手动" in _nt6)
+    _nsh7, _kp7, _mv7, _nt7 = plan_shift(None, [_nz_head, _nz_tip], 1)
+    check("长度对齐: 旧件长度缺 → 不调", _nsh7 is None and _mv7 == [])
+    _nsh8, _kp8, _mv8, _nt8 = plan_shift(60.0, [_nz_head, _nz_tip, None], 1)
+    check("长度对齐: 包围盒读不到 → 不调", _nsh8 is None)
+    check("长度对齐: 按锚点找旧件长度(容差内命中/miss回None)",
+          nearest_anchor_len((100.0, 50.0, -85.0),
+                             [((100.0, 50.0, -85.0, 0.0), 60.0)]) == 60.0
+          and nearest_anchor_len((100.05, 50.0, -85.0),
+                                 [((100.0, 50.0, -85.0, 0.0), 60.0)]) == 60.0
+          and nearest_anchor_len((200.0, 50.0, -85.0),
+                                 [((100.0, 50.0, -85.0, 0.0), 60.0)]) is None)
+
+    # 旧件体按锚点归实例 + 每实例长度(热咀对齐的数据源)
+    def _bbz(zmin, zmax, x=100.0):
+        return (x, 50.0, zmin, x, 50.0, zmax)
+
+    _old_items = [
+        (_bbz(-70.0, -40.0), (0.0, 0.0, -30.0, 0.0)),     # 实例A 头(锚点100,50,-85)
+        (_bbz(-120.0, -80.0), (0.0, 0.0, 15.0, 0.0)),     # 实例A 咀身(同锚点)
+        (_bbz(-70.0, -40.0, x=300.0), (200.0, 0.0, -30.0, 0.0)),  # 实例B 头(锚点300,50,-85)
+        (None, (0.0, 0.0, 0.0, 0.0)),                     # 坏记录不进组
+    ]
+    _grp = group_anchor_instances(_old_items)
+    check("旧件分实例: 同锚点归同组, 坏记录不进组",
+          len(_grp) == 2 and sorted(len(g[1]) for g in _grp) == [1, 2]
+          and _grp[0][0][:3] == (100.0, 50.0, -85.0), str(_grp))
+    check("旧件分实例: 空输入安全", group_anchor_instances([]) == []
+          and group_anchor_instances(None) == [])
+
+    # 三个主入口的大白话说明(v2.13): 每个脚本名真实存在且说明非空
+    check("脚本指南: 三个入口都有大白话说明且文件真实存在",
+          len(GUIDE_LINES) == 3
+          and all(d for _n, d in GUIDE_LINES)
+          and all(os.path.isfile(os.path.join(script_dir(), n))
+                  for n, _d in GUIDE_LINES))
+    _sw = io.StringIO()
+    _so = sys.stdout
+    try:
+        sys.stdout = _sw
+        print_guide("nx_std_replace_runner.py")
+    finally:
+        sys.stdout = _so
+    _gtxt = _sw.getvalue()
+    check("脚本指南: 启动打印三行说明并标记本次脚本",
+          _gtxt.count("\n") >= 4 and "← 本次运行" in _gtxt
+          and "建模" in _gtxt and "换件" in _gtxt and "开框" in _gtxt)
 
     # 7e. YXB 压线板: 贴合边中点锚点 + 逐板轮廓自动判向(26079 前跑板实图定案,
     #     16.6 长边沿槽向落 CX 线上、板体沿背离槽方向, longaxis_deg=0;
@@ -1060,6 +1152,9 @@ def selftest(dxf_path=None):
           "jrt_se" in _insp.signature(save_state).parameters)
     check("save_state 支持 jt_link_mode 字段",
           "jt_link_mode" in _insp.signature(save_state).parameters)
+    check("替换两页去记忆(v3.1): 不再有映射存取",
+          "std_replace_map" not in _insp.signature(save_state).parameters
+          and not hasattr(_mod_state, "save_replace_map"))
 
     _ring = [DXLine((483.5, 84.9), (483.5, 91.0)),
              DXLine((483.5, 91.0), (491.5, 91.0)),

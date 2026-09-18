@@ -459,7 +459,8 @@ def build_dlx(params=None, jrt=None, jt_mode=None):
         _blk_filebrowser("dxf_file", "图纸文件", "*.dwg;*.dxf") + _blk_label(
             "hint_label",
             "提示: 支持直接选取 .dwg 或 .dxf 图纸(DWG 自动后台无头转换并即用即销); "
-            "起始=结束=0 的图层跳过; LS/RZ/DK 拉伸后从 FLB 减去; "
+            "起始=结束=0 的图层跳过(RZ/DK 默认 0=不做, 需要时自行填数); "
+            "LS/RZ/DK 拉伸后从 FLB 减去; "
             "曲线默认导入 NX 高位图层 %d~%d (冲突自动避让)。"
             % (MANAGED_MIN, MANAGED_MAX)),
         columns=1)
@@ -482,9 +483,9 @@ def build_dlx(params=None, jrt=None, jt_mode=None):
             children.append(_blk_label(
                 "flb_mirror_hint",
                 "镜像: 把 FLB 起止翻到另一侧(数值翻符号、次序不变, 如 "
-                "-40/-85 → 40/85), 其余各层与加热条按常规联动公式整体重推——"
-                "与手动输入翻转后 FLB 的联动结果完全一致, 热咀/螺丝/点孔/"
-                "加热条相对板面位置不变、不错位。镜像会覆盖各层的手工微调"
+                "-40/-85 → 40/85), 联动层(LS/DP/JRT/JT/CX)按常规公式整体重推"
+                "——与手动输入翻转后 FLB 的联动结果完全一致; RZ/DK 已不联动"
+                "(v2.13), 镜像不改动它们的数值。镜像会覆盖联动层的手工微调"
                 "(恢复联动值), 需要时镜像后再单独改。"))
         groups_xml.append(_group_item(gid, title, "".join(children), columns=1))
 

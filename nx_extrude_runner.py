@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-nx_extrude_runner.py —— CAD3D 分层拉伸与自动化建模主入口 (v2.12)
+nx_extrude_runner.py —— CAD3D 分层拉伸与自动化建模主入口 (v2.13)
 =============================================================================
 【本脚本】选图纸、定各层高度、放标准件、建分流板模型，一条龙。
 适用环境：Siemens NX 10 / NX 12 / NX 2312 及以上版本（Python 3.3 ~ 3.12+）
-最后更新：2026-09-09
+最后更新：2026-09-18
 
 【模块职责】
   1. 作为 NX 日记播放（Tools -> Journal -> Play）的统一主入口；
   2. 提供三段式人机交互向导：
      - 第一段：标准件装配清单勾选（记忆上次选择，新件默认关闭）；
-     - 第二段：分层拉伸尺寸与 JRT 加热条主参数配置（实时联动）；
-     - 第三段：各标准件参数微调并驱动全自动拉伸、装配与型腔布尔运算；
+     - 第二段：分层拉伸尺寸与 JRT 加热条主参数配置（实时联动；
+       RZ/DK 默认 0/0 = 这两层不做，且不随 FLB 联动，v2.13）；
+     - 第三段：各标准件参数微调并驱动全自动拉伸、装配与型腔布尔运算
+       （热咀族布尔默认"放置+减去"，v2.13）；
   3. 提供命令行无头运行模式：--selftest（离线自测）、--batch（批量处理）、--make-sample-dxf；
   4. 作为兼容门面 (Facade)，向外部测试脚本与工具暴露必要的稳定 API。
 =============================================================================
@@ -45,6 +47,7 @@ from cad3d.core.constants import (
     SCRIPT_VERSION, FEATURE_PREFIX, COMP_PREFIX, TARGET_CODE,
     LOOP_TOL, CHAIN_TOL, STD_MAX_ANCHORS, DEFAULT_JRT, DEFAULT_STD_RULE
 )
+from cad3d.core.guide import print_guide
 from cad3d.core.paths import (
     ROOT_DIR, script_dir, stdparts_dir, resolve_dxf_path, _fresh_dlx_path
 )
@@ -135,6 +138,7 @@ def main():
               "或使用 --selftest / --make-sample-dxf 进行离线验证。")
         return
 
+    print_guide("nx_extrude_runner.py")
     print("【本脚本】选图纸、定各层高度、放标准件、建分流板模型，一条龙。")
 
     if "--batch" in argv:

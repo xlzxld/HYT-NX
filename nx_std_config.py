@@ -3,7 +3,8 @@
 nx_std_config.py —— CAD3D 全局工程参数与标准件规则配置文件
 =============================================================================
 适用环境：Siemens NX 10 / NX 12 / NX 2312 及以上版本（兼容 Python 3.3 ~ 3.12+）
-最后更新：2026-09-10 (v2.11；本版新增 JRTFBX 参考图层固定层号 NX_LAYER_JRTFBX=119，动态分配起点顺延至 120)
+最后更新：2026-09-18 (v2.13；RZ/DK 默认 0/0 并解除联动、热咀布尔默认“放置+减去”、
+          新增热咀替换长度对齐配置 NOZZLE_FAMILIES / NOZZLE_KEEP_HEAD)
 
 【配置文件概述】
   本脚本集中管理 CAD3D 分层拉伸系统的全部出厂默认配置与工程规则。
@@ -13,7 +14,8 @@ nx_std_config.py —— CAD3D 全局工程参数与标准件规则配置文件
 
 【配置分类索引】
   1. 架构模式与记忆门控 (CONFIG_SCHEMA_VERSION)
-  2. 标准件装配规则表 (STD_PART_DEFAULTS, DEFAULT_STD_RULE, ZMODE_DEFS)
+  2. 标准件装配规则表 (STD_PART_DEFAULTS, DEFAULT_STD_RULE, ZMODE_DEFS,
+     热咀替换长度对齐 NOZZLE_FAMILIES / NOZZLE_KEEP_HEAD)
   3. 分层建模与图层定义 (LAYER_DEFS, TARGET_CODE, LAYER_START_DEFAULTS)
   4. 尺寸联动推导规则 (LINK_OFFSETS, JT_LINK_MODES, CX_LINK_END_OFFSET, JRT_INTRUSION_DEFAULT)
   5. JRT 加热条工艺与配色 (JRT_*)
@@ -32,7 +34,10 @@ nx_std_config.py —— CAD3D 全局工程参数与标准件规则配置文件
 # 应用场景：当用户在界面中将参数调乱希望一键重置出厂状态时，将此值加 1 即可。
 # v2.3 调大说明：压线板定位图层默认值 CXK → YXB，旧记忆中的压线板规则
 #       (layer=CXK, off_y=-30) 已不适用，升级时整体重置一次。
-CONFIG_SCHEMA_VERSION = 5
+# v2.13 调大说明：①窗口② RZ/DK 默认改为 0/0(=不做)并解除与 FLB 的联动；
+#       ②热咀族(大水口/点胶口/热咀/nozzle)布尔默认改为“放置+减去”。
+#       旧记忆里的 RZ/DK 联动值与“仅放置”布尔会盖住新默认，升级时整体重置一次。
+CONFIG_SCHEMA_VERSION = 6
 
 
 # =============================================================================
@@ -75,11 +80,13 @@ ZMODE_DEFS = [
 #   - ref: 标准件几何插入参考原点，已归零零件恒为 [0.0, 0.0, 0.0]
 STD_PART_DEFAULTS = [
     # ─── 精确零件行（已全部通过 nx_zero_ref.py 归零） ──────────────────────
-    ("大水口-18.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "ref": [0.0, 0.0, 0.0]}),
-    ("大水口-25.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "ref": [0.0, 0.0, 0.0]}),
-    ("大水口-35.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "ref": [0.0, 0.0, 0.0]}),
-    ("点胶口-18.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "ref": [0.0, 0.0, 0.0]}),
-    ("点胶口-25.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "ref": [0.0, 0.0, 0.0]}),
+    #     热咀族(大水口/点胶口)布尔默认"放置+减去"(v2.13): 件放着的同时直接
+    #     把让位孔挖进 FLB, RZ 拉伸层默认 0/0 不再挖孔, 孔由热咀自己挖。
+    ("大水口-18.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT", "ref": [0.0, 0.0, 0.0]}),
+    ("大水口-25.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT", "ref": [0.0, 0.0, 0.0]}),
+    ("大水口-35.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT", "ref": [0.0, 0.0, 0.0]}),
+    ("点胶口-18.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT", "ref": [0.0, 0.0, 0.0]}),
+    ("点胶口-25.prt", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT", "ref": [0.0, 0.0, 0.0]}),
     ("螺丝-45.prt",   {"layer": "LS", "r_min": 0.0, "r_max": 5.0, "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT", "ref": [0.0, 0.0, 0.0]}),
     ("螺丝-50.prt",   {"layer": "LS", "r_min": 0.0, "r_max": 5.0, "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT", "ref": [0.0, 0.0, 0.0]}),
     ("主进胶与中心定位垫片-30.prt", {"layer": "DP", "r_min": 0.0, "r_max": 8.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT", "ref": [0.0, 0.0, 0.0]}),
@@ -92,10 +99,10 @@ STD_PART_DEFAULTS = [
 
     # ─── 零件族关键词通用规则行 ──────────────────────────────────────────
     ("主进胶", {"layer": "DP", "r_min": 0.0, "r_max": 8.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT"}),
-    ("大水口", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM"}),
-    ("点胶口", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM"}),
-    ("热咀",   {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM"}),
-    ("nozzle", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM"}),
+    ("大水口", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT"}),
+    ("点胶口", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT"}),
+    ("热咀",   {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT"}),
+    ("nozzle", {"layer": "RZ", "r_min": 0.0, "r_max": 15.0, "z_mode": "FLB_BOTTOM", "bool_mode": "PLACE_SUBTRACT"}),
     ("螺丝",   {"layer": "LS", "r_min": 0.0, "r_max": 5.0, "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
     ("screw",  {"layer": "LS", "r_min": 0.0, "r_max": 5.0, "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
     ("ls-",    {"layer": "LS", "r_min": 0.0, "r_max": 5.0, "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
@@ -104,6 +111,15 @@ STD_PART_DEFAULTS = [
     ("washer", {"layer": "DK", "r_min": 0.0, "r_max": 5.0, "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
     ("压线板", {"layer": "YXB", "z_mode": "CX_TOP"}),
 ]
+
+# ── 热咀替换时按旧件长度调整新件长度 (v2.13, 配合 nx_std_replace_runner.py) ──
+# 口径 = 用户手动做法: 头部(顶部往下 NOZZLE_KEEP_HEAD mm 这一段)不动,
+# 其余部分整体沿轴向平移, 使新件"顶部到底部"总长对齐被换掉的旧件:
+#   新件比旧件短 → 拉长; 新件比旧件长 → 缩短(平移量=两者长度差)。
+# 文件名含 NOZZLE_FAMILIES 任一关键词的标准件才算热咀; 想关掉整项功能
+# 就把 NOZZLE_FAMILIES 改成 []。
+NOZZLE_FAMILIES = ["热咀", "大水口", "点胶口", "nozzle"]
+NOZZLE_KEEP_HEAD = 30.0          # 头部保留高度 (mm, 从热咀顶部往下量)
 
 
 # =============================================================================
@@ -130,12 +146,15 @@ LAYER_DEFS = [
 
 # 各图层默认拉伸起止距离 (mm)：[起始绝对高度, 结束绝对高度]
 # 当无记忆或全新运行且不带记忆文件时，窗口②将采用此初始默认值。
+# v2.13：RZ(热咀孔)/DK(点孔) 默认 0/0 = 这一层不做(拉伸时整层跳过)，
+#       并解除与 FLB 的联动 —— 热咀的让位孔改由热咀标准件自己按
+#       “放置+减去”布尔挖出；需要恢复旧行为就改回非 0 数值。
 LAYER_START_DEFAULTS = {
     "FLB": (-40.0, -85.0),
     "JT":  (-30.0, -100.0),
     "LS":  (-40.0, -85.0),
-    "RZ":  (-72.0, -85.0),
-    "DK":  (-40.0, -43.0),
+    "RZ":  (0.0, 0.0),
+    "DK":  (0.0, 0.0),
     "DP":  (-78.2977, -85.0),
     "CX":  (-30.0, -65.0),
 }
@@ -146,12 +165,10 @@ LAYER_START_DEFAULTS = {
 # =============================================================================
 # 孔系与特征相对 FLB 分流板的联动偏移量 (mm)
 # 当用户在窗口②中调整 FLB 厚度时，以下图层自动按公式跟随更新：
-#   - RZ (热咀孔) : (FLB底面 + 此值, FLB底面) —— 热咀沉头从底面向上突出的高度
-#   - DK (点孔)   : (FLB顶面, FLB顶面 − 此值) —— 点孔/销孔自顶面向下的加工深度
 #   - DP (垫片层) : (FLB底面 + 此值, FLB底面) —— 垫片沉头台阶厚度（实测定位件）
+# v2.13：RZ(热咀孔)/DK(点孔) 已解除联动（默认 0/0 不做，改 FLB 不再带动它们），
+#       旧偏移量随之作废删除；LS 恒等于 FLB 不需要偏移量。
 LINK_OFFSETS = {
-    "RZ": 13.0,
-    "DK": 3.0,
     "DP": 6.7023,
 }
 
@@ -206,10 +223,11 @@ FEATURE_PREFIX = "CAD3D_"     # 自动化生成的特征名前缀
 COMP_PREFIX    = "CAD3D_C_"   # 标准件装配组件实例名前缀
 
 # 窗口② 主参数对话框分组逻辑定义：[(组ID, 组标题, [包含图层代码...])]
+# v2.13：RZ/DK 移出联动口径(默认 0/0 不做)，组标题同步改口径。
 DIALOG_GROUPS = [
-    ("grp_flb",   "FLB 分流板（基准体；改动两项后 LS/RZ/DK/DP/JRT 自动联动）", ["FLB"]),
+    ("grp_flb",   "FLB 分流板（基准体；改动两项后 LS/DP/JRT 自动联动）", ["FLB"]),
     ("grp_plain", "普通拉伸图层（JT 随 FLB 联动；起始=结束=0 则跳过）", ["JT", "CX"]),
-    ("grp_sub",   "拉伸并从 FLB 减去（随 FLB 联动，可单独改）", ["LS", "RZ", "DK", "DP"]),
+    ("grp_sub",   "拉伸并从 FLB 减去（LS/DP 随 FLB 联动；RZ/DK 默认 0=不做，可单独改）", ["LS", "RZ", "DK", "DP"]),
 ]
 
 

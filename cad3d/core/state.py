@@ -79,7 +79,8 @@ def jrt_with_memory(state, params):
 
 def default_params():
     """无记忆时的兜底参数: FLB 取 config 默认(-40/-85), 其余联动层按
-    联动规则从 FLB 推导(JT 按默认模式, CX 随 JT)。"""
+    联动规则从 FLB 推导(JT 按默认模式, CX 随 JT); RZ/DK 不在联动表里,
+    恒取图层默认(v2.13 起为 0/0 = 这层不做)。"""
     out = {r[0]: (float(r[3]), float(r[4])) for r in LAYER_TABLE}
     s, e = out[TARGET_CODE]
     linked = derive_linked(max(s, e), min(s, e), jt_mode=JT_LINK_DEFAULT)
@@ -116,15 +117,12 @@ def _name_list(v):
 
 
 def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
-               jt_link_mode=None, std_replace_map=None):
+               jt_link_mode=None):
     """落盘记忆(临时文件+原子替换: 中途崩溃/断电不损原记忆)。
 
     jrt_se 只存加热条起始/结束两个距离(三个几何参数永不落盘,
     打开恒 3.9/0.1/3.7); 传 None 时原样写 null(=无记忆, 按 FLB 联动)。
     jt_link_mode 存 JT 联动模式(v1.37); None 写 null(=无记忆, 回 config 默认)。
-    std_replace_map 存一键替换的"旧件文件名 → 新规格文件名"映射(v2.13,
-    只由替换脚本读写); None 时**保留旧值** —— 主脚本不传这个参数,
-    不能让它把替换脚本存的映射抹掉。
     """
     tmp = None
     try:
@@ -142,9 +140,6 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
         if not isinstance(jt_link_mode, str) \
                 and isinstance(old.get("jt_link_mode"), str):
             jt_link_mode = old["jt_link_mode"]
-        if std_replace_map is None and isinstance(old.get("std_replace_map"),
-                                                 dict):
-            std_replace_map = old["std_replace_map"]
         # 临时文件带 pid: 双 NX 实例同时保存时, 固定 .tmp 后缀会互踩后
         # os.replace 竞争(同 paths._fresh_dlx_path 的时间戳+pid 思路)
         tmp = "%s.%d.tmp" % (p, os.getpid())
@@ -160,9 +155,7 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
                     "std_parts": "各标准件的独立参数微调字典（图层、搜索半径、Z基准、布尔方式、姿态偏移）",
                     "selected": "上次在【标准件选择窗口】中勾选激活的标准件零件文件名清单",
                     "jrt_se": "加热条 (JRT) 的起止区间 [起始, 结束] (mm)",
-                    "jt_link_mode": "上次选中的假体 (JT) 联动模式（如'普通模式'或'针阀模式'）",
-                    "std_replace_map": "一键替换标准件记住的“旧件文件名 → 新规格文件名”映射"
-                                       "（只由 nx_std_replace_runner.py 读写，主脚本不用）"
+                    "jt_link_mode": "上次选中的假体 (JT) 联动模式（如'普通模式'或'针阀模式'）"
                 }
             },
             "schema": SCHEMA_VERSION,
@@ -176,8 +169,6 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
             "jt_link_mode": (jt_link_mode
                              if isinstance(jt_link_mode, str)
                              else None),
-            "std_replace_map": (dict(std_replace_map)
-                                if isinstance(std_replace_map, dict) else None)
         }
         with io.open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -185,43 +176,6 @@ def save_state(dxf_path, params, std_rules=None, selected=None, jrt_se=None,
         tmp = None
     except Exception as ex:
         _note("记忆保存失败(%s: %s)。" % (type(ex).__name__, ex))
-    finally:
-        if tmp is not None and os.path.isfile(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-
-
-def save_replace_map(mapping):
-    """只更新记忆里的“旧件 → 新规格”映射, 其余字段原样保留。
-
-    一键替换脚本专用: 它**不该**动主脚本的 params / std_parts —— 那是用户在
-    窗口②③一点点调出来的, 用替换脚本的参数整个覆盖会把人家的调参抹掉。
-    mapping 为空时写成 null(=清空)。
-    """
-    p = _json_path()
-    data = {}
-    try:
-        with io.open(p, encoding="utf-8") as f:
-            loaded = json.load(f)
-        if isinstance(loaded, dict):
-            data = loaded
-    except Exception:
-        data = {}                       # 首次运行/记忆损坏: 从空壳起步
-    if "schema" not in data:
-        data["schema"] = SCHEMA_VERSION
-    data["std_replace_map"] = (dict(mapping)
-                               if isinstance(mapping, dict) and mapping else None)
-    tmp = None
-    try:
-        tmp = "%s.%d.tmp" % (p, os.getpid())
-        with io.open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, p)
-        tmp = None
-    except Exception as ex:
-        _note("替换映射保存失败(%s: %s)。" % (type(ex).__name__, ex))
     finally:
         if tmp is not None and os.path.isfile(tmp):
             try:

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 日记入口 (v3.0)
+nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 日记入口 (v3.1)
 =============================================================================
 适用环境：Siemens NX 10 / NX 12 / NX 2312 及以上版本
 播放方式：NX 菜单 工具 → 日记 → 播放，选本文件。
@@ -13,7 +13,8 @@ nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 
 
 【第一页 = 指定替换关系】左边列出模型里当前实际存在的标准件（靠体上的
   CAD3D_TYPE 标记认，没有标记的东西一律不碰），右边挑要换成哪个规格；
-  留在“不替换”上的整件保持原样。上次选过的映射记在记忆里、下次自动回填。
+  留在“不替换”上的整件保持原样。**不记上次选过什么**，每次都从“不替换”
+  开始现选（v3.1 定案：两页都不要记忆）。
 
 【位置怎么定 —— 读体上记的锚点，全程不读图纸】
   主脚本放置时把「锚点 − 该体包围盒中心」和放置角记在**每个体**上。替换时：
@@ -24,10 +25,20 @@ nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 
   好处：不用认“哪个实体带锚点”、不用比尺寸、不用图纸，也不会再出现
   “对不上就留下没删”的遗留。
 
+【热咀长度自动对齐（v3.1）】换热咀族(大水口/点胶口/热咀/nozzle, 关键词可配)
+  时，新件放好后自动按**旧件的顶部到底部长度**调整新件长度：头部(顶部往下
+  30mm 这一段)不动，其余部分整体平移 —— 比旧件短就拉长、比旧件长就缩短，
+  与手动用“移动”命令选 30mm 以下范围对齐长度同口径。族关键词与保留高度在
+  nx_std_config.py 的 NOZZLE_FAMILIES / NOZZLE_KEEP_HEAD 配置。
+
+【第二页 = 逐件微调】要换成的规格逐件调参数。**参数也不读记忆**，每次都从
+  nx_std_config.py 出厂默认开始（Z 基准值按模型实测高度显示）。
+
 【产出】换完的件与主脚本产物同款：普通实体（已清掉建模步骤，不是提升体）。
-【记忆】读每件参数 / 上次映射；只回写“映射”这一项，不动主脚本的参数。
+【记忆】什么都不记（v3.1）：映射和参数每次都从出厂默认开始，也不回写。
 【产出判读】控制台最后一行 + logs/std_replace_report.txt:
-  REPLACE RESULT ok=True pairs=N old=X new=Y skip=S
+  REPLACE RESULT ok=True pairs=N old=X new=Y skip=S adj=A
+  (adj = 热咀长度对齐成功的处数)
 =============================================================================
 """
 
@@ -49,13 +60,16 @@ for _mod in list(sys.modules.keys()):
         del sys.modules[_mod]
 
 from cad3d.core.constants import SCRIPT_VERSION, TARGET_CODE
+from cad3d.core.guide import print_guide
 from cad3d.core.logging import Log
 from cad3d.core.paths import _logs_dir
-from cad3d.core.state import default_params, load_state, save_replace_map
+from cad3d.core.state import default_params, load_state
 from cad3d.modeling.display import _refresh_display
+from cad3d.modeling.nozzle_len import is_nozzle, make_nozzle_hook
 from cad3d.modeling.nx_compat import _anchor_of
 from cad3d.modeling.std_rules import (
     _rule_usable,
+    guess_std_rule,
     merge_std_rules,
     sanitize_std_rule,
 )
@@ -63,6 +77,7 @@ from cad3d.modeling.stdparts import (
     _batch_delete,
     _remove_parameters,
     anchors_from_offsets,
+    group_anchor_instances,
     parse_anchor_off,
     place_std_parts,
     scan_model_bodies,
@@ -121,6 +136,22 @@ def _derive_anchors(old_fname, olds, log):
     return anchors, use_idx, ""
 
 
+def _old_instance_lens(olds):
+    """(纯逻辑) 旧件体按锚点归实例 → [(实例锚点, 实例长度), ...]。
+
+    实例长度 = 该实例全部体的包围盒顶部到底部(世界 Z) —— 热咀替换
+    调长度就按这个对齐。没记录/坏记录的体不参与(与替换同口径)。
+    """
+    items = [(bb, parse_anchor_off(_anchor_of(b))) for b, bb in olds]
+    out = []
+    for anch, idxs in group_anchor_instances(items):
+        zs = [olds[k][1] for k in idxs if olds[k][1] and len(olds[k][1]) >= 6]
+        if not zs:
+            continue
+        out.append((anch, max(z[5] for z in zs) - min(z[2] for z in zs)))
+    return out
+
+
 def _measured_params(rows, log=None):
     """出厂默认参数 + 模型实测 Z 范围覆盖(给第三页显示 Z 基准用)。
 
@@ -155,7 +186,7 @@ def _do_replace(session, work_part, mapping, rules, params, log):
     import NXOpen
 
     st = {"ok": False, "pairs": 0, "old": 0, "new": 0, "skip": 0,
-          "no_anchor": 0}
+          "no_anchor": 0, "adj": 0, "adj_skip": 0}
     rows = scan_model_bodies(work_part, log)
     existing, n_nopos = _scan_existing_std(rows)
     if n_nopos:
@@ -171,7 +202,7 @@ def _do_replace(session, work_part, mapping, rules, params, log):
     if not flb_regions:
         log("【替换】没找到分流板(FLB)实体: 需要挖孔的件只会放置、不挖孔。")
 
-    to_place, anchors_override, to_delete = {}, {}, []
+    to_place, anchors_override, to_delete, old_lens = {}, {}, [], []
     for old_fname in sorted(mapping):
         new_fname = mapping[old_fname]
         olds = existing.get(old_fname) or []
@@ -198,10 +229,23 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         to_place[new_fname] = rule
         # 两个旧规格换成同一个新规格时, 锚点要合并而不是覆盖
         anchors_override.setdefault(new_fname, []).extend(anchors)
+        if is_nozzle(new_fname):
+            # 热咀: 按旧件实例长度对齐新件长度(头部不动, 其余平移)
+            lens = _old_instance_lens(olds)
+            old_lens.extend(lens)
+            if lens:
+                log("【替换】%s → %s: %d 处(从 %d 个旧件体里归出的实例数), "
+                    "位置取自体上记的锚点; 这是热咀, 放好后按旧件长度对齐。"
+                    % (old_fname, new_fname, len(anchors), len(olds)))
+            else:
+                log("【替换】%s → %s: %d 处, 位置取自体上记的锚点; 这是热咀, "
+                    "但旧件长度没量到, 这几处不做长度对齐。"
+                    % (old_fname, new_fname, len(anchors)))
+        else:
+            log("【替换】%s → %s: %d 处(从 %d 个旧件体里归出的实例数), "
+                "位置取自体上记的锚点。"
+                % (old_fname, new_fname, len(anchors), len(olds)))
         st["new"] += len(anchors)
-        log("【替换】%s → %s: %d 处(从 %d 个旧件体里归出的实例数), "
-            "位置取自体上记的锚点。"
-            % (old_fname, new_fname, len(anchors), len(olds)))
 
     if not to_place:
         log("【替换】没有可替换的对象, 结束(模型一点没动)。")
@@ -213,9 +257,17 @@ def _do_replace(session, work_part, mapping, rules, params, log):
                                "CAD3D 替换标准件")
     try:
         stats = {}
+        adj_stats = {}
+        placed_hook = None
+        if old_lens:
+            placed_hook = make_nozzle_hook(session, work_part, params,
+                                           old_lens, log, adj_stats)
         place_std_parts(session, work_part, None, flb_regions, params,
                         to_place, log, stats=stats,
-                        anchors_override=anchors_override)
+                        anchors_override=anchors_override,
+                        placed_hook=placed_hook)
+        st["adj"] = adj_stats.get("adj", 0)
+        st["adj_skip"] = adj_stats.get("skip", 0)
         # 与主脚本同款收尾: 清掉建模步骤 → 用户要的是实体, 不是提升体
         new_bodies = list((stats.get("STD") or {}).get("bodies") or [])
         _remove_parameters(session, work_part, new_bodies, log)
@@ -259,16 +311,13 @@ def replace_std_parts(dxf, params, jrt, rules, session, std_rules_all=None,
         return False
     st = _do_replace(session, work_part, mapping, rules or {},
                      params or default_params(), log)
-    log("【完成】换掉旧件 %d 个, 放上新件 %d 个, 跳过 %d 条%s。"
+    log("【完成】换掉旧件 %d 个, 放上新件 %d 个, 跳过 %d 条%s; "
+        "热咀长度对齐 %d 处(没对齐 %d 处)。"
         % (st["old"], st["new"], st["skip"],
            ("(其中 %d 条是%s)" % (st["no_anchor"], _NO_ANCHOR))
-           if st["no_anchor"] else ""))
+           if st["no_anchor"] else "",
+           st.get("adj", 0), st.get("adj_skip", 0)))
     _save_report("std_replace_report.txt", log.lines)
-    try:
-        # 只回写"映射"这一项, 不动主脚本的参数记忆
-        save_replace_map(mapping)
-    except Exception as ex:
-        log("【记忆】映射保存失败(不影响本次结果): %s" % ex)
     if st["no_anchor"] and ui is not None:
         try:
             ui.NXMessageBox.Show(
@@ -279,13 +328,17 @@ def replace_std_parts(dxf, params, jrt, rules, session, std_rules_all=None,
                 % (st["no_anchor"], _NO_ANCHOR))
         except Exception:
             pass
-    print("REPLACE RESULT ok=%s pairs=%d old=%d new=%d skip=%d"
-          % (st["ok"], st["pairs"], st["old"], st["new"], st["skip"]))
+    print("REPLACE RESULT ok=%s pairs=%d old=%d new=%d skip=%d adj=%d"
+          % (st["ok"], st["pairs"], st["old"], st["new"], st["skip"],
+             st.get("adj", 0)))
     return bool(st["ok"])
 
 
-def _pick_replace_map(work_part, rules_all, state, ui):
-    """第一页: 让用户指定"把哪些换成哪些" → {旧件: 新规格}; None = 取消。"""
+def _pick_replace_map(work_part, rules_all, ui):
+    """第一页: 让用户指定"把哪些换成哪些" → {旧件: 新规格}; None = 取消。
+
+    不读上次的映射记忆(v3.1): 每次都从"不替换"开始现选。
+    """
     import NXOpen
 
     rows = scan_model_bodies(work_part, None)
@@ -297,10 +350,7 @@ def _pick_replace_map(work_part, rules_all, state, ui):
             "请先跑一次主脚本（nx_extrude_runner.py）把件放好，再来替换。")
         return None
     old_files = sorted(existing)
-    saved_map = state.get("std_replace_map")
-    if not isinstance(saved_map, dict):
-        saved_map = {}
-    map_dlx = write_replace_map_dlx(old_files, sorted(rules_all), saved_map)
+    map_dlx = write_replace_map_dlx(old_files, sorted(rules_all))
     if not map_dlx or not os.path.isfile(map_dlx):
         ui.NXMessageBox.Show("CAD3D 替换标准件", NXOpen.NXMessageBox.DialogType.Error,
                              "替换关系窗口生成失败。")
@@ -322,6 +372,7 @@ def main():
     """两页向导: 指定替换关系 → 逐件微调 → 按体上记的锚点原位替换。"""
     import NXOpen
 
+    print_guide("nx_std_replace_runner.py")
     print("【本脚本】把模型里已放好的标准件换成你指定的另一个规格，没指定的不动。")
     session = NXOpen.Session.GetSession()
     ui = NXOpen.UI.GetUI()
@@ -340,19 +391,19 @@ def main():
                              "stdparts 目录里没找到标准件 .prt 文件。")
         return
 
-    # ─── 第一页: 指定"把哪些换成哪些"(上次的映射自动回填) ──────────────────
-    mapping = _pick_replace_map(work_part, rules_all, state, ui)
+    # ─── 第一页: 指定"把哪些换成哪些"(不读记忆, 每次从"不替换"现选) ──────
+    mapping = _pick_replace_map(work_part, rules_all, ui)
     if mapping is None:
         return                          # 取消 → 整个流程中止
     if not mapping:
         print("没指定任何替换关系, 结束(模型一点没动)。")
         return
 
-    # ─── 第三页: 逐件微调(参数读记忆) → Apply/OK 执行替换 ──────────────────
+    # ─── 第二页: 逐件微调(参数不读记忆, 恒出厂默认) → Apply/OK 执行替换 ──
     rows = scan_model_bodies(work_part, None)
     params0 = _measured_params(rows)
-    rules = {f: rules_all[f] for f in sorted(set(mapping.values()))
-             if f in rules_all}
+    rules = {f: sanitize_std_rule(guess_std_rule(f))
+             for f in sorted(set(mapping.values())) if f in rules_all}
     if not rules:
         ui.NXMessageBox.Show("CAD3D 替换标准件", NXOpen.NXMessageBox.DialogType.Error,
                              "要换成的规格在 stdparts 里找不到, 中止。")
