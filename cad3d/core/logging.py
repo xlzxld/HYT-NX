@@ -15,7 +15,7 @@ def _fmt_num(v):
     return _s
 
 
-class Log(object):
+class Log:
     """日志收集器: 逐行进 ListingWindow(NX 内)并缓存供报告。"""
     def __init__(self, session=None):
         self.lines = []

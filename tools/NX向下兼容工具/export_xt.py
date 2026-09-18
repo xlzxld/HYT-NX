@@ -9,10 +9,11 @@
 # So: copy each .prt to an ASCII staging name, export, then rename the result to
 # its Chinese name with Python (unicode safe). NX never sees a non-ASCII path
 # and never bakes a non-ASCII name into the file.
-import NXOpen
+import codecs
 import os
 import shutil
-import codecs
+
+import NXOpen
 
 _HERE = os.path.dirname(os.path.abspath(__file__))   # tools\NX向下兼容工具
 _ROOT = os.path.dirname(os.path.dirname(_HERE))      # project root
@@ -35,8 +36,8 @@ def w(msg):
 def main():
     s = NXOpen.Session.GetSession()
     V = NXOpen.ParasolidExporter.ParasolidVersionOption
-    EXISTING = getattr(NXOpen.ParasolidExporter.ExportFromOption, "ExistingPart")
-    PS_NX8 = getattr(V, "Ps240Nx80")
+    EXISTING = NXOpen.ParasolidExporter.ExportFromOption.ExistingPart
+    PS_NX8 = V.Ps240Nx80
 
     for d in (OUT, STAGE):
         if not os.path.isdir(d):

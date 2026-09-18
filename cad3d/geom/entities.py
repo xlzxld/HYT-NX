@@ -4,7 +4,7 @@
 import math
 
 
-class DXLine(object):
+class DXLine:
     __slots__ = ("p1", "p2")
     kind = "line"
 
@@ -12,8 +12,8 @@ class DXLine(object):
         self.p1, self.p2 = p1, p2
 
 
-class DXArc(object):
-    __slots__ = ("c", "r", "a0", "a1")     # 角度: 弧度, CCW a0→a1
+class DXArc:
+    __slots__ = ("a0", "a1", "c", "r")     # 角度: 弧度, CCW a0→a1
     kind = "arc"
 
     def __init__(self, c, r, a0, a1):
@@ -30,7 +30,7 @@ class DXArc(object):
                 self.c[1] + self.r * math.sin(self.a1))
 
 
-class DXCircle(object):
+class DXCircle:
     __slots__ = ("c", "r")
     kind = "circle"
 

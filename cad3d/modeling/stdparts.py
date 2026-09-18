@@ -3,18 +3,31 @@
 
 import math
 import os
-from cad3d.core.paths import stdparts_dir
+
 from cad3d.core.config import _cfg_num
 from cad3d.core.constants import (
-    COMP_PREFIX, FEATURE_PREFIX, SCRIPT_VERSION, STD_MAX_ANCHORS
+    COMP_PREFIX,
+    FEATURE_PREFIX,
+    SCRIPT_VERSION,
+    STD_MAX_ANCHORS,
 )
+from cad3d.core.paths import stdparts_dir
+from cad3d.geom.topo import collect_circle_anchors
 from cad3d.modeling.nx_compat import (
-    _iter, _bodies_of, _matrix3x3, _mark_type, _type_of, ANCHOR_ATTR, MARK_ATTR
+    ANCHOR_ATTR,
+    MARK_ATTR,
+    _bodies_of,
+    _iter,
+    _mark_type,
+    _matrix3x3,
+    _type_of,
 )
 from cad3d.modeling.purge import _CREATED_FEATURES
-from cad3d.geom.topo import collect_circle_anchors
 from cad3d.modeling.std_rules import (
-    _std_z, _rule_usable, _unusable_names, anchors_overflow
+    _rule_usable,
+    _std_z,
+    _unusable_names,
+    anchors_overflow,
 )
 
 

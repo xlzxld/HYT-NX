@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """123.dxf 开链修复验证: JRT 闭链数应从 1 → 2(合并0.24mm接缝 + 桥接25mm缺口)。"""
 import io
-import sys
+import os as _os
+import sys as _sys
 
-import os as _os, sys as _sys
 _sys.dont_write_bytecode = True
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _sys.path.insert(0, _os.path.dirname(_HERE))
 _FIXTURES = _os.path.join(_HERE, "fixtures")
-import NXOpen  # noqa: E402
-import nx_extrude_runner as m  # noqa: E402
+import NXOpen
+
+import nx_extrude_runner as m
 
 session = NXOpen.Session.GetSession()
 session.Parts.NewDisplay("t_123", NXOpen.Part.Units.Millimeters)

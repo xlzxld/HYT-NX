@@ -387,7 +387,7 @@ def selftest():
     ok('NavigationStyle' in xml and '<Option name="OK Cancel" value="0"/>' in xml,
        "dlx 导航样式")
 
-    class _P3(object):
+    class _P3:
         X, Y, Z = 1.0, 2.0, 3.5
     ok(_as_xyz(_P3()) == (1.0, 2.0, 3.5), "Point3d 形取值")
     ok(_as_xyz([4, 5, 6]) == (4.0, 5.0, 6.0), "序列形取值")
@@ -475,7 +475,7 @@ def _enum(root, paths, what):
     raise RuntimeError("找不到枚举: %s" % what)
 
 
-class PickDialog(object):
+class PickDialog:
     """单件"指定点"对话框: OK=读点返回, Cancel=中止拾点。
     (创建/回调/Launch 模式照抄主脚本 SelectionDialog, 含 Initialize/Shown
     两个处理器——上轮"初始化回调未注册"崩溃即因漏掉它们。)"""
@@ -701,7 +701,6 @@ def _hide_component(session, comp):
 def promote_copy(session, runner, part, ufs, src_path, name, pos, feat_name):
     """组件放置(Entire Part→MODEL 逐个尝试并核对副本实体数齐全)+提升。
     返回 (bodies, comp, complete)。组件壳交调用方处理(隐藏/删除)。"""
-    import NXOpen
     best = None
     for refset in ("Entire Part", "MODEL"):
         comp = _add_component(session, runner, part, src_path, name,
@@ -865,7 +864,7 @@ def write_back_one(session, ufs, runner, src_path, out_path, p,
             break
         except Exception:
             pass
-    bodies, comp, complete = promote_copy(
+    bodies, comp, _complete = promote_copy(
         session, runner, part, ufs, src_path,
         "%s%s" % (GROUP_PREFIX, stem), NXOpen.Point3d(-px, -py, -pz),
         "%s%s" % (FEAT_PREFIX, stem))
@@ -1193,7 +1192,7 @@ def main():
 
     try:
         import NXOpen
-        import NXOpen.UF  # noqa: F401
+        import NXOpen.UF
     except ImportError:
         print("本工具需要在 NX 中运行(工具→日记→播放), 或用 --selftest 做无 NX 自测。")
         return 1

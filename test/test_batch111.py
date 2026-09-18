@@ -3,18 +3,19 @@
 本脚本验 NX 侧: 五类标准件独立体到位 + 主导轴对轴(主进胶) + 螺丝贯穿 FLB +
 JRT 回归 + 两遍可重复 + 组件/特征零残留。"""
 import io
-import sys
+import os as _os
+import sys as _sys
 from collections import Counter
 
-import os as _os, sys as _sys
 _sys.dont_write_bytecode = True
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _sys.path.insert(0, _os.path.dirname(_HERE))
 _FIXTURES = _os.path.join(_HERE, "fixtures")
 
-import NXOpen  # noqa: E402
-import NXOpen.UF  # noqa: E402
-import nx_extrude_runner as m  # noqa: E402
+import NXOpen
+import NXOpen.UF
+
+import nx_extrude_runner as m
 
 session = NXOpen.Session.GetSession()
 uf = NXOpen.UF.UFSession.GetUFSession()

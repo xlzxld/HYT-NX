@@ -2,8 +2,9 @@
 """cad3d.geom.dxf_parser —— DXF 文本扫描切块与实体解析。"""
 
 import math
+
 from cad3d.core.constants import LAYER_CODES
-from cad3d.geom.entities import DXLine, DXArc, DXCircle
+from cad3d.geom.entities import DXArc, DXCircle, DXLine
 
 
 def _read_dxf_text(path):
@@ -92,7 +93,7 @@ def parse_dxf(path):
             stats["ref_layers"][layer] = stats["ref_layers"].get(layer, 0) + 1
             # 参考图层照常保留(导入 NX 但不建模)
 
-        def fnum(key):
+        def fnum(key, e=e):
             return float(e.get(key, "0") or "0")
 
         try:

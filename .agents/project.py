@@ -3,7 +3,7 @@
 
 取值来源：AGENTS.md §2（check-config 校验同源）。
 """
-__all__ = ["FMT_CHECK_CMD", "LINT_CMD", "TEST_CMD", "BUILD_CMD"]
+__all__ = ["BUILD_CMD", "FMT_CHECK_CMD", "LINT_CMD", "TEST_CMD"]
 
 FMT_CHECK_CMD = None
 LINT_CMD = None

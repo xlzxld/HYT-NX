@@ -19,23 +19,35 @@ v2.8/v2.9: 只认轮廓推断时, 删面锚点按条自身封闭轮廓辨认出�
 """
 
 import math
-from cad3d.core.constants import (
-    DEFAULT_JRT, TARGET_CODE, FEATURE_PREFIX, LAYER_CODES
-)
+
+from cad3d.core.constants import DEFAULT_JRT, FEATURE_PREFIX, LAYER_CODES, TARGET_CODE
 from cad3d.core.logging import _fmt_num
-from cad3d.modeling.nx_compat import _mark_curve, _mark_type, _bodies_of
-from cad3d.modeling.purge import _CREATED_FEATURES
-from cad3d.modeling.extrude import _sc_rule_options, extrude_curves
-from cad3d.modeling.stdparts import _pick_target, _bool_feature
-from cad3d.geom.topo import (
-    find_chains, _merge_open_chains, _merge_marker_lines, _chain_connectors,
-    _chain_outlet_mids, _contour_outlet_mids, _bbox, _fbx_anchor_points,
-    _marker_mids_for_chains, _stub_line_indices
-)
 from cad3d.geom.eval import (
-    _faces_healthy, _dome_body_ok, _blend_ok, _blend_effective, _conn_face_pick,
-    _jrt_sides, _flush_blend_allowed, _flush_start_r
+    _blend_effective,
+    _blend_ok,
+    _conn_face_pick,
+    _dome_body_ok,
+    _faces_healthy,
+    _flush_blend_allowed,
+    _flush_start_r,
+    _jrt_sides,
 )
+from cad3d.geom.topo import (
+    _bbox,
+    _chain_connectors,
+    _chain_outlet_mids,
+    _contour_outlet_mids,
+    _fbx_anchor_points,
+    _marker_mids_for_chains,
+    _merge_marker_lines,
+    _merge_open_chains,
+    _stub_line_indices,
+    find_chains,
+)
+from cad3d.modeling.extrude import _sc_rule_options, extrude_curves
+from cad3d.modeling.nx_compat import _bodies_of, _mark_curve, _mark_type
+from cad3d.modeling.purge import _CREATED_FEATURES
+from cad3d.modeling.stdparts import _bool_feature, _pick_target
 
 
 def _fmt_xy(pts):
@@ -89,7 +101,7 @@ def _edge_blend_end(work_part, uf, body, z_plane, radius, log, feat_name=None):
     if face is None:
         raise _NoEndFace("高度 %.4g 处没有端面" % z_plane)
     try:
-        before = set(f.Tag for f in body.GetFaces())
+        before = {f.Tag for f in body.GetFaces()}
     except Exception:
         before = set()
 
@@ -505,7 +517,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
 
     uf = NXOpen.UF.UFSession.GetUFSession()
     s, e = params.get(TARGET_CODE, (0.0, 0.0))
-    top, bottom = max(s, e), min(s, e)
+    bottom = min(s, e)
     offset = float(jp.get("offset", DEFAULT_JRT["offset"]))
     draft = float(jp.get("draft", DEFAULT_JRT["draft"]))
     if draft <= 1e-9:
@@ -711,7 +723,7 @@ def build_jrt(session, work_part, layers, nx_curves, flb_regions, params, jp,
 
     _set_display(session, strips, jp.get("color_strip", 186), jp.get("translucency", 50))
     model_bodies = []
-    seen = set(id(b) for b in strips)
+    seen = {id(b) for b in strips}
     for body, _b in flb_regions:
         if id(body) not in seen:
             model_bodies.append(body)

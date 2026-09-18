@@ -2,7 +2,6 @@
 """cad3d.core.paths —— 系统文件定位与动态路径管理。"""
 
 import os
-import sys
 import time
 
 # 项目根目录绝对路径锚定

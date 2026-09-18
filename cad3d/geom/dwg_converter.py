@@ -9,15 +9,16 @@
   4. 生成符合 CAD3D 解析标准的 2004 格式 ASCII DXF，并在流水线结束后 100% 安全销毁。
 """
 
-import os
 import glob
+import hashlib
+import os
+import shutil
+import subprocess
 import time
 import uuid
-import shutil
-import hashlib
-import subprocess
-from cad3d.core.paths import script_dir, _logs_dir, _get_cfg
+
 from cad3d.core.config import _cfg_bool, _cfg_int
+from cad3d.core.paths import _get_cfg, _logs_dir
 
 # DWG 转换缓存文件名前缀(供 runner 判"缓存文件不随流水线销毁")
 _CACHE_PREFIX = "_dwg_cache_"
@@ -25,7 +26,6 @@ _CACHE_PREFIX = "_dwg_cache_"
 
 class DwgConversionError(Exception):
     """DWG 转换失败异常类。"""
-    pass
 
 
 def _cache_enabled():
@@ -334,6 +334,7 @@ def convert_dwg_to_dxf(dwg_path, out_dxf=None, timeout=60, log=None):
     try:
         t0 = time.time()
         # 使用二进制流读取 stdout/stderr，彻底杜绝中文 Windows GBK 解码异常
+        # (不合并为 capture_output=True: 该参数需 Py3.7+, 保持最低版本面)
         proc = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,

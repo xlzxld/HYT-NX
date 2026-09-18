@@ -868,8 +868,7 @@ def _addtosection_introspect(nx, section, rule):
                     % (getattr(elem, "FullName", None) or "反射未取到"))
     except Exception as ex:
         bits.append("元素类型自省失败:%s" % ex)
-    for n in _GOOD.get("_notes", []):
-        bits.append(n)
+    bits.extend(_GOOD.get("_notes", []))
     try:
         mode = nx.Section.Mode.Create
         bits.append("Mode类型=%s int?=%s"
@@ -1301,7 +1300,6 @@ def probe_api(nx, session, uf):
                     united_body or body1, False, [b3], True, False, False, False)
             if isinstance(r, tuple):
                 r = r[0]
-            feats_s = list(r)
             tool_body = b3
             add("API008", "API", "CreateSubtractFeature(保件 retain_tools=True)",
                 "AVAILABLE", "工具体保留用于 API011 删面测试")
@@ -1569,7 +1567,7 @@ def probe_api(nx, session, uf):
         add("API014", "API", "UF.Modeling.AskFaceData", "SKIP", "无 UF 会话")
     elif body_m is not None:
         try:
-            f0 = list(body_m.GetFaces())[0]
+            f0 = next(iter(body_m.GetFaces()))
             d = uf.Modeling.AskFaceData(f0.Tag)
             add("API014", "API", "UF.Modeling.AskFaceData", "AVAILABLE",
                 "7元组 type=%s point=%r" % (d[0], d[1]))
@@ -1640,14 +1638,14 @@ def probe_api(nx, session, uf):
             m3.Yx, m3.Yy, m3.Yz = 0.0, 1.0, 0.0
             m3.Zx, m3.Zy, m3.Zz = 0.0, 0.0, 1.0
             try:
-                comp, _ls = ca.AddComponent(prt, "MODEL", "PROBE",
-                                            nx.Point3d(200.0, 200.0, 0.0),
-                                            m3, -1)
+                _comp, _ls = ca.AddComponent(prt, "MODEL", "PROBE",
+                                             nx.Point3d(200.0, 200.0, 0.0),
+                                             m3, -1)
                 sig = "6参"
             except TypeError:
-                comp = ca.AddComponent(prt, "MODEL", "PROBE",
-                                       nx.Point3d(200.0, 200.0, 0.0),
-                                       m3, -1, False)
+                _comp = ca.AddComponent(prt, "MODEL", "PROBE",
+                                        nx.Point3d(200.0, 200.0, 0.0),
+                                        m3, -1, False)
                 sig = "7参"
             try:      # 删除探针组件, 不留痕迹
                 for ch in list(ca.RootComponent.GetChildren()):
@@ -1843,7 +1841,7 @@ def probe_ui(nx, session):
                 "存在: %s" % (", ".join(gs) if gs else "无(主脚本已守卫降级)"))
         except Exception as ex:
             add("UI005", "UI", "TopBlock DialogSizing 成员", "SKIP", "%s" % ex)
-        for _k, d_ in dlg_by_key.items():
+        for d_ in dlg_by_key.values():
             try:
                 d_.Dispose()
             except Exception:

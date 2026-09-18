@@ -2,12 +2,19 @@
 """cad3d.modeling.std_rules —— 标准件规则匹配、规范化与发现。"""
 
 import os
-from cad3d.core.paths import stdparts_dir
+
 from cad3d.core.config import _USER_CFG, SCHEMA_VERSION
 from cad3d.core.constants import (
-    DEFAULT_STD_RULE, LAYER_CODES, LINE_ANCHOR_LAYERS, _ZMODE_DEFS,
-    BOOL_OPTS, DIR_OPTS, TARGET_CODE, STD_MAX_ANCHORS
+    _ZMODE_DEFS,
+    BOOL_OPTS,
+    DEFAULT_STD_RULE,
+    DIR_OPTS,
+    LAYER_CODES,
+    LINE_ANCHOR_LAYERS,
+    STD_MAX_ANCHORS,
+    TARGET_CODE,
 )
+from cad3d.core.paths import stdparts_dir
 
 
 def _std_z(params, rule):
@@ -73,7 +80,7 @@ def std_part_defaults(fname, table=None):
                        "z_mode": "FLB_TOP", "bool_mode": "PLACE_SUBTRACT"}),
         )
     low = fname.lower()
-    stem = low[:-4] if low.endswith('.prt') else low
+    stem = low[:-4] if low.endswith('.prt') else low   # NX10 Py3.3 无 removesuffix
     for key, over in table:
         k = key.lower()
         if k == low or k == stem or k == stem + '.prt':

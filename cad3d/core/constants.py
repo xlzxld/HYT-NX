@@ -2,8 +2,15 @@
 """cad3d.core.constants —— 工程参数表、常量与全局规则加载。"""
 
 from cad3d.core.config import (
-    _cfg, _cfg_bool, _cfg_int, _cfg_num, _note, _USER_CFG,
-    _JRT_BLEND_R, _JRT_R_STEP, _JRT_R_MIN, SCHEMA_VERSION
+    _JRT_BLEND_R,
+    _JRT_R_MIN,
+    _JRT_R_STEP,
+    _USER_CFG,
+    _cfg,
+    _cfg_bool,
+    _cfg_int,
+    _cfg_num,
+    _note,
 )
 
 # 脚本与系统版本标识

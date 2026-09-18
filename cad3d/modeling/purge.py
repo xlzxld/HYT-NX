@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """cad3d.modeling.purge —— 会话历史生成物清理与图层类别管理。"""
 
-from cad3d.core.constants import (
-    FEATURE_PREFIX, COMP_PREFIX, MANAGED_MIN, MANAGED_MAX
-)
-from cad3d.modeling.nx_compat import _iter, _is_marked, MARK_ATTR
-from cad3d.geom.eval import dxf_fingerprints, _nx_curve_fp
+from cad3d.core.constants import COMP_PREFIX, FEATURE_PREFIX, MANAGED_MAX, MANAGED_MIN
+from cad3d.geom.eval import _nx_curve_fp, dxf_fingerprints
+from cad3d.modeling.nx_compat import _is_marked, _iter
 
 _CREATED_FEATURES = []
 
@@ -36,7 +34,7 @@ def nx_purge(session, work_part, log, dxf_layers=None):
                 feats.append(f)
     except Exception as ex:
         log("【清理】读取特征列表失败: %s" % ex)
-    for f in list(_CREATED_FEATURES):               # 登记表双保险(仅本工作部件)
+    for f in _CREATED_FEATURES:               # 登记表双保险(仅本工作部件)
         try:
             if f not in feats and f.OwningPart == work_part:
                 feats.append(f)

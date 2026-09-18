@@ -3,15 +3,16 @@
 ①日志出现"配置参考点"; ②落位与自动链完全一致(同样的已知好位置);
 ③老件不带 ref 时自动链照旧。"""
 import io
-import sys
+import os as _os
+import sys as _sys
 
-import os as _os, sys as _sys
 _sys.dont_write_bytecode = True
 _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _sys.path.insert(0, _os.path.dirname(_HERE))
 _FIXTURES = _os.path.join(_HERE, "fixtures")
-import NXOpen  # noqa: E402
-import nx_extrude_runner as m  # noqa: E402
+import NXOpen
+
+import nx_extrude_runner as m
 
 session = NXOpen.Session.GetSession()
 session.Parts.NewDisplay("t_ref", NXOpen.Part.Units.Millimeters)

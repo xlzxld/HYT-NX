@@ -6,13 +6,19 @@ import json
 import os
 import time
 
-from cad3d.core.paths import _json_path
-from cad3d.core.config import _note, SCHEMA_VERSION
+from cad3d.core.config import SCHEMA_VERSION, _note
 from cad3d.core.constants import (
-    LAYER_TABLE, TARGET_CODE, LINK_RULES, JRT_FROM_TOP,
-    JT_LINK_MODES, JT_LINK_DEFAULT, _JT_LINK_FALLBACK,
-    _CX_LINK_END_OFF, DEFAULT_JRT
+    _CX_LINK_END_OFF,
+    _JT_LINK_FALLBACK,
+    DEFAULT_JRT,
+    JRT_FROM_TOP,
+    JT_LINK_DEFAULT,
+    JT_LINK_MODES,
+    LAYER_TABLE,
+    LINK_RULES,
+    TARGET_CODE,
 )
+from cad3d.core.paths import _json_path
 
 
 def _jt_link_values(top, bottom, mode):
@@ -205,6 +211,8 @@ def merge_params(state):
     return out
 
 
-def merge_jrt(state):
-    """JRT 参数: 每次固定默认(3.9/0.1/3.7), 不再读 JSON 记忆。"""
+def merge_jrt(_state):
+    """JRT 参数: 每次固定默认(3.9/0.1/3.7), 不再读 JSON 记忆。
+
+    形参保留(命名 _state 标明不用)以兼容 merge_params 式调用点。"""
     return dict(DEFAULT_JRT)

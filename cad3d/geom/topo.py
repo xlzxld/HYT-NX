@@ -3,13 +3,17 @@
 
 import math
 from collections import defaultdict
+
 from cad3d.core.constants import (
-    LOOP_TOL, LAYER_CODES, YXB_COINCIDE_TOL, YXB_TEMPLATE_LONGAXIS_DEG
+    LAYER_CODES,
+    LOOP_TOL,
+    YXB_COINCIDE_TOL,
+    YXB_TEMPLATE_LONGAXIS_DEG,
 )
 
 
 def _pkey(p, tol=LOOP_TOL):
-    return (int(round(p[0] / tol)), int(round(p[1] / tol)))
+    return (round(p[0] / tol), round(p[1] / tol))
 
 
 def _near_keys(p, tol=LOOP_TOL):
@@ -123,7 +127,7 @@ def loop_polygon(chain, segs, arc_step_deg=10.0):
             if not pts:
                 pts.append((s.c[0] + s.r * math.cos(a0), s.c[1] + s.r * math.sin(a0)))
             span = a1 - a0
-            steps = max(2, int(math.ceil(abs(span) / math.radians(arc_step_deg))))
+            steps = max(2, math.ceil(abs(span) / math.radians(arc_step_deg)))
             for k in range(1, steps + 1):
                 ang = a0 + span * k / steps
                 pts.append((s.c[0] + s.r * math.cos(ang), s.c[1] + s.r * math.sin(ang)))
@@ -481,7 +485,7 @@ def _center_seen(grid, x, y, tol=LOOP_TOL):
     (v1.35) 替代对 found 的 O(n²) 线性 any() 扫描——"空图层+全半径"配错
     时上万圆心的去重曾先行卡死, 护栏来不及救。
     """
-    kx, ky = int(round(x / tol)), int(round(y / tol))
+    kx, ky = round(x / tol), round(y / tol)
     for dx in (-1, 0, 1):
         for dy in (-1, 0, 1):
             for px, py in grid.get((kx + dx, ky + dy), ()):

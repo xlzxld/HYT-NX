@@ -21,7 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import nx_extrude_runner as R   # noqa: E402
+import nx_extrude_runner as R
 
 # 优先用真实夹具；不在就退回仓库自带的合成样例。
 DXF = os.path.join(HERE, "test", "fixtures", "3Dtest.dxf")

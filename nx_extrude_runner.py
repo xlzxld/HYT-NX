@@ -43,67 +43,39 @@ for _mod in list(sys.modules.keys()):
 # ============================================================================
 
 # 1. 核心公共 API 与系统常量
-from cad3d.core.constants import (
-    SCRIPT_VERSION, FEATURE_PREFIX, COMP_PREFIX, TARGET_CODE,
-    LOOP_TOL, CHAIN_TOL, STD_MAX_ANCHORS, DEFAULT_JRT, DEFAULT_STD_RULE
-)
+from cad3d.core.config import _CFG_NOTES, SCHEMA_VERSION
 from cad3d.core.guide import print_guide
-from cad3d.core.paths import (
-    ROOT_DIR, script_dir, stdparts_dir, resolve_dxf_path, _fresh_dlx_path
-)
-from cad3d.core.config import (
-    SCHEMA_VERSION, _CFG_NOTES
-)
 from cad3d.core.logging import (
-    Log  # noqa: F401  门面兼容符号(test/test123.py 经由本模块引用)
+    Log,  # noqa: F401  门面兼容符号(test/test123.py 经由本模块引用)
 )
+from cad3d.core.paths import _fresh_dlx_path, resolve_dxf_path, script_dir
 from cad3d.core.state import (
-    load_state, save_state, default_params, merge_params,
-    merge_jrt, jt_mode_with_memory
+    jt_mode_with_memory,
+    load_state,
+    merge_jrt,
+    merge_params,
+    save_state,
 )
-from cad3d.geom.dxf_parser import (
-    parse_dxf
-)
-from cad3d.pipeline.runner import (
-    run_pipeline, execute_pipeline
-)
-from cad3d.pipeline.batch import (
-    batch_run
-)
-from cad3d.selftest.sample_dxf import (
-    make_sample_dxf
-)
-from cad3d.selftest.suite import (
-    selftest
+from cad3d.geom.dxf_parser import parse_dxf
+from cad3d.geom.eval import _faces_healthy  # noqa: F401  门面兼容符号(同上)
+from cad3d.geom.topo import collect_circle_anchors
+from cad3d.modeling.jrt import (
+    _body_face_rows,  # noqa: F401  门面兼容符号(test/test01x.py 等外部脚本经由本模块引用)
 )
 
 # 2. 外部脚本与辅助工具兼容符号 (满足 test/*, batch_smoke 与 tools/nx_zero_ref.py)
 from cad3d.modeling.std_rules import (
-    guess_std_rule, sanitize_std_rule, _rule_usable, merge_std_rules,
-    dk_fallback_rules, dk_located_names
+    _rule_usable,
+    dk_fallback_rules,
+    dk_located_names,
+    merge_std_rules,
 )
-from cad3d.modeling.nx_compat import (
-    _is_marked, _matrix3x3
-)
-from cad3d.modeling.stdparts import (
-    _promote_body, _remove_parameters
-)
-from cad3d.modeling.jrt import (
-    _body_face_rows  # noqa: F401  门面兼容符号(test/test01x.py 等外部脚本经由本模块引用)
-)
-from cad3d.geom.eval import (
-    _faces_healthy  # noqa: F401  门面兼容符号(同上)
-)
-from cad3d.geom.topo import (
-    collect_circle_anchors
-)
-from cad3d.ui.dlx_builder import (
-    build_selection_dlx, build_dlx, write_dlx, write_std_dlx
-)
-from cad3d.ui.dialogs import (
-    SelectionDialog, ParamDialog, StdParamsDialog
-)
-
+from cad3d.pipeline.batch import batch_run
+from cad3d.pipeline.runner import execute_pipeline
+from cad3d.selftest.sample_dxf import make_sample_dxf
+from cad3d.selftest.suite import selftest
+from cad3d.ui.dialogs import ParamDialog, SelectionDialog, StdParamsDialog
+from cad3d.ui.dlx_builder import build_selection_dlx, write_dlx, write_std_dlx
 
 # ============================================================================
 # 主执行入口 (三段式交互流程编排与命令行调度)
@@ -133,7 +105,7 @@ def main():
 
     # ─── NX 运行环境校验 ──────────────────────────────────────────────────────
     try:
-        import NXOpen  # noqa: F401
+        import NXOpen
     except ImportError:
         print("本脚本需要在 Siemens NX 中运行(工具 -> 日记 -> 播放), "
               "或使用 --selftest / --make-sample-dxf 进行离线验证。")
@@ -185,7 +157,7 @@ def main():
         try:
             with io.open(sel_dlx_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(build_selection_dlx(sorted(std_rules_all), saved_sel))
-        except IOError:
+        except OSError:
             sel_dlx_path = None
 
         if not (sel_dlx_path and os.path.isfile(sel_dlx_path)):

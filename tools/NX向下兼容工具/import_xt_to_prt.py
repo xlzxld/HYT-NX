@@ -28,12 +28,13 @@
 #   - Imported bodies have no feature history (Parasolid is dumb geometry).
 #   - Python 2.7 (NX8~NX11) and Python 3 (NX1847+) compatible.
 #
+import codecs
+import os
+import shutil
+import sys
+
 import NXOpen
 import NXOpen.UF
-import os
-import sys
-import shutil
-import codecs
 
 UNITS = 1              # 1 = millimeter, 2 = inch
 OUT_DIRNAME = "x_t转prt"

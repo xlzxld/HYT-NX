@@ -4,6 +4,7 @@
 import io
 import os
 import sys
+
 from cad3d.core.paths import script_dir
 
 _CFG_NOTES = []
@@ -119,9 +120,6 @@ def _cfg_bool(key, default):
 
 
 # JRT 三参默认(配置文件可改; 永不进记忆; 类型非法回默认不崩)
-_JRT_BLEND_R = _cfg_num(getattr(_USER_CFG, "JRT_BLEND_R_DEFAULT", 3.9)
-                        if _USER_CFG else 3.9, 3.9)
-_JRT_R_STEP = _cfg_num(getattr(_USER_CFG, "JRT_R_STEP_DEFAULT", 0.1)
-                       if _USER_CFG else 0.1, 0.1)
-_JRT_R_MIN = _cfg_num(getattr(_USER_CFG, "JRT_R_MIN_DEFAULT", 3.7)
-                      if _USER_CFG else 3.7, 3.7)
+_JRT_BLEND_R = _cfg_num(_cfg("JRT_BLEND_R_DEFAULT", 3.9), 3.9)
+_JRT_R_STEP = _cfg_num(_cfg("JRT_R_STEP_DEFAULT", 0.1), 0.1)
+_JRT_R_MIN = _cfg_num(_cfg("JRT_R_MIN_DEFAULT", 3.7), 3.7)

@@ -2,15 +2,19 @@
 """cad3d.modeling.extrude —— 截面曲线生成、特征拉伸与图层建模。"""
 
 import math
-from cad3d.core.constants import (
-    LAYER_TABLE, REF_LAYER_TABLE, FEATURE_PREFIX, CHAIN_TOL,
-    MANAGED_MIN, MANAGED_MAX
-)
+
 from cad3d.core.config import _cfg_bool
+from cad3d.core.constants import (
+    CHAIN_TOL,
+    FEATURE_PREFIX,
+    LAYER_TABLE,
+    MANAGED_MAX,
+    REF_LAYER_TABLE,
+)
 from cad3d.core.logging import _fmt_num
-from cad3d.modeling.nx_compat import _mark_curve, _bodies_of, _set_expr
-from cad3d.modeling.purge import _CREATED_FEATURES
 from cad3d.geom.topo import organize_loops
+from cad3d.modeling.nx_compat import _bodies_of, _mark_curve, _set_expr
+from cad3d.modeling.purge import _CREATED_FEATURES
 
 
 def create_curves(work_part, layers, layer_map, log):

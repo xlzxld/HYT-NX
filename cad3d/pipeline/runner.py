@@ -5,22 +5,24 @@ import io
 import os
 import traceback
 
-from cad3d.core.constants import (
-    SCRIPT_VERSION, LAYER_TABLE, LAYER_CODES, TARGET_CODE, assign_layers
-)
 from cad3d.core.config import _CFG_NOTES
-from cad3d.core.paths import resolve_dxf_path, _logs_dir
-from cad3d.core.logging import Log
-from cad3d.core.state import (
-    load_state, save_state, merge_jrt
+from cad3d.core.constants import (
+    LAYER_CODES,
+    LAYER_TABLE,
+    SCRIPT_VERSION,
+    TARGET_CODE,
+    assign_layers,
 )
-from cad3d.modeling.std_rules import merge_std_rules
+from cad3d.core.logging import Log
+from cad3d.core.paths import _logs_dir, resolve_dxf_path
+from cad3d.core.state import load_state, merge_jrt, save_state
 from cad3d.geom.dxf_parser import parse_dxf
-from cad3d.modeling.purge import nx_purge, ensure_categories
-from cad3d.modeling.extrude import create_curves, build_layer
-from cad3d.modeling.stdparts import _usable_parts, place_std_parts, _remove_parameters
-from cad3d.modeling.jrt import build_jrt
 from cad3d.modeling.display import _refresh_display
+from cad3d.modeling.extrude import build_layer, create_curves
+from cad3d.modeling.jrt import build_jrt
+from cad3d.modeling.purge import ensure_categories, nx_purge
+from cad3d.modeling.std_rules import merge_std_rules
+from cad3d.modeling.stdparts import _remove_parameters, _usable_parts, place_std_parts
 
 
 def run_pipeline(dxf_path, params, session=None, work_part=None, log=None,

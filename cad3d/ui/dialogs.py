@@ -5,19 +5,37 @@ import io
 import os
 import time
 
-from cad3d.core.paths import _logs_dir, resolve_dxf_path
 from cad3d.core.config import _note
 from cad3d.core.constants import (
-    LAYER_TABLE, LAYER_CODES, DIALOG_GROUPS, JT_LINK_OPTS, JT_LINK_MODES,
-    DEFAULT_JRT, JRT_FIELDS, DEFAULT_STD_RULE, LAYER_SEL_OPTS, ZMODE_OPTS,
-    BOOL_OPTS, DIR_OPTS, LINE_ANCHOR_LAYERS
+    BOOL_OPTS,
+    DEFAULT_JRT,
+    DEFAULT_STD_RULE,
+    DIALOG_GROUPS,
+    DIR_OPTS,
+    JRT_FIELDS,
+    JT_LINK_MODES,
+    JT_LINK_OPTS,
+    LAYER_CODES,
+    LAYER_SEL_OPTS,
+    LAYER_TABLE,
+    LINE_ANCHOR_LAYERS,
+    ZMODE_OPTS,
 )
+from cad3d.core.paths import _logs_dir, resolve_dxf_path
 from cad3d.core.state import (
-    load_state, merge_params, jrt_with_memory, jt_mode_with_memory,
-    derive_linked, _jt_link_values, _cx_link_values, save_state
+    _cx_link_values,
+    _jt_link_values,
+    derive_linked,
+    jrt_with_memory,
+    jt_mode_with_memory,
+    load_state,
+    merge_params,
 )
 from cad3d.modeling.std_rules import (
-    _std_z, merge_std_rules, sanitize_std_rule, std_part_defaults
+    _std_z,
+    merge_std_rules,
+    sanitize_std_rule,
+    std_part_defaults,
 )
 from cad3d.ui.dlx_builder import _opt_index
 
@@ -34,7 +52,7 @@ def _dlg_show(dialog):
     raise AttributeError("BlockDialog 无 Launch/Show/ReplayDialog 显示方法")
 
 
-class SelectionDialog(object):
+class SelectionDialog:
     """第一段"标准件选择"对话框(每件一个复选框; 取消=中止整个流程)。"""
 
     def __init__(self, dlx_path, files, defaults):
@@ -120,7 +138,7 @@ class SelectionDialog(object):
             self.theDialog = None
 
 
-class _BlockDialogBase(object):
+class _BlockDialogBase:
     """BlockStyler 对话框公共基类: 块查找/读写辅助 + 标准件行收集。
 
     (三段式改造抽出: ParamDialog(窗口②) 与 StdParamsDialog(窗口③) 共用,
@@ -286,7 +304,7 @@ class _BlockDialogBase(object):
                          "a", encoding="utf-8") as f:
                 f.write("[%s] %s %s\n" % (stamp, type(self).__name__,
                                            "; ".join(info)))
-        except IOError:
+        except OSError:
             pass
         if log:
             log("【对话框】%s" % "; ".join(info))

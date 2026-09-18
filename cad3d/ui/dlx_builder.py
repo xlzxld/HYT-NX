@@ -2,12 +2,22 @@
 """cad3d.ui.dlx_builder —— Block UI Styler XML (.dlx) 动态拼装生成器。"""
 
 import io
-from cad3d.core.paths import _fresh_dlx_path, _temp_dlx_path
+
 from cad3d.core.constants import (
-    LAYER_TABLE, MANAGED_MIN, MANAGED_MAX, DIALOG_GROUPS,
-    JT_LINK_OPTS, DEFAULT_JRT, JRT_FIELDS, LAYER_SEL_OPTS,
-    ZMODE_OPTS, BOOL_OPTS, DIR_OPTS, LINE_ANCHOR_LAYERS
+    BOOL_OPTS,
+    DEFAULT_JRT,
+    DIALOG_GROUPS,
+    DIR_OPTS,
+    JRT_FIELDS,
+    JT_LINK_OPTS,
+    LAYER_SEL_OPTS,
+    LAYER_TABLE,
+    LINE_ANCHOR_LAYERS,
+    MANAGED_MAX,
+    MANAGED_MIN,
+    ZMODE_OPTS,
 )
+from cad3d.core.paths import _fresh_dlx_path, _temp_dlx_path
 from cad3d.core.state import default_params
 from cad3d.modeling.std_rules import _std_z
 
@@ -141,7 +151,7 @@ def _blk_label(bid, text, wrap=True):
         '<Property ClassID="UGS::UICOMP_label" group="Block Specific::" hierarchy="UGS::UICOMP_label" '
         'id="WordWrap" mask="16384" name="WordWrap" sname="WordWrap" source="1" type="logical" value="%s"/>'
         '</PropertyList></item></Property>'
-    ).format(id=bid, text=_esc(text), wrap="True" if wrap else "False")
+    ).format(id=bid, text=_esc(text), )
 
 
 def _blk_button(bid, title):

@@ -14,77 +14,156 @@ import tempfile as _tf
 import time
 import xml.etree.ElementTree as ET
 
-from cad3d.core.paths import (
-    script_dir, _fresh_dlx_path, _json_path, _temp_dlx_path, resolve_dxf_path,
-    _logs_dir
-)
-from cad3d.core.config import (
-    _CFG_NOTES, _cfg, _cfg_num, _cfg_int, _USER_CFG, SCHEMA_VERSION
-)
-from cad3d.core.constants import (
-    _LINK_OFFSETS, JRT_FROM_TOP, DEFAULT_JRT, MANAGED_MAX, STDPARTS_DIRNAME,
-    JT_LINK_DEFAULT, JRT_FIELDS, LAYER_SEL_OPTS, BOOL_OPTS, ZMODE_OPTS,
-    _ZMODE_FALLBACK, _ZMODE_DEFS, STD_MAX_ANCHORS, LAYER_CODES, DIR_OPTS,
-    LINE_ANCHOR_LAYERS, assign_layers
-)
-from cad3d.core.state import (
-    _jt_link_values, jt_mode_with_memory, _cx_link_values, derive_linked,
-    jrt_with_memory, default_params, load_state, _name_list, save_state,
-    merge_params, merge_jrt
-)
-from cad3d.core.logging import Log, _fmt_num
-from cad3d.geom.entities import DXLine, DXArc, DXCircle
-from cad3d.geom.dxf_parser import parse_dxf
-from cad3d.geom.topo import (
-    find_chains, loop_polygon, poly_area, _bbox, point_in_poly,
-    _loop_in_loop, organize_loops, _chain_tips, _cluster_tips,
-    _merge_open_chains, _center_seen, collect_circle_anchors,
-    collect_yxb_anchors, _chain_outlet_mids, _chain_connectors,
-    _contour_outlet_mids, _fbx_anchor_points, _marker_mids_for_chains,
-    _merge_marker_lines, _chain_head_tail, _reorder_group_chains,
-    _stub_line_indices
-)
-from cad3d.geom.eval import (
-    _dxf_ent_fp, dxf_fingerprints, _faces_healthy, _flush_start_r,
-    _dome_body_ok, _blend_ok, _blend_effective, _conn_face_pick, _jrt_sides,
-    _flush_blend_allowed
-)
-from cad3d.modeling.std_rules import (
-    _std_z, std_part_defaults, guess_std_rule, sanitize_std_rule, _rule_usable,
-    _unusable_names, discover_std_parts, merge_std_rules, anchors_overflow,
-    dk_fallback_rules, dk_located_names
-)
-from cad3d.modeling.stdparts import (
-    _bool_feature, _place_delta, _rot_xy, _batch_delete, _group_bool_plan,
-    scan_model_bodies, anchors_from_offsets, parse_anchor_off,
-    group_anchor_instances
-)
-from cad3d.modeling.nozzle_len import (
-    is_nozzle, pick_faces, nearest_anchor_len,
-    plane_span, calib_slope, step_for
-)
-from cad3d.core.guide import GUIDE_LINES, print_guide
-from cad3d.modeling.nx_compat import _matrix3x3
-from cad3d.modeling.mold_cut import (
-    _any_point_inside, _bbox_overlap, _body_matches_bbox, _broken_holes,
-    _extents, _grow, _hole_rows, _is_sliver, _kw_hits, _merge_face_bboxes,
-    _pair_hits, _pick_points, _rule_for
-)
-from cad3d.core.constants import (MOLD_AUDIT_VOLUME, MOLD_BBOX_TOL,
-                                  MOLD_CUT_RULES, MOLD_TRIAL_CUT)
-from cad3d.modeling.extrude import (
-    modeling_ents, build_layer, _merge_groups, _merge_note,
-    _merge_extrude_enabled
-)
-from cad3d.ui.dlx_builder import (
-    _blk_enum, build_dlx, build_selection_dlx, build_std_dlx, _group_item,
-    _blk_label, build_replace_map_dlx
-)
-from cad3d.ui.dialogs import _BlockDialogBase
-from cad3d.selftest.sample_dxf import make_sample_dxf
-
 import cad3d.core.state as _mod_state
 import cad3d.modeling.std_rules as _mod_std_rules
+from cad3d.core.config import (
+    _CFG_NOTES,
+    _USER_CFG,
+    SCHEMA_VERSION,
+    _cfg,
+    _cfg_int,
+    _cfg_num,
+)
+from cad3d.core.constants import (
+    _LINK_OFFSETS,
+    _ZMODE_DEFS,
+    _ZMODE_FALLBACK,
+    BOOL_OPTS,
+    DEFAULT_JRT,
+    DIR_OPTS,
+    JRT_FIELDS,
+    JRT_FROM_TOP,
+    JT_LINK_DEFAULT,
+    LAYER_CODES,
+    LAYER_SEL_OPTS,
+    LINE_ANCHOR_LAYERS,
+    MANAGED_MAX,
+    MOLD_AUDIT_VOLUME,
+    MOLD_BBOX_TOL,
+    MOLD_CUT_RULES,
+    MOLD_TRIAL_CUT,
+    STD_MAX_ANCHORS,
+    STDPARTS_DIRNAME,
+    ZMODE_OPTS,
+    assign_layers,
+)
+from cad3d.core.guide import GUIDE_LINES, print_guide
+from cad3d.core.logging import Log, _fmt_num
+from cad3d.core.paths import (
+    _fresh_dlx_path,
+    _logs_dir,
+    _temp_dlx_path,
+    resolve_dxf_path,
+    script_dir,
+)
+from cad3d.core.state import (
+    _cx_link_values,
+    _jt_link_values,
+    _name_list,
+    default_params,
+    derive_linked,
+    jrt_with_memory,
+    jt_mode_with_memory,
+    load_state,
+    merge_jrt,
+    merge_params,
+    save_state,
+)
+from cad3d.geom.dxf_parser import parse_dxf
+from cad3d.geom.entities import DXArc, DXCircle, DXLine
+from cad3d.geom.eval import (
+    _blend_effective,
+    _blend_ok,
+    _conn_face_pick,
+    _dxf_ent_fp,
+    _faces_healthy,
+    _flush_blend_allowed,
+    _flush_start_r,
+    _jrt_sides,
+    dxf_fingerprints,
+)
+from cad3d.geom.topo import (
+    _bbox,
+    _chain_connectors,
+    _chain_head_tail,
+    _chain_outlet_mids,
+    _contour_outlet_mids,
+    _fbx_anchor_points,
+    _marker_mids_for_chains,
+    _merge_marker_lines,
+    _merge_open_chains,
+    _reorder_group_chains,
+    _stub_line_indices,
+    collect_circle_anchors,
+    collect_yxb_anchors,
+    find_chains,
+    organize_loops,
+)
+from cad3d.modeling.extrude import (
+    _merge_extrude_enabled,
+    _merge_groups,
+    _merge_note,
+    build_layer,
+    modeling_ents,
+)
+from cad3d.modeling.mold_cut import (
+    _any_point_inside,
+    _bbox_overlap,
+    _body_matches_bbox,
+    _broken_holes,
+    _extents,
+    _grow,
+    _hole_rows,
+    _is_sliver,
+    _kw_hits,
+    _merge_face_bboxes,
+    _pair_hits,
+    _pick_points,
+    _rule_for,
+)
+from cad3d.modeling.nozzle_len import (
+    calib_slope,
+    is_nozzle,
+    nearest_anchor_len,
+    pick_faces,
+    plane_span,
+    step_for,
+)
+from cad3d.modeling.nx_compat import _matrix3x3
+from cad3d.modeling.std_rules import (
+    _rule_usable,
+    _std_z,
+    _unusable_names,
+    anchors_overflow,
+    dk_fallback_rules,
+    dk_located_names,
+    guess_std_rule,
+    merge_std_rules,
+    sanitize_std_rule,
+    std_part_defaults,
+)
+from cad3d.modeling.stdparts import (
+    _batch_delete,
+    _bool_feature,
+    _group_bool_plan,
+    _place_delta,
+    _rot_xy,
+    anchors_from_offsets,
+    group_anchor_instances,
+    parse_anchor_off,
+    scan_model_bodies,
+)
+from cad3d.selftest.sample_dxf import make_sample_dxf
+from cad3d.ui.dialogs import _BlockDialogBase
+from cad3d.ui.dlx_builder import (
+    _blk_enum,
+    _blk_label,
+    _group_item,
+    build_dlx,
+    build_replace_map_dlx,
+    build_selection_dlx,
+    build_std_dlx,
+)
 
 
 def _undefined_name_check(path):
@@ -184,7 +263,7 @@ def selftest(dxf_path=None):
              DXLine((100, 100), (0, 100)), DXLine((0, 100), (0, 0))]
     inner = [DXLine((40, 40), (60, 40)), DXLine((60, 40), (60, 60)),
              DXLine((60, 60), (40, 60)), DXLine((40, 60), (40, 40))]
-    profs, opens3, _ = organize_loops(outer + inner)
+    profs, _opens3, _ = organize_loops(outer + inner)
     check("嵌套→孔", len(profs) == 1 and len(profs[0]["holes"]) == 1,
           "profiles=%d holes=%d" % (len(profs), len(profs[0]["holes"]) if profs else -1))
 
@@ -213,13 +292,13 @@ def selftest(dxf_path=None):
 
     # 4. 圆独立轮廓 + 弧参与闭环
     arc_ring = [DXArc((50, 50), 20, 0, math.pi), DXArc((50, 50), 20, math.pi, 2 * math.pi)]
-    profs4, _o4, nc4 = organize_loops(arc_ring + [DXCircle((0, 0), 5)])
+    profs4, _o4, _nc4 = organize_loops(arc_ring + [DXCircle((0, 0), 5)])
     check("两半弧成环 + 圆轮廓", len(profs4) == 2)
 
     # 5. 合成 DXF 解析
     sample = os.path.join(_logs_dir(), "sample_layers.dxf")
     make_sample_dxf(sample)
-    layers, stats = parse_dxf(sample)
+    layers, _stats = parse_dxf(sample)
     check("合成 DXF 各层曲线数",
           len(layers.get("FLB", [])) == 8 and len(layers.get("LS", [])) == 4
           and len(layers.get("DP", [])) == 8 and len(layers.get("RZ", [])) == 2,
@@ -237,11 +316,11 @@ def selftest(dxf_path=None):
           str(mp))
 
     # 验证图层冲突智能避让
-    class _MockCurve(object):
+    class _MockCurve:
         def __init__(self, layer):
             self.Layer = layer
 
-    class _MockPart(object):
+    class _MockPart:
         def __init__(self, occupied_layers):
             self.Curves = [_MockCurve(ly) for ly in occupied_layers]
             self.Bodies = []
@@ -1433,7 +1512,7 @@ def selftest(dxf_path=None):
                           and DEFAULT_JRT["r_min"] == cfg.JRT_R_MIN_DEFAULT))
     check("配置表无重复关键词(后者永不生效)",
           cfg is None or len([k for k, _v in cfg.STD_PART_DEFAULTS])
-          == len(set(k for k, _v in cfg.STD_PART_DEFAULTS)))
+          == len({k for k, _v in cfg.STD_PART_DEFAULTS}))
 
     _disc = _mod_std_rules.discover_std_parts
     _mod_std_rules.discover_std_parts = lambda: ["垫片.prt"]
@@ -1481,7 +1560,7 @@ def selftest(dxf_path=None):
     else:
         check("3Dtest 真图链回归可用", False, "fixture 缺失: %s" % real2)
     _dp = layers.get("DP") or []
-    profs_dpx, opens_dp, _ = organize_loops(_dp)
+    profs_dpx, _opens_dp, _ = organize_loops(_dp)
     check("DP 垫片嵌套", _dp and len(profs_dpx) == 1 and len(profs_dpx[0]["holes"]) == 1,
           "DP 层缺失或解析回归" if not _dp else "")
     _flb = layers.get("FLB") or []
@@ -1723,15 +1802,14 @@ def selftest(dxf_path=None):
         except OSError:
             pass
 
-        class _FakeTop(object):
+        class _FakeTop:
             def __init__(self):
                 self.calls = 0
 
             def FindBlock(self, _bid):
                 self.calls += 1
-                return None
 
-        class _FakeDialog(object):
+        class _FakeDialog:
             def __init__(self):
                 self.TopBlock = _FakeTop()
 
@@ -1808,7 +1886,9 @@ def selftest(dxf_path=None):
 
         # 12. AutoCAD DWG 后台转换与自动销毁验证
         from cad3d.geom.dwg_converter import (
-            find_acad_executable, convert_dwg_to_dxf, DwgConversionError
+            DwgConversionError,
+            convert_dwg_to_dxf,
+            find_acad_executable,
         )
         _acad_exe, _is_core = find_acad_executable()
         check("AutoCAD 转换程序智能探测(返回元组)",

@@ -4,17 +4,14 @@
 import io
 import os
 
-from cad3d.core.constants import FEATURE_PREFIX
 from cad3d.core.config import SCHEMA_VERSION
-from cad3d.core.paths import _logs_dir, resolve_dxf_path
+from cad3d.core.constants import FEATURE_PREFIX
 from cad3d.core.logging import Log
-from cad3d.core.state import (
-    load_state, merge_params, merge_jrt
-)
-from cad3d.modeling.std_rules import merge_std_rules, sanitize_std_rule
-from cad3d.modeling.nx_compat import _iter
-from cad3d.modeling.std_rules import _rule_usable
+from cad3d.core.paths import _logs_dir, resolve_dxf_path
+from cad3d.core.state import load_state, merge_jrt, merge_params
 from cad3d.modeling.display import _refresh_display
+from cad3d.modeling.nx_compat import _iter
+from cad3d.modeling.std_rules import _rule_usable, merge_std_rules, sanitize_std_rule
 from cad3d.pipeline.runner import run_pipeline
 
 
@@ -50,7 +47,7 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
         if saved_sel is not None and not isinstance(saved_sel, (list, tuple)):
             saved_sel = None
         if saved_sel is not None:
-            keep = set(str(f) for f in saved_sel)
+            keep = {str(f) for f in saved_sel}
             std_rules = {f: r for f, r in std_rules.items() if f in keep}
         else:
             std_rules = {f: r for f, r in std_rules.items()
@@ -62,10 +59,10 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
     log = Log(session)
     log("【批量】图纸: %s" % dxf)
     # 配置提示由 run_pipeline 统一输出一次(曾在这里和 runner 里各打一遍)
-    ok1, stats1 = run_pipeline(dxf, params, session=session, work_part=work_part,
-                               log=log, std_rules=std_rules, jrt=jrt)
-    ok2, stats2 = run_pipeline(dxf, params, session=session, work_part=work_part,
-                               log=log, std_rules=std_rules, jrt=jrt)
+    ok1, _stats1 = run_pipeline(dxf, params, session=session, work_part=work_part,
+                                log=log, std_rules=std_rules, jrt=jrt)
+    ok2, _stats2 = run_pipeline(dxf, params, session=session, work_part=work_part,
+                                log=log, std_rules=std_rules, jrt=jrt)
     _refresh_display(session, work_part, log)
     feats = 0
     try:
@@ -79,6 +76,6 @@ def batch_run(dxf_arg=None, params_override=None, std_override=None,
         with io.open(os.path.join(_logs_dir(), "nx_extrude_report.txt"),
                      "w", encoding="utf-8") as f:
             f.write("\n".join(log.lines))
-    except IOError:
+    except OSError:
         pass
     print("BATCH RESULT run1=%s run2=%s features=%d" % (ok1, ok2, feats))
