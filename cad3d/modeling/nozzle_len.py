@@ -26,6 +26,12 @@ from cad3d.core.constants import (
 
 _EQUAL_NOTE = "新旧等长"
 
+# 移面对齐的收敛控制(2026-09-18 加): 移完一次先复测, 还有残差就再移 —— NX 如何
+# 延伸相邻面、个别面没跟上, 都可能让一次移面差那么一点点。迭代几轮收到 _LEN_TOL
+# 以内, 治用户反馈的"移面之后长度总有一些差距"。
+_MAX_ROUNDS = 3
+_LEN_TOL = 0.05
+
 
 def is_nozzle(fname, families=None):
     """(纯逻辑) 文件名含热咀族任一关键词 → True。族表默认取 config。"""
@@ -73,25 +79,51 @@ def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None):
     return shift, cut, ""
 
 
-def pick_faces(face_boxes, cut, axis_sign, tol=0.01):
-    """(纯逻辑) 挑出要跟着平移的面下标: **整块**都落在头部带以下的那些。
+def pick_faces(face_boxes, cut, axis_sign, tol=0.01, flat_tol=0.1,
+               flat_only=True):
+    """(纯逻辑) 挑出要跟着平移的面下标 —— 两道闸都要过。
 
-    face_boxes: [(xmin, ymin, zmin, xmax, ymax, zmax), ...] 每个面一个。
-    "整块在带以下" = 面的 Z 高端 ≤ cut(头在顶) / Z 低端 ≥ cut(头在底):
-      · 完全在带以下的体, 它的面(含侧面)全部入选 → 随头部一起动;
-      · 头底那圈端面(zmax≈cut)也入选 → 头体被拉伸着贴上去, 不留缝;
-      · 跨越头部带的侧面(比如整根圆柱的外圆面)不入选 —— 沿轴向平移它没有意义。
+    ① **整块**落在头部带以下: 面的 Z 高端 ≤ cut(头在顶) / 低端 ≥ cut(头在底);
+    ② **是"水平面"**: 面的包围盒 Z 跨度 ≤ flat_tol —— 也就是朝上/朝下的底面、
+       台阶面, 它们垂直于平移方向, 移它们才是有意义的几何操作。
+
+    ⚠️ 侧面(圆柱外圆、侧壁)一律**不选**。沿轴向平移一个侧壁本身没有几何意义,
+    NX 要么拒绝要么给出不干净的几何 —— **这正是"长度总差那么一点"的根因**。
+    侧壁交给 NX 自己"延伸相邻面"补上, 与手动做法完全一致: 用户 2026-09-18
+    录制的日记里, 一次只选了 **4 块面**(来自 2 个体), 全是朝上/朝下的面,
+    侧壁一块都没选。
+
+    flat_only=False 时跳过闸②(留给"一个水平面都没有"的极端形状保底)。
     """
     out = []
     for i, b in enumerate(face_boxes or []):
         if not b or len(b) < 6:
             continue
+        z_lo, z_hi = float(b[2]), float(b[5])
+        if flat_only and (z_hi - z_lo) > flat_tol:
+            continue
         if axis_sign >= 0:
-            if float(b[5]) <= cut + tol:
+            if z_hi <= cut + tol:
                 out.append(i)
-        elif float(b[2]) >= cut - tol:
+        elif z_lo >= cut - tol:
             out.append(i)
     return out
+
+
+def next_step(old_len, cur_len, axis_sign, tol=None):
+    """(纯逻辑) 复测出来的残差 → 这一轮该沿世界 Z 移多少; 已经够准就返回 0。
+
+    头在顶端(+Z 插入)时"往下移 = 变长", 所以移量 = -(还差的长); 头在底端
+    (-Z 翻转)反过来。符号搞反会越移越远, 所以单独抽出来测。
+    """
+    tol = _LEN_TOL if tol is None else float(tol)
+    try:
+        need = float(old_len) - float(cur_len)      # 正 = 还要再变长
+    except (TypeError, ValueError):
+        return 0.0
+    if abs(need) <= tol:
+        return 0.0
+    return -need if axis_sign >= 0 else need
 
 
 def nearest_anchor_len(anchor, old_lens, tol=0.05):
@@ -287,35 +319,50 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             if not note.startswith(_EQUAL_NOTE):
                 adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
+        new_len0 = _len_of(bboxes)
 
-        # 收集体上"整块在头部带以下"的面
-        pairs = []
-        for t in tools:
-            pairs.extend(_face_boxes(uf, t))
-        idxs = pick_faces([bb for _f, bb in pairs], cut, axis_sign)
-        faces = [pairs[i][0] for i in idxs]
-        if not faces:
-            log("【长度对齐】%s 第 %d 处: 头部带以下没有可移的面(旧件长 %.4g, "
-                "新件长 %.4g), 这处保持原长。" % (fname, idx, old_len,
-                                             _len_of(bboxes)))
-            adj_stats["skip"] = adj_stats.get("skip", 0) + 1
-            return tools
+        # 移面 → 复测 → 还有残差就再移(最多 _MAX_ROUNDS 轮)。一轮移不干净的原因
+        # 不少(NX 延伸相邻面的行为、个别面没跟上), 迭代几轮就收敛了。
+        moved = 0
+        cur = new_len0
+        for _r in range(_MAX_ROUNDS):
+            if cur is None:
+                break
+            step = next_step(old_len, cur, axis_sign)
+            if step == 0.0:
+                break
+            pairs = []
+            for t in tools:                          # 每轮重取: 移面后几何与面都变了
+                pairs.extend(_face_boxes(uf, t))
+            idxs = pick_faces([bb for _f, bb in pairs], cut, axis_sign)
+            if not idxs:
+                # 极端形状(一个朝上/朝下的面都没有) → 退回宽口径, 至少能动
+                idxs = pick_faces([bb for _f, bb in pairs], cut, axis_sign,
+                                  flat_only=False)
+            faces = [pairs[i][0] for i in idxs]
+            if not faces:
+                log("【长度对齐】%s 第 %d 处: 头部带以下没有可移的面(旧件长 %.4g, "
+                    "新件长 %.4g), 这处保持原长。" % (fname, idx, old_len, cur))
+                adj_stats["skip"] = adj_stats.get("skip", 0) + 1
+                return tools
+            if not _move_faces_z(work_part, session, faces, step, log):
+                adj_stats["skip"] = adj_stats.get("skip", 0) + 1
+                return tools
+            moved += len(faces)
+            cur = _len_of([_body_bbox(uf, t) for t in tools])
 
-        if not _move_faces_z(work_part, session, faces, shift, log):
-            adj_stats["skip"] = adj_stats.get("skip", 0) + 1
-            return tools
-        now = _len_of([_body_bbox(uf, t) for t in tools])
-        if now is None or abs(now - old_len) > max(0.05, abs(shift) * 0.02):
-            log("【长度对齐】%s 第 %d 处: 移面后长 %.4g ≠ 旧件 %.4g, 已留下改动"
-                "供你核对(体没换, 只动了几块面)。"
-                % (fname, idx, now if now is not None else float("nan"), old_len))
+        if cur is None or abs(cur - old_len) > _LEN_TOL:
+            log("【长度对齐】%s 第 %d 处: 移面后长 %.4g ≠ 旧件 %.4g(还差 %.4g), "
+                "已留下改动供你核对(体没换, 只动了几块面)。"
+                % (fname, idx, cur if cur is not None else float("nan"),
+                   old_len, (cur - old_len) if cur is not None else float("nan")))
             adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
         adj_stats["adj"] = adj_stats.get("adj", 0) + 1
         log("【长度对齐】%s 第 %d 处: 旧件长 %.4g, 新件原长 %.4g(新件 %d 个体)"
-            " → 移面 %.4g mm 对齐(头部 %.4g mm 一段不动, 动了 %d 块面)。"
-            % (fname, idx, old_len, now - shift, len(tools), -shift,
-               NOZZLE_KEEP_HEAD, len(faces)))
+            " → 净拉长 %.4g mm 对齐(头部 %.4g mm 一段不动, 动了 %d 块面)。"
+            % (fname, idx, old_len, new_len0, len(tools), old_len - new_len0,
+               NOZZLE_KEEP_HEAD, moved))
         return tools
 
     return hook

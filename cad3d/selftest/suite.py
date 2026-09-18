@@ -60,7 +60,7 @@ from cad3d.modeling.stdparts import (
     group_anchor_instances
 )
 from cad3d.modeling.nozzle_len import (
-    is_nozzle, plan_shift, pick_faces, nearest_anchor_len
+    is_nozzle, plan_shift, pick_faces, next_step, nearest_anchor_len
 )
 from cad3d.core.guide import GUIDE_LINES, print_guide
 from cad3d.modeling.nx_compat import _matrix3x3
@@ -550,19 +550,32 @@ def selftest(dxf_path=None):
     _nsh8, _cut8, _nt8 = plan_shift(60.0, [_nz_head, _nz_tip, None], 1)
     check("长度对齐: 包围盒读不到 → 不调", _nsh8 is None and "包围盒" in _nt8)
 
-    # 选面: 整块面都在头部带以下才动; 跨带的侧面不动(否则平移圆柱侧面没意义)
-    _fb = [(0.0, 0.0, -100.0, 8.0, 8.0, -100.0),    # 咀尖底面
-           (0.0, 0.0, -100.0, 8.0, 8.0, -61.0),     # 咀尖侧面(整块在带下)
-           (0.0, 0.0, -60.0, 10.0, 10.0, -60.0),    # 头部底面(恰在分界)
+    # 选面: 只要"水平面"(朝上/朝下): 移它才有几何意义; 侧壁一律不选 —— 沿轴向
+    # 平移侧壁 NX 给不出干净几何, 长度也就对不准(用户反馈"总有一些差距"的根因)。
+    # 侧壁交给 NX 自己延伸, 与用户录制日记里"只手选 4 块朝上/朝下的面"一致。
+    _fb = [(0.0, 0.0, -100.0, 8.0, 8.0, -100.0),    # 咀尖底面(水平)
+           (0.0, 0.0, -100.0, 8.0, 8.0, -61.0),     # 咀尖侧面(整块在带下→仍不选)
+           (0.0, 0.0, -60.0, 10.0, 10.0, -60.0),    # 头部底面(恰在分界, 水平)
            (0.0, 0.0, -60.0, 10.0, 10.0, -30.0)]    # 头部侧面(跨带→不动)
-    check("选面: 头部带以下的面全要, 跨带的侧面不要",
-          pick_faces(_fb, -60.0, 1) == [0, 1, 2], str(pick_faces(_fb, -60.0, 1)))
+    check("选面: 只要带以下的水平面(底面入选, 侧面不选)",
+          pick_faces(_fb, -60.0, 1) == [0, 2], str(pick_faces(_fb, -60.0, 1)))
+    check("选面: 宽口径保底(一个水平面都没有时退回带以下的面)",
+          pick_faces(_fb, -60.0, 1, flat_only=False) == [0, 1, 2])
     check("选面: -Z 翻转按底带判(Z 低端在界以上的才动)",
           pick_faces([(0.0, 0.0, -70.0, 1.0, 1.0, -70.0),
                       (0.0, 0.0, -100.0, 1.0, 1.0, -60.0)], -70.0, -1) == [0])
     check("选面: 空/坏输入安全",
           pick_faces([], -60.0, 1) == [] and pick_faces(None, -60.0, 1) == []
           and pick_faces([None], -60.0, 1) == [])
+    # 迭代步长(移面 → 复测 → 再移): 返回的是**带符号的移面量**(往下为负),
+    # 符号错会越移越远, 单独测。头在顶时"往下移 = 变长" ⇒ 短了给负、长了给正。
+    check("移面步长: 头在顶, 短了往下移(负)/ 长了往上移(正)",
+          next_step(100.0, 80.0, 1) == -20.0 and next_step(100.0, 120.0, 1) == 20.0)
+    check("移面步长: -Z 翻转(头在底)时符号相反",
+          next_step(100.0, 80.0, -1) == 20.0 and next_step(100.0, 120.0, -1) == -20.0)
+    check("移面步长: 够准/坏输入都返回 0(停止迭代)",
+          next_step(100.0, 100.03, 1) == 0.0 and next_step(None, 80.0, 1) == 0.0
+          and next_step(100.0, None, 1) == 0.0)
     check("长度对齐: 按锚点找旧件长度(容差内命中/miss回None)",
           nearest_anchor_len((100.0, 50.0, -85.0),
                              [((100.0, 50.0, -85.0, 0.0), 60.0)]) == 60.0
