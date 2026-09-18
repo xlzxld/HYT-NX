@@ -244,9 +244,12 @@ def _do_replace(session, work_part, mapping, rules, params, log):
             lens = _old_instance_lens(olds)
             old_lens.extend((a, L) for a, L, _d in lens)
             # 逐实例打明细: 长度是"该实例所有体的世界 Z 最高减最低", 打出体数与
-            # Z 范围, 量得准不准一眼能对上(用户 2026-09-18 反馈)
+            # Z 范围, 量得准不准一眼能对上; 锚点坐标也打出来 —— 它就是主脚本
+            # 放置时记下的那个定位点(图纸圆心), 拿它跟模型里的实际位置对一下就
+            # 知道锚点有没有漂(用户 2026-09-18 反馈"Z 轴偏移"要的就是这个证据)
             for _k, (_a, _L, _d) in enumerate(lens, 1):
-                log("【替换】  旧件实例 %d: %s → 长 %.4g" % (_k, _d, _L))
+                log("【替换】  旧件实例 %d: %s → 长 %.4g; 锚点 (%.3f, %.3f, %.3f)"
+                    % (_k, _d, _L, _a[0], _a[1], _a[2]))
             if lens:
                 log("【替换】%s → %s: %d 处(从 %d 个旧件体里归出的实例数), "
                     "位置取自体上记的锚点; 这是热咀, 放好后按旧件长度对齐。"
@@ -386,7 +389,8 @@ def main():
     """两页向导: 指定替换关系 → 逐件微调 → 按体上记的锚点原位替换。"""
     import NXOpen
 
-    print_guide("nx_std_replace_runner.py", NXOpen.Session.GetSession())
+    print_guide("nx_std_replace_runner.py", NXOpen.Session.GetSession(),
+                NXOpen.UI.GetUI())
     print("【本脚本】把模型里已放好的标准件换成你指定的另一个规格，没指定的不动。")
     session = NXOpen.Session.GetSession()
     ui = NXOpen.UI.GetUI()

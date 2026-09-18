@@ -139,7 +139,8 @@ def main():
               "或使用 --selftest / --make-sample-dxf 进行离线验证。")
         return
 
-    print_guide("nx_extrude_runner.py", NXOpen.Session.GetSession())
+    print_guide("nx_extrude_runner.py", NXOpen.Session.GetSession(),
+                NXOpen.UI.GetUI())
     print("【本脚本】选图纸、定各层高度、放标准件、建分流板模型，一条龙。")
 
     if "--batch" in argv:

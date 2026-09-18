@@ -12,12 +12,15 @@ GUIDE_LINES = (
 )
 
 
-def print_guide(current=None, session=None):
-    """打印三个脚本分别是干啥的; current 传本脚本文件名, 会加"← 本次"标记。
+def print_guide(current=None, session=None, ui=None):
+    """提示本脚本是干啥的。
 
-    ⚠️ session 一定要传: NX GUI 里播放日记时 **stdout 根本看不见**(没有控制台),
-    只 print 等于没提示 —— 所以同样内容还要写进 NX 信息窗口(ListingWindow),
-    那里才是用户看得见的地方(v3.2 用户反馈"中文提示没生效"后的修法)。
+    - 控制台: 打印三个脚本的完整清单(命令行 / run_journal 场景看得见);
+    - ui: 弹一个**小**提示窗, **只说本脚本**的那一句 —— 用户 2026-09-18 定案:
+      "只要弹出一个小窗口即可, 现在的太大了, 哪个脚本就写哪个脚本的提示,
+      不要一股脑全写上"。
+    - session: 只在**没有 ui** 时兜底写 NX 信息窗口(stdout 在 NX GUI 里看不见);
+      有弹窗就不往信息窗口灌那三行了(嫌大)。
     """
     lines = ["【三个脚本分别是干啥的】"]
     for name, desc in GUIDE_LINES:
@@ -25,10 +28,27 @@ def print_guide(current=None, session=None):
         lines.append("  %s — %s%s" % (name, desc, mark))
     for ln in lines:
         print(ln)
-    if session is not None:
+    if ui is not None:
+        show_guide(ui, current)
+    elif session is not None:
         try:
             session.ListingWindow.Open()
             for ln in lines:
                 session.ListingWindow.WriteLine(ln)
         except Exception:
             pass
+
+
+def show_guide(ui, current):
+    """弹小提示窗: 只说 current 这个脚本是干啥的(一行, 不列其他脚本)。"""
+    for name, desc in GUIDE_LINES:
+        if name != current:
+            continue
+        try:
+            import NXOpen
+            ui.NXMessageBox.Show("CAD3D · 本脚本",
+                                 NXOpen.NXMessageBox.DialogType.Information,
+                                 "%s\n\n%s" % (name, desc))
+        except Exception:
+            pass
+        return
