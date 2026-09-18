@@ -40,10 +40,13 @@ def is_nozzle(fname, families=None):
     return any(str(k).lower() in low for k in (fams or []))
 
 
-def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None):
+def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None, span=None):
     """(纯逻辑) 旧件长度 + 新件各体世界包围盒 + 头端朝向 → 移面量与分界高度。
 
     axis_sign: +1 = 头在顶端(+Z 插入), -1 = 头在底端(-Z 翻转插入)。
+    span: (top, bot) —— 按 plane_span 量出来的"主平面口径"顶/底(用户 2026-09-18
+      定案: 小凸起不算)。传了就用它算新件长度与分界高度; 不传就从 bboxes 取
+      (旧行为)。**旧件长度必须是同一个口径量出来的**, 否则两边口径不同, 白对齐。
     返回 (shift, cut, note):
       shift = None → 不用/不能调(note 说原因);
       否则 shift = 沿世界 Z 要移动的量(mm), cut = 头部带的分界高度 ——
@@ -68,8 +71,11 @@ def plan_shift(old_len, bboxes, axis_sign, keep_head=None, tol=None):
                      float(b[3]), float(b[4]), float(b[5])))
     if not vals:
         return None, None, "新件没有实体, 不调长度"
-    top = max(b[5] for b in vals)
-    bot = min(b[2] for b in vals)
+    if span is not None and span[0] is not None and span[1] is not None:
+        top, bot = float(span[0]), float(span[1])
+    else:
+        top = max(b[5] for b in vals)
+        bot = min(b[2] for b in vals)
     new_len = top - bot
     shift = (1.0 if axis_sign >= 0 else -1.0) * (new_len - old_len)
     cut = (top - keep_head) if axis_sign >= 0 else (bot + keep_head)
@@ -142,22 +148,84 @@ def nearest_anchor_len(anchor, old_lens, tol=0.05):
     return None
 
 
-def _face_boxes(uf, tool):
-    """一个体的全部面 → [(面对象, 面包围盒6), ...](读不到的跳过)。"""
+def plane_span(rows, bbox=None):
+    """(纯逻辑) 按**主平面口径**量顶/底 —— 用户 2026-09-18 定案。
+
+      top = 法向朝上(+Z)的**平面**里 z 最高的那个;
+      bot = 法向朝下(-Z)的**平面**里 z 最低的那个。
+
+    为什么不用纯包围盒: 有的件顶上带个小凸起 —— 点胶口-18 顶部就有个 0.2043 的
+    **曲面**台阶, 包围盒会把它算进去(得 96.1716), 而工程上认的是主体长度
+    (95.9673)。凸起是曲面、不是平面, 用"平面"筛就天然排除了。
+    实测三个件都吻合: 点胶口-18 → 95.9673 / 点胶口-25 → 124.6575 /
+    大水口-25 → 118.0000。
+
+    一侧找不到平面就那一侧退回包围盒(件顶端是锥面/球面时); 都没有就纯包围盒,
+    与旧行为一致。返回 (top, bot, how) —— how 是口径说明, 进日志用。
+
+    rows: [(包围盒6, 法向_z, 是否平面, 面对象), ...] 每个面一条(见 read_face_rows)。
+    """
+    rows = rows or []
+    bbox = bbox if (bbox and len(bbox) >= 6) else None
+    tops, bots = [], []
+    for r in rows:
+        try:
+            bb, nz, flat = r[0], float(r[1]), bool(r[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not (flat and bb and len(bb) >= 6):
+            continue
+        if nz > 0.999:
+            tops.append(float(bb[5]))
+        elif nz < -0.999:
+            bots.append(float(bb[2]))
+    top = max(tops) if tops else (float(bbox[5]) if bbox else None)
+    bot = min(bots) if bots else (float(bbox[2]) if bbox else None)
+    if top is None or bot is None:
+        return None, None, "量不到"
+    if tops and bots:
+        how = "主体平面"
+    elif tops or bots:
+        how = "一侧平面/一侧包围盒"
+    else:
+        how = "包围盒(件上没有朝上/朝下的平面)"
+    return top, bot, how
+
+
+def read_face_rows(uf, bodies):
+    """(NX 薄壳) 一组体的全部面 → [(包围盒6, 法向_z, 是否平面, 面对象), ...]。
+
+    法向_z 取面法向的 Z 分量; 是否平面按 UF 面数据的半径≈0 判(与
+    _find_flat_face 同口径)。读不到的面跳过。
+    """
     from cad3d.modeling.jrt import _uf_face_data
     out = []
-    try:
-        faces = list(tool.GetFaces())
-    except Exception:
-        return out
-    for f in faces:
+    for b in bodies or []:
         try:
-            bb = _uf_face_data(uf, f)[3]
-            if bb and len(bb) >= 6:
-                out.append((f, bb))
+            faces = list(b.GetFaces())
         except Exception:
             continue
+        for f in faces:
+            try:
+                d = _uf_face_data(uf, f)
+                bb = d[3]
+                if not bb or len(bb) < 6:
+                    continue
+                out.append((tuple(float(v) for v in bb[:6]),
+                            float(d[2][2]), float(d[4]) < 1e-9, f))
+            except Exception:
+                continue
     return out
+
+
+def _union_bbox(bboxes):
+    """多个包围盒 → 合并的大盒; 全空返回 None。"""
+    vals = [b for b in (bboxes or []) if b and len(b) >= 6]
+    if not vals:
+        return None
+    return (min(b[0] for b in vals), min(b[1] for b in vals),
+            min(b[2] for b in vals), max(b[3] for b in vals),
+            max(b[4] for b in vals), max(b[5] for b in vals))
 
 
 def _move_faces_z(work_part, session, faces, shift, log):
@@ -312,21 +380,23 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             return tools
         old_len = nearest_anchor_len(anch, old_lens)
         bboxes = [_body_bbox(uf, t) for t in tools]
+        # 长度按"主平面口径"量(用户 2026-09-18 定案): 顶 = 朝上的平面里最高的,
+        # 底 = 朝下的平面里最低的 —— 顶上的小凸起是曲面, 天然落不进"平面"
+        rows = read_face_rows(uf, tools)
+        top0, bot0, how = plane_span(rows, _union_bbox(bboxes))
+        span0 = (top0, bot0) if top0 is not None and bot0 is not None else None
+        new_len0 = (top0 - bot0) if span0 else _len_of(bboxes)
         axis_sign = -1.0 if rule.get("dir") == "-Z" else 1.0
-        shift, cut, note = plan_shift(old_len, bboxes, axis_sign)
+        shift, cut, note = plan_shift(old_len, bboxes, axis_sign, span=span0)
         if shift is None:
             log("【长度对齐】%s 第 %d 处: %s。" % (fname, idx, note))
             if not note.startswith(_EQUAL_NOTE):
                 adj_stats["skip"] = adj_stats.get("skip", 0) + 1
             return tools
-        new_len0 = _len_of(bboxes)
-        # 逐根打"这一根是怎么量出来的": 每个体自己的 Z 范围 + 合出来的总长。
-        # 每根热咀长度都可能不同, 长度对不上时先看这行就知道是哪个体不对
-        log("【长度对齐】%s 第 %d 处: 新件 %d 个体, Z=%s → 总长 %.4g"
-            % (fname, idx, len(tools),
-               " / ".join("%.4g~%.4g" % (b[2], b[5])
-                          for b in bboxes if b and len(b) >= 6),
-               new_len0 if new_len0 is not None else float("nan")))
+        # 逐根打"这一根是怎么量出来的": 口径 + 顶底 + 合出来的总长。每根热咀
+        # 长度都可能不同, 对不上时先看这行就知道是量错了还是几何不对
+        log("【长度对齐】%s 第 %d 处: 新件 %d 个体, 按%s量 Z %.4g~%.4g → 长 %.4g"
+            % (fname, idx, len(tools), how, bot0, top0, new_len0))
 
         # 移面 → 复测 → 还有残差就再移(最多 _MAX_ROUNDS 轮)。一轮移不干净的原因
         # 不少(NX 延伸相邻面的行为、个别面没跟上), 迭代几轮就收敛了。
@@ -338,15 +408,13 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
             step = next_step(old_len, cur, axis_sign)
             if step == 0.0:
                 break
-            pairs = []
-            for t in tools:                          # 每轮重取: 移面后几何与面都变了
-                pairs.extend(_face_boxes(uf, t))
-            idxs = pick_faces([bb for _f, bb in pairs], cut, axis_sign)
+            rows = read_face_rows(uf, tools)     # 每轮重取: 移面后几何与面都变了
+            idxs = pick_faces([r[0] for r in rows], cut, axis_sign)
             if not idxs:
                 # 极端形状(一个朝上/朝下的面都没有) → 退回宽口径, 至少能动
-                idxs = pick_faces([bb for _f, bb in pairs], cut, axis_sign,
+                idxs = pick_faces([r[0] for r in rows], cut, axis_sign,
                                   flat_only=False)
-            faces = [pairs[i][0] for i in idxs]
+            faces = [rows[i][3] for i in idxs]
             if not faces:
                 log("【长度对齐】%s 第 %d 处: 头部带以下没有可移的面(旧件长 %.4g, "
                     "新件长 %.4g), 这处保持原长。" % (fname, idx, old_len, cur))
@@ -356,7 +424,11 @@ def make_nozzle_hook(session, work_part, old_lens, log, adj_stats=None):
                 adj_stats["skip"] = adj_stats.get("skip", 0) + 1
                 return tools
             moved += len(faces)
-            cur = _len_of([_body_bbox(uf, t) for t in tools])
+            _bb2 = [_body_bbox(uf, t) for t in tools]
+            _t2, _b2, _h2 = plane_span(read_face_rows(uf, tools),
+                                       _union_bbox(_bb2))
+            cur = (_t2 - _b2) if (_t2 is not None and _b2 is not None) \
+                else _len_of(_bb2)
 
         if cur is None or abs(cur - old_len) > _LEN_TOL:
             log("【长度对齐】%s 第 %d 处: 移面后长 %.4g ≠ 旧件 %.4g(还差 %.4g), "

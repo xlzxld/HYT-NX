@@ -141,24 +141,58 @@ def _derive_anchors(old_fname, olds, log):
     return anchors, use_idx, ""
 
 
-def _old_instance_lens(olds):
+def _old_instance_lens(olds, spans=None):
     """(纯逻辑) 旧件体按锚点归实例 → [(实例锚点, 实例长度, 明细), ...]。
 
-    实例长度 = 该实例**全部体**的包围盒顶部到底部(世界 Z) —— 热咀替换调长度
-    就按这个对齐。明细("几个体, Z 从哪到哪")是给人核对的诊断串, 替换日志会
-    逐条打出来 —— 长度量得对不对一眼能对上(2026-09-18 用户问"你怎么量的")。
+    实例长度 = 该实例**全部体**的"顶到底" —— 热咀替换调长度就按这个对齐。
+    **口径与新件完全一致**(用户 2026-09-18 定案): 顶取朝上的平面里最高的、底取
+    朝下的平面里最低的, 顶上的小凸起不算(见 nozzle_len.plane_span)。
+
+    spans: [(top, bot) 或 None, ...] 与 olds 等长 —— 按上面那个口径量出来的每体
+      顶/底(由 `_body_spans` 在 NX 里读); 给 None 的体退回自己的包围盒。
+    明细("几个体, Z 从哪到哪")是给人核对的诊断串, 替换日志会逐条打出来。
     没记录/坏记录的体不参与(与替换同口径)。
     """
     items = [(bb, parse_anchor_off(_anchor_of(b))) for b, bb in olds]
     out = []
     for anch, idxs in group_anchor_instances(items):
-        zs = [olds[k][1] for k in idxs if olds[k][1] and len(olds[k][1]) >= 6]
+        zs = []
+        for k in idxs:
+            sp = spans[k] if (spans and k < len(spans)) else None
+            if sp and sp[0] is not None and sp[1] is not None:
+                zs.append((float(sp[0]), float(sp[1])))
+            elif olds[k][1] and len(olds[k][1]) >= 6:
+                zs.append((float(olds[k][1][5]), float(olds[k][1][2])))
         if not zs:
             continue
-        z_lo = min(z[2] for z in zs)
-        z_hi = max(z[5] for z in zs)
+        z_hi = max(z[0] for z in zs)
+        z_lo = min(z[1] for z in zs)
         out.append((anch, z_hi - z_lo,
                     "%d 个体, Z %.4g~%.4g" % (len(zs), z_lo, z_hi)))
+    return out
+
+
+def _body_spans(bodies):
+    """(NX 薄壳) 一组体 → [(top, bot) 或 None, ...] —— 按"主平面口径"量顶/底。
+
+    与 nozzle_len.plane_span 同一口径: **旧件长度必须和新件用一样的量法**, 否则
+    两边口径不同、白对齐。读不到的体回 None(调用方退回包围盒)。
+    """
+    from cad3d.modeling.nozzle_len import plane_span, read_face_rows
+    out = []
+    try:
+        import NXOpen.UF
+        uf = NXOpen.UF.UFSession.GetUFSession()
+    except Exception:
+        return [None] * len(bodies or [])
+    from cad3d.modeling.mold_cut import _body_bbox
+    for b in (bodies or []):
+        try:
+            bb = _body_bbox(uf, b, None)
+            t, bo, _how = plane_span(read_face_rows(uf, [b]), bb)
+            out.append((t, bo) if (t is not None and bo is not None) else None)
+        except Exception:
+            out.append(None)
     return out
 
 
@@ -241,7 +275,8 @@ def _do_replace(session, work_part, mapping, rules, params, log):
         anchors_override.setdefault(new_fname, []).extend(anchors)
         if is_nozzle(new_fname):
             # 热咀: 按旧件实例长度对齐新件长度(头部不动, 其余就地移面)
-            lens = _old_instance_lens(olds)
+            # 长度按"主平面口径"量旧件 —— 和新件同一口径, 见 _body_spans
+            lens = _old_instance_lens(olds, _body_spans([b for b, _bb in olds]))
             old_lens.extend((a, L) for a, L, _d in lens)
             # 逐实例打明细: 长度是"该实例所有体的世界 Z 最高减最低", 打出体数与
             # Z 范围, 量得准不准一眼能对上; 锚点坐标也打出来 —— 它就是主脚本

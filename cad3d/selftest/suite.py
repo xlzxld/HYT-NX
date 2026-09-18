@@ -60,7 +60,8 @@ from cad3d.modeling.stdparts import (
     group_anchor_instances
 )
 from cad3d.modeling.nozzle_len import (
-    is_nozzle, plan_shift, pick_faces, next_step, nearest_anchor_len
+    is_nozzle, plan_shift, pick_faces, next_step, nearest_anchor_len,
+    plane_span
 )
 from cad3d.core.guide import GUIDE_LINES, print_guide
 from cad3d.modeling.nx_compat import _matrix3x3
@@ -576,6 +577,49 @@ def selftest(dxf_path=None):
     check("移面步长: 够准/坏输入都返回 0(停止迭代)",
           next_step(100.0, 100.03, 1) == 0.0 and next_step(None, 80.0, 1) == 0.0
           and next_step(100.0, None, 1) == 0.0)
+    # 长度口径(用户 2026-09-18 定案): 顶/底取**主平面** —— 朝上的平面里 z 最高的、
+    # 朝下的平面里 z 最低的; 顶上的小凸起若是曲面, 天然落不进"平面"。
+    # 真实数据(NX2312 实测): 点胶口-18 顶面是 13.0000 的平面, 但几何最高点是
+    # 13.2043 的**曲面**凸台 → 用户量 95.9673 = 13.0000-(-82.9673), 脚本必须同值。
+    def _fr(zlo, zhi, nz, flat=True):
+        return ((0.0, 0.0, zlo, 1.0, 1.0, zhi), nz, flat, None)
+
+    _rows18 = [_fr(13.0, 13.0, 1.0),           # 主体顶面(平面朝上)
+               _fr(-0.0, -0.0, 1.0),           # 台阶
+               _fr(-15.0, -15.0, 1.0),         # 另一体的顶面
+               _fr(-64.6173, -64.6173, -1.0),  # 朝下的面
+               _fr(-82.9673, -82.9673, -1.0)]  # 最低的朝下面
+    _sp_top, _sp_bot, _sp_how = plane_span(
+        _rows18, (0.0, 0.0, -82.9673, 1.0, 1.0, 13.2043))
+    check("长度口径: 顶=朝上平面里最高的, 底=朝下平面里最低的",
+          abs(_sp_top - 13.0) < 1e-9 and abs(_sp_bot + 82.9673) < 1e-9,
+          "%r %r" % (_sp_top, _sp_bot))
+    check("长度口径: 点胶口-18 得出用户那个 95.9673(而非包围盒 96.1716)",
+          abs((_sp_top - _sp_bot) - 95.9673) < 1e-6,
+          "%.4f" % (_sp_top - _sp_bot))
+    check("长度口径: 曲面凸起(非平面)不参与",
+          plane_span([_fr(13.2043, 13.2043, 1.0, flat=False),
+                      _fr(13.0, 13.0, 1.0),
+                      _fr(-82.9673, -82.9673, -1.0)], None)[0] == 13.0)
+    check("长度口径: 一侧没平面 → 那侧退回包围盒",
+          plane_span([_fr(13.0, 13.0, 1.0)],
+                     (0.0, 0.0, -50.0, 1.0, 1.0, 99.0))[:2] == (13.0, -50.0))
+    check("长度口径: 一个平面都没有 → 纯包围盒",
+          plane_span([_fr(0.0, 0.0, 0.5, flat=False)],
+                     (0.0, 0.0, -7.0, 1.0, 1.0, 3.0))[:2] == (3.0, -7.0))
+    check("长度口径: 空/坏输入安全",
+          plane_span([], None)[0] is None
+          and plane_span(None, None)[0] is None
+          and plane_span([None], None)[0] is None)
+    _sh_sp, _cut_sp, _nt_sp = plan_shift(
+        95.9673, [(0.0, 0.0, -100.0, 1.0, 1.0, 13.2043)], 1, span=(13.0, -95.0))
+    check("长度口径: plan_shift 认 span(新件 108 → 缩短 12.0327, 分界 -17)",
+          abs(_sh_sp - 12.0327) < 1e-3 and abs(_cut_sp + 17.0) < 1e-9
+          and _nt_sp == "", "%r %r %r" % (_sh_sp, _cut_sp, _nt_sp))
+    check("长度口径: 不传 span 仍是旧行为(包围盒)",
+          plan_shift(96.1716, [(0.0, 0.0, -82.9673, 1.0, 1.0, 13.2043)],
+                     1)[2].startswith("新旧等长"))
+
     check("长度对齐: 按锚点找旧件长度(容差内命中/miss回None)",
           nearest_anchor_len((100.0, 50.0, -85.0),
                              [((100.0, 50.0, -85.0, 0.0), 60.0)]) == 60.0
