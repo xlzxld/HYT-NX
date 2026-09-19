@@ -535,26 +535,36 @@ def build_dlx(params=None, jrt=None, jt_mode=None):
     return dlx
 
 
-def build_std_dlx(std_rules, params):
-    """第三段"标准件参数"对话框: 每件一个可收起组(13 参数块 + Z 基准值标签)。"""
+def build_std_dlx(std_rules, params, mode="pipeline"):
+    """第三段"标准件参数"对话框: 每件一个可收起组(13 参数块 + Z 基准值标签)。
+
+    mode="replace"(一键替换第二页): 定位全靠体上记的锚点, 不读图纸 ——
+    "定位图层/半径min/max/Z基准/Z基准值"在替换链路根本不被读取, 不渲染;
+    保留 X/Y/Z 偏移、布尔、方向(仍真实影响放置)。默认 "pipeline" 不变。
+    """
+    hide_drawing = (mode == "replace")
     groups_xml = []
     for i, fname in enumerate(sorted(std_rules)):
         r = std_rules[fname] if isinstance(std_rules[fname], dict) else {}
         p = "SP%d_" % i
         zval = _std_z(params, r)
         lay = r.get("layer", "")
-        children = [
-            _blk_label(p + "zval", "Z基准值: %.4g" % zval),
-            _blk_enum(p + "layer", "定位图层",
-                      [t for _v, t in LAYER_SEL_OPTS],
-                      _opt_index(LAYER_SEL_OPTS, lay)),
-        ] + ([]
-             if lay in LINE_ANCHOR_LAYERS else
-             [_blk_double(p + "rmin", "半径min", r.get("r_min", 0.0)),
-              _blk_double(p + "rmax", "半径max", r.get("r_max", 0.0))]) + [
-            _blk_enum(p + "zmode", "Z基准",
-                      [t for _v, t in ZMODE_OPTS],
-                      _opt_index(ZMODE_OPTS, r.get("z_mode", "FLB_TOP"))),
+        children = []
+        if not hide_drawing:
+            children += [
+                _blk_label(p + "zval", "Z基准值: %.4g" % zval),
+                _blk_enum(p + "layer", "定位图层",
+                          [t for _v, t in LAYER_SEL_OPTS],
+                          _opt_index(LAYER_SEL_OPTS, lay)),
+            ] + ([]
+                 if lay in LINE_ANCHOR_LAYERS else
+                 [_blk_double(p + "rmin", "半径min", r.get("r_min", 0.0)),
+                  _blk_double(p + "rmax", "半径max", r.get("r_max", 0.0))]) + [
+                _blk_enum(p + "zmode", "Z基准",
+                          [t for _v, t in ZMODE_OPTS],
+                          _opt_index(ZMODE_OPTS, r.get("z_mode", "FLB_TOP"))),
+            ]
+        children += [
             _blk_double(p + "offx", "X偏移", r.get("off_x", 0.0)),
             _blk_double(p + "offy", "Y偏移", r.get("off_y", 0.0)),
             _blk_double(p + "offz", "Z偏移", r.get("off_z", 0.0)),
@@ -596,9 +606,9 @@ def build_std_dlx(std_rules, params):
     )
 
 
-def write_std_dlx(std_rules, params):
+def write_std_dlx(std_rules, params, mode="pipeline"):
     """生成第三段 .dlx 到脚本目录(唯一名), 失败回退 %TEMP%(同样唯一名)。"""
-    xml = build_std_dlx(std_rules, params)
+    xml = build_std_dlx(std_rules, params, mode)
     candidates = [_fresh_dlx_path("nx_std_params"), _temp_dlx_path("nx_std_params")]
     for path in candidates:
         try:

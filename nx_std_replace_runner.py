@@ -51,7 +51,9 @@ nx_std_replace_runner.py —— 一键替换标准件（你指定换哪个）NX 
   日志里会逐实例打出"几个体、Z 从哪到哪 → 长多少"，量得对不对可以直接对着看。
 
 【第二页 = 逐件微调】要换成的规格逐件调参数。**参数也不读记忆**，每次都从
-  nx_std_config.py 出厂默认开始（Z 基准值按模型实测高度显示）。
+  nx_std_config.py 出厂默认开始。**不显示"定位图层/半径min/max/Z基准"** ——
+  替换定位全靠体上记的锚点，不读图纸，这几个参数在这里不起作用；
+  保留 X/Y/Z 偏移、布尔、方向(仍真实影响放置)。
 
 【产出】换完的件与主脚本产物同款：普通实体（已清掉建模步骤，不是提升体）。
 【记忆】什么都不记（v3.1）：映射和参数每次都从出厂默认开始，也不回写。
@@ -476,6 +478,8 @@ def main():
         return
 
     # ─── 第二页: 逐件微调(参数不读记忆, 恒出厂默认) → Apply/OK 执行替换 ──
+    # mode="replace": 定位全靠体上锚点, 不渲染"定位图层/半径/Z基准"等
+    # 只在"从图纸定位"时才有意义的参数(用户 2026-09-19 定案)。
     rows = scan_model_bodies(work_part, None)
     params0 = _measured_params(rows)
     rules = {f: sanitize_std_rule(guess_std_rule(f))
@@ -484,7 +488,7 @@ def main():
         ui.NXMessageBox.Show("CAD3D 替换标准件", NXOpen.NXMessageBox.DialogType.Error,
                              "要换成的规格在 stdparts 里找不到, 中止。")
         return
-    sdx = write_std_dlx(rules, params0)
+    sdx = write_std_dlx(rules, params0, mode="replace")
     if not sdx:
         ui.NXMessageBox.Show("CAD3D 替换标准件", NXOpen.NXMessageBox.DialogType.Error,
                              "标准件参数 .dlx 生成失败。")
@@ -494,7 +498,8 @@ def main():
         sdlg = StdParamsDialog(sdx, rules, params0, None, None, sorted(rules),
                                std_rules_all=rules_all, jt_mode=None,
                                execute_fn=functools.partial(replace_std_parts,
-                                                            mapping=mapping))
+                                                            mapping=mapping),
+                               mode="replace")
         sdlg.Launch()
     except Exception as ex:
         ui.NXMessageBox.Show("CAD3D 替换标准件", NXOpen.NXMessageBox.DialogType.Error,

@@ -323,11 +323,20 @@ class _BlockDialogBase:
         return fallback
 
     def _collect_std(self):
-        """对话框标准件行 → 规则表(序号映射语义值; 枚举读取带标签反查)。"""
+        """对话框标准件行 → 规则表(序号映射语义值; 枚举读取带标签反查)。
+
+        mode="replace"(一键替换第二页): 界面上没有图层/Z基准框, 收集时
+        **保留规则原值**不碰 —— 缺块走 fallback 会把 layer 顶成第 0 项,
+        还可能误触"图层改线锚"的半径重置提示(该提示只对主流水线有意义)。
+        """
+        replace_mode = (getattr(self, "mode", "pipeline") == "replace")
         rules = {}
         for i, fname in enumerate(self.std_files):
             pfx = "SP%d_" % i
             r = dict(self.std_rules.get(fname, DEFAULT_STD_RULE))
+            if replace_mode:
+                rules[fname] = sanitize_std_rule(r)
+                continue
             li = min(self._get_enum_idx(pfx + "layer", 0,
                                         [t for _v, t in LAYER_SEL_OPTS]),
                      len(LAYER_SEL_OPTS) - 1)
@@ -778,7 +787,7 @@ class StdParamsDialog(_BlockDialogBase):
 
     def __init__(self, dlx_path, std_rules, params, jrt, dxf, selected,
                  std_rules_all=None, jt_mode=None, execute_fn=None,
-                 transient=None, notes=None):
+                 transient=None, notes=None, mode="pipeline"):
         import NXOpen
         import NXOpen.BlockStyler
         self.nx = NXOpen
@@ -799,6 +808,9 @@ class StdParamsDialog(_BlockDialogBase):
         self._initializing = False
         self.std_rules = std_rules
         self.std_files = sorted(std_rules.keys())
+        # "pipeline"=主流水线窗口③(全参数); "replace"=一键替换第二页
+        # (定位全靠锚点, 界面没有图层/半径/Z基准框, 收集时也不碰它们)
+        self.mode = mode if mode in ("pipeline", "replace") else "pipeline"
         self.params = params
         self.jrt = jrt
         self.jt_mode = jt_mode

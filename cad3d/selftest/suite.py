@@ -1634,6 +1634,21 @@ def selftest(dxf_path=None):
     sxml_w = build_std_dlx({"垫片.prt": sanitize_std_rule({})}, default_params())
     check("有默认件含重置按钮(垫片)", 'id="SP0_reset"' in sxml_w
           and 'id="SP0_zval"' in sxml_w)
+    # mode="replace"(一键替换第二页): 定位全靠锚点不读图纸, 图纸类参数不渲染
+    _sxml_rp = build_std_dlx(fake_rules, default_params(), mode="replace")
+    check("替换第二页不渲染图纸类参数(mode=replace)",
+          'id="SP0_layer"' not in _sxml_rp
+          and 'id="SP0_rmin"' not in _sxml_rp
+          and 'id="SP0_zmode"' not in _sxml_rp
+          and 'id="SP0_zval"' not in _sxml_rp
+          and "定位图层" not in _sxml_rp
+          and "半径min" not in _sxml_rp
+          and "Z基准" not in _sxml_rp)
+    check("替换第二页保留偏移/布尔/方向/重置",
+          'id="SP0_offx"' in _sxml_rp and 'id="SP0_offy"' in _sxml_rp
+          and 'id="SP0_offz"' in _sxml_rp
+          and "布尔" in _sxml_rp and "方向" in _sxml_rp
+          and 'id="SP0_reset"' in _sxml_rp)
     g6 = guess_std_rule("点胶口-25.prt")
     check("猜测: 点胶口→RZ/FLB底(与大水口同逻辑)",
           g6["layer"] == "RZ" and g6["z_mode"] == "FLB_BOTTOM")
