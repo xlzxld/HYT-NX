@@ -100,13 +100,13 @@ def main():
                     _s = _s[0]
                 _s = int(_s)
                 _cnt[_s] = _cnt.get(_s, 0) + 1
-                if _s == 3:
+                if _s in (3, 4):
                     _vis.append(_i)
             except Exception:
                 pass
         say("  [UF 状态盘点] 按状态号分层计数(1=work 2=可选 3=可见不可选 "
             "4=隐藏): %s" % dict(sorted(_cnt.items())))
-        say("  [可见不可选的层] %s" % (_vis[:20] if _vis else "没有"))
+        say("  [可见/隐藏的待改层] %s" % (_vis[:20] if _vis else "没有"))
         if _vis:
             _t = _vis[0]
             try:
@@ -114,7 +114,7 @@ def main():
                 _back = _ul.AskStatus(_t)
                 if isinstance(_back, tuple):
                     _back = _back[0]
-                say("  [SetStatus 实弹] 第%d层 3→2 读回=%s %s"
+                say("  [SetStatus 实弹] 第%d层 →2 读回=%s %s"
                     % (_t, _back, "✓ SetStatus 可用" if int(_back) == 2
                        else "✗ 写不进去(读回没变)"))
             except Exception as ex:
