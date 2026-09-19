@@ -59,10 +59,19 @@ def _selectable_all_layers(work_part, log=None):
     本函数只做 Visible → Selectable 这一种转换:
       · 可见的保持可见、视图里不会多出东西, 只是变得能选中;
       · Hidden(用户有意隐藏的)与 WorkLayer(工作层)一律不碰。
-    改状态走 StateCollection 副本 + 一次 SetStates 应用, 比逐层 SetState 快
-    (后者每层都可能触发一次更新)。任一环节在某 NX 版本缺失都只跳过, 绝不影响
-    模型正确性或中断流程(与 _refresh_display 同款兜底口径)。
-    返回实际改动的图层数(0 = 没得改或本版本不支持)。
+
+    三条路径逐级降级(2026-09-19 用户报 NX10 上仍选不中: StateCollection
+    那套 GetStates/SetStates 接口在 NX2312 才有, 老版本整段被吞 → 补两条
+    老版本就有的降级路径; 哪条走得通写进日志, 实机一眼可查):
+      ① StateCollection 副本 + 一次 SetStates(NX2312 快路径, 不变);
+      ② 逐层 LayerManager.GetState/SetState(逐层慢, 老版本兼容);
+      ③ UF 兜底 uf.Layer.AskStatus/SetStatus(UF_LAYER API 最老版本就有;
+         状态常量 UF_LAYER_SELECTABLE_LAYER=2 / VISIBLE=3 / WORK=1 /
+         HIDDEN=4, 出自 NXOpen UF 头文件 uf_layer_types.h, 常量表取不到
+         时按这套值兜底)。
+    任一环节在某 NX 版本缺失都只跳过换下一条, 绝不影响模型正确性或中断
+    流程(与 _refresh_display 同款兜底口径)。
+    返回实际改动的图层数(0 = 没得改或所有路径都不支持)。
     """
     if work_part is None:
         return 0
@@ -73,8 +82,10 @@ def _selectable_all_layers(work_part, log=None):
     lm = getattr(work_part, "Layers", None)
     if lm is None:
         return 0
-    coll = None
     changed = 0
+    path = ""
+    # ① StateCollection 副本路径(NX2312 快路径)
+    coll = None
     try:
         coll = lm.GetStates()
         for _i in range(1, 257):
@@ -89,17 +100,62 @@ def _selectable_all_layers(work_part, log=None):
                 lm.SetStates(coll)
             except TypeError:
                 lm.SetStates(coll, True)
+        path = "StateCollection"
     except Exception as ex:
+        changed = 0
+        coll = None
         if log is not None:
-            log("  图层“可选”化跳过(本 NX 无此接口或不允许): %s" % ex)
-        return 0
+            log("  图层可选化: StateCollection 路径本版本不支持(%s), 走逐层降级。"
+                % ex)
     finally:
         if coll is not None:
             try:
                 coll.FreeResource()
             except Exception:
                 pass
+    # ② 逐层 GetState/SetState 路径
+    if changed == 0:
+        try:
+            for _i in range(1, 257):
+                try:
+                    if lm.GetState(_i) == _NL.State.Visible:
+                        lm.SetState(_i, _NL.State.Selectable)
+                        changed += 1
+                except Exception:
+                    continue        # 单层读不到不影响其余层
+            if changed:
+                path = "逐层SetState"
+        except Exception as ex:
+            changed = 0
+            if log is not None:
+                log("  图层可选化: 逐层 GetState/SetState 也不支持(%s), 走 UF 兜底。"
+                    % ex)
+    # ③ UF 兜底(AskStatus/SetStatus, 老 NX 一定有)
+    if changed == 0:
+        try:
+            import NXOpen.UF as _NUF
+            _uf = _NUF.UFSession.GetUFSession()
+            _ul = _uf.Layer
+            _c_sel = getattr(_NUF.UFConstants, "UF_LAYER_SELECTABLE_LAYER", 2)
+            _c_vis = getattr(_NUF.UFConstants, "UF_LAYER_VISIBLE_LAYER", 3)
+            for _i in range(1, 257):
+                try:
+                    _st = _ul.AskStatus(_i)
+                    if isinstance(_st, tuple):
+                        _st = _st[0]
+                    if int(_st) == _c_vis:
+                        _ul.SetStatus(_i, _c_sel)
+                        changed += 1
+                except Exception:
+                    continue        # work 层等改不动的跳过
+            if changed:
+                path = "UF SetStatus"
+        except Exception as ex:
+            changed = 0
+            if log is not None:
+                log("  图层可选化: UF 兜底也失败(%s) —— 本版本没法自动改图层"
+                    "状态, 需要手工去 图层设置 里打开。" % ex)
     if changed and log is not None:
-        log("  有 %d 个图层原来是“可见但不可选”, 已改成“可选”——"
-            "导入的 2D 图现在能直接选中了。" % changed)
+        log("  有 %d 个图层原来是“可见但不可选”, 已改成“可选”(%s路径) ——"
+            "导入的 2D 图现在能直接选中了。" % (changed, path))
     return changed
