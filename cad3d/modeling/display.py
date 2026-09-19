@@ -136,20 +136,38 @@ def _selectable_all_layers(work_part, log=None):
             import NXOpen.UF as _NUF
             _uf = _NUF.UFSession.GetUFSession()
             _ul = _uf.Layer
+            # UFConstants 缺常量时按 uf_layer_types.h 值兜底(work=1,
+            # selectable=2, visible=3, hidden=4); NX10 实测 AskStatus(1)=1
+            # (工作层)与此编号吻合(2026-09-19 探针)。
             _c_sel = getattr(_NUF.UFConstants, "UF_LAYER_SELECTABLE_LAYER", 2)
             _c_vis = getattr(_NUF.UFConstants, "UF_LAYER_VISIBLE_LAYER", 3)
+            n_ask = n_vis = n_set = 0
+            _sample = None
             for _i in range(1, 257):
                 try:
                     _st = _ul.AskStatus(_i)
                     if isinstance(_st, tuple):
                         _st = _st[0]
-                    if int(_st) == _c_vis:
+                    _st = int(_st)
+                    n_ask += 1
+                    if _sample is None:
+                        _sample = (_i, _st)
+                    if _st == _c_vis:
+                        n_vis += 1
                         _ul.SetStatus(_i, _c_sel)
-                        changed += 1
+                        n_set += 1
                 except Exception:
                     continue        # work 层等改不动的跳过
-            if changed:
+            if n_set:
+                changed = n_set
                 path = "UF SetStatus"
+            elif log is not None:
+                # 0 改动不再静默: 写清读到什么、改了几层, 下一轮实机一眼定位
+                log("  图层可选化 UF 兜底读完: 能读状态 %d 层, 其中“可见不可选”"
+                    "%d 层, 改成可选成功 %d 层%s。0 改动 = 图层状态号或 "
+                    "SetStatus 与预期不符, 请把日志发回。"
+                    % (n_ask, n_vis, n_set,
+                       ("; 状态样例: 第%d层=%d" % _sample) if _sample else ""))
         except Exception as ex:
             changed = 0
             if log is not None:

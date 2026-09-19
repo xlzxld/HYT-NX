@@ -87,6 +87,45 @@ def main():
     except Exception as ex:
         say("  [UFConstants] 缺失或异常: %r" % ex)
     probe("uf.Layer.AskStatus(1)", lambda: "work 层状态=%s" % (uf.Layer.AskStatus(1),))
+
+    # 实弹: UF 状态盘点 + SetStatus 读回(只动"可见不可选"层 = 修复本身的行为)
+    if wp is not None:
+        _ul = uf.Layer
+        _cnt = {}
+        _vis = []
+        for _i in range(1, 257):
+            try:
+                _s = _ul.AskStatus(_i)
+                if isinstance(_s, tuple):
+                    _s = _s[0]
+                _s = int(_s)
+                _cnt[_s] = _cnt.get(_s, 0) + 1
+                if _s == 3:
+                    _vis.append(_i)
+            except Exception:
+                pass
+        say("  [UF 状态盘点] 按状态号分层计数(1=work 2=可选 3=可见不可选 "
+            "4=隐藏): %s" % dict(sorted(_cnt.items())))
+        say("  [可见不可选的层] %s" % (_vis[:20] if _vis else "没有"))
+        if _vis:
+            _t = _vis[0]
+            try:
+                _ul.SetStatus(_t, 2)
+                _back = _ul.AskStatus(_t)
+                if isinstance(_back, tuple):
+                    _back = _back[0]
+                say("  [SetStatus 实弹] 第%d层 3→2 读回=%s %s"
+                    % (_t, _back, "✓ SetStatus 可用" if int(_back) == 2
+                       else "✗ 写不进去(读回没变)"))
+            except Exception as ex:
+                say("  [SetStatus 实弹] 第%d层 改失败: %r" % (_t, ex))
+        else:
+            try:
+                has = hasattr(_ul, "SetStatus")
+                say("  [SetStatus 存在性] %s(没有可见不可选层, 只验方法存在)"
+                    % ("有" if has else "没有 —— 这就是图层修不了的根因"))
+            except Exception as ex:
+                say("  [SetStatus 存在性] 探测异常: %r" % ex)
     say("")
 
     # ── 2. 移面(同步建模「移动面」)链路 ──────────────────────────────
