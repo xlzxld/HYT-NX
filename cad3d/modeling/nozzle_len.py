@@ -33,6 +33,7 @@ from cad3d.core.constants import (
     NOZZLE_BAND_UP,
     NOZZLE_FAMILIES,
 )
+from cad3d.modeling.nx_compat import _set_expr
 
 # 方向校准探步(mm): 先移这一小步, 复测出"每移 1mm 总长变多少"
 _PROBE_STEP = 2.0
@@ -222,13 +223,17 @@ def _tune_motion(mo, nx):
     orient = gu.OrientXpressBuilder
 
     def _set(path, attr, val):
-        """按属性路径逐级取(路径取不到就跳过 —— 跨版本有的节点不存在)。"""
+        """按属性路径逐级取(路径取不到就跳过 —— 跨版本有的节点不存在)。
+
+        attr="SetFormula" 走 _set_expr 跨版本封装(NX10/12 的 Expression
+        没有 SetFormula, 实机报过 'no attribute SetFormula'; 降级
+        RightHandSide —— 主流水线 Limits 同款, 2026-09-19 NX10 取证)。"""
         try:
             obj = mo
             for p in path:
                 obj = getattr(obj, p)
             if attr == "SetFormula":
-                obj.SetFormula(val)
+                _set_expr(obj, val)
             else:
                 setattr(obj, attr, val)
         except Exception:
@@ -394,9 +399,12 @@ def _move_faces_z(work_part, session, faces, shift, log):
                 NXOpen.GeometricUtilities.ModlMotion.Options.DeltaXyz
             bld.Motion.DeltaEnum = \
                 NXOpen.GeometricUtilities.ModlMotion.Delta.ReferenceAcsWorkPart
-            bld.Motion.DeltaXc.SetFormula("0")
-            bld.Motion.DeltaYc.SetFormula("0")
-            bld.Motion.DeltaZc.SetFormula("%.6f" % float(shift))
+            # 跨版本写表达式: NX2312 走 SetFormula, NX10/12 走
+            # RightHandSide(实机报过 'no attribute SetFormula',
+            # 用主流水线验证过的 _set_expr, 2026-09-19 取证)
+            _set_expr(bld.Motion.DeltaXc, "0")
+            _set_expr(bld.Motion.DeltaYc, "0")
+            _set_expr(bld.Motion.DeltaZc, "%.6f" % float(shift))
         except Exception as ex:
             log("【长度对齐】本 NX 的移动面没有 DeltaXyz 运动选项(%s), 这处保持原长。"
                 % ex)
@@ -447,7 +455,10 @@ def _move_faces_z(work_part, session, faces, shift, log):
                 except Exception:
                     pass
         bld.FaceToMove.FaceCollector.ReplaceRules([rule], False)
-        bld.OnApplyPre()
+        try:
+            bld.OnApplyPre()
+        except AttributeError:
+            pass    # NX10 的 AdmMoveFaceBuilder 没有 OnApplyPre(2026-09-19 探针实证)
         mark = None
         try:
             mark = session.SetUndoMark(NXOpen.Session.MarkVisibility.Invisible,
