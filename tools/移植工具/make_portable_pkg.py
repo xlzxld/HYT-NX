@@ -49,6 +49,7 @@ WHITELIST_FILES = [
     "nx_std_replace_runner.py",     # 一键替换标准件入口
     "nx_std_config.py",             # 业务配置（exec 加载，缺了会整体回退内置默认）
     "batch_smoke.py",               # 端到端冒烟（验收用）
+    "nx_probe_len.py",              # 取证探针: NX10 长度对齐链路逐项 API 探测
 ]
 WHITELIST_DIRS = [
     "cad3d",                    # 全部核心代码
